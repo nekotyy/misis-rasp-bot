@@ -28,7 +28,7 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
 
 HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Вернуться к предметам", callback_data="menu:homework")],
+        [InlineKeyboardButton(text="Вернуться к списку ДЗ", callback_data="menu:homework")],
     ]
 )
 
