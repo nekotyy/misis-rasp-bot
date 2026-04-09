@@ -226,38 +226,63 @@ def build_dispatcher(
             reply_markup=build_homework_subjects_keyboard(mode),
         )
 
-    async def send_homework_entries(bot: Bot, chat_id: int, subject_key: str) -> None:
+    async def send_homework_entries(
+        bot: Bot,
+        chat_id: int,
+        subject_key: str,
+        source_message: Message | None = None,
+    ) -> None:
         subject = get_subject(subject_key)
         if subject is None:
-            await replace_context_message(
-                bot,
-                chat_id,
-                "homework",
-                "Предмет не найден.",
-                reply_markup=HOMEWORK_BACK_KEYBOARD,
-            )
+            if source_message is not None:
+                await source_message.edit_text("Предмет не найден.", reply_markup=HOMEWORK_BACK_KEYBOARD)
+                context_messages[chat_id]["homework"] = [source_message.message_id]
+            else:
+                await replace_context_message(
+                    bot,
+                    chat_id,
+                    "homework",
+                    "Предмет не найден.",
+                    reply_markup=HOMEWORK_BACK_KEYBOARD,
+                )
             return
 
         entries = await db.get_homework_for_subject(subject_key)
         if not entries:
+            if source_message is not None:
+                await clear_context_messages(bot, chat_id, "homework")
+                await source_message.edit_text(
+                    f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
+                    reply_markup=HOMEWORK_BACK_KEYBOARD,
+                )
+                context_messages[chat_id]["homework"] = [source_message.message_id]
+            else:
+                await replace_context_message(
+                    bot,
+                    chat_id,
+                    "homework",
+                    f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
+                    reply_markup=HOMEWORK_BACK_KEYBOARD,
+                )
+            return
+
+        if source_message is not None:
+            await clear_context_messages(bot, chat_id, "homework")
+            await source_message.edit_text(
+                f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
+                reply_markup=HOMEWORK_BACK_KEYBOARD,
+            )
+            sent_ids = [source_message.message_id]
+        else:
             await replace_context_message(
                 bot,
                 chat_id,
                 "homework",
-                f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
+                f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
                 reply_markup=HOMEWORK_BACK_KEYBOARD,
             )
-            return
+            sent_ids = context_messages[chat_id]["homework"][:1]
 
-        await replace_context_message(
-            bot,
-            chat_id,
-            "homework",
-            f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
-            reply_markup=HOMEWORK_BACK_KEYBOARD,
-        )
-
-        sent_ids = context_messages[chat_id]["homework"][:1]
         for entry in entries:
             entry_message_ids = await send_homework_entry_with_attachments(bot, chat_id, entry)
             sent_ids.extend(entry_message_ids)
@@ -407,7 +432,12 @@ def build_dispatcher(
     async def handle_homework_subject(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         await callback.answer()
-        await send_homework_entries(callback.bot, callback.from_user.id, callback.data.split(":")[-1])
+        await send_homework_entries(
+            callback.bot,
+            callback.from_user.id,
+            callback.data.split(":")[-1],
+            source_message=callback.message,
+        )
 
     @dispatcher.callback_query(F.data.startswith("dz:subject:"))
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
