@@ -215,6 +215,20 @@ def build_dispatcher(
                 pass
         context_messages[chat_id][context] = kept_ids
 
+    async def try_edit_source_message(
+        source_message: Message | None,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        if source_message is None:
+            return False
+        try:
+            await source_message.edit_text(text, reply_markup=reply_markup)
+            context_messages[source_message.chat.id]["homework"] = [source_message.message_id]
+            return True
+        except TelegramBadRequest:
+            return False
+
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
         await replace_context_message(
             bot,
@@ -263,11 +277,12 @@ def build_dispatcher(
         if not entries:
             if source_message is not None:
                 await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
-                await source_message.edit_text(
+                if await try_edit_source_message(
+                    source_message,
                     f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
                     reply_markup=HOMEWORK_BACK_KEYBOARD,
-                )
-                context_messages[chat_id]["homework"] = [source_message.message_id]
+                ):
+                    return
             else:
                 await replace_context_message(
                     bot,
@@ -276,15 +291,33 @@ def build_dispatcher(
                     f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
                     reply_markup=HOMEWORK_BACK_KEYBOARD,
                 )
+                return
+            await replace_context_message(
+                bot,
+                chat_id,
+                "homework",
+                f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
+                reply_markup=HOMEWORK_BACK_KEYBOARD,
+            )
             return
 
         if source_message is not None:
             await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
-            await source_message.edit_text(
+            if await try_edit_source_message(
+                source_message,
                 f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
                 reply_markup=HOMEWORK_BACK_KEYBOARD,
-            )
-            sent_ids = [source_message.message_id]
+            ):
+                sent_ids = [source_message.message_id]
+            else:
+                await replace_context_message(
+                    bot,
+                    chat_id,
+                    "homework",
+                    f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
+                    reply_markup=HOMEWORK_BACK_KEYBOARD,
+                )
+                sent_ids = context_messages[chat_id]["homework"][:1]
         else:
             await replace_context_message(
                 bot,
