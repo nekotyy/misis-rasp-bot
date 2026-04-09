@@ -520,10 +520,11 @@ def build_vk_bot(
             return
 
         token_candidate = text.strip().upper()
-        if mode == "settings_link_wait" and len(token_candidate) == 6 and token_candidate.isalnum():
+        if len(token_candidate) == 6 and token_candidate.isalnum():
             success, response = await db.consume_link_token(token_candidate, "vk", user_id)
-            await show_settings(peer_id, user_id, extra=response)
-            return
+            if success or mode == "settings_link_wait":
+                await show_settings(peer_id, user_id, extra=response)
+                return
 
         if text in {"/rasp", "Расписание"}:
             peer_modes[peer_id] = "schedule_menu"
