@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    container_name: misis-rasp-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/runtime/bot.db
+      ATTACHMENTS_PATH: /app/runtime/attachments
+    volumes:
+      - ./runtime:/app/runtime
