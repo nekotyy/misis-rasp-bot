@@ -31,7 +31,6 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
 
     bot = Bot(token=settings.vk_bot_token, api=api)
     homework_drafts: dict[int, HomeworkDraft] = {}
-    screen_messages: dict[int, list[int]] = defaultdict(list)
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
@@ -82,43 +81,14 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             is_editor=existing.is_editor if existing else False,
         )
 
-    async def delete_cmids(peer_id: int, cmids: list[int]) -> None:
-        if not cmids:
-            return
-        try:
-            await bot.api.messages.delete(peer_id=peer_id, cmids=cmids, delete_for_all=True)
-        except Exception:
-            pass
-
     async def show_screen(peer_id: int, text: str, keyboard: str | None = None, attachment: str | None = None) -> None:
-        current = screen_messages[peer_id]
-        if current:
-            try:
-                await bot.api.messages.edit(
-                    peer_id=peer_id,
-                    cmid=current[0],
-                    message=text,
-                    keyboard=keyboard,
-                    attachment=attachment,
-                )
-                return
-            except Exception:
-                await delete_cmids(peer_id, current)
-                screen_messages[peer_id] = []
-
-        response = await bot.api.messages.send(
+        await bot.api.messages.send(
             peer_ids=[peer_id],
             message=text,
             keyboard=keyboard,
             attachment=attachment,
             random_id=0,
         )
-        screen_messages[peer_id] = [response[0].conversation_message_id]
-
-    async def delete_incoming(message: Message) -> None:
-        if message.peer_id is None or message.conversation_message_id is None:
-            return
-        await delete_cmids(message.peer_id, [message.conversation_message_id])
 
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Домашние задания"]]
@@ -188,6 +158,8 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
                 created_at.strftime("%d.%m.%Y %H:%M"),
             ]
         )
+        if entry.get("has_external_attachments"):
+            lines.extend(["", "Вложения из Telegram доступны только в Telegram."])
         return "\n".join(lines)
 
     def preview_text(draft: HomeworkDraft, author: str) -> str:
@@ -270,9 +242,10 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             return
         entry = entries[0]
         attachments = [item["file_id"] for item in entry["attachments"] if item["file_type"] == "vk_attachment"]
+        has_external_attachments = any(item["file_type"] != "vk_attachment" for item in entry["attachments"])
         await show_screen(
             peer_id,
-            homework_text(entry),
+            homework_text({**entry, "has_external_attachments": has_external_attachments}),
             keyboard=homework_view_keyboard(),
             attachment=",".join(attachments) if attachments else None,
         )
@@ -454,7 +427,6 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             draft.text = text
             draft.awaiting_text = False
             draft.awaiting_attachments = False
-            await delete_incoming(message)
             await show_draft_preview(peer_id, str(user_id), draft)
             return
 
@@ -480,7 +452,6 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
                             mime_type=None,
                         )
                     )
-                await delete_incoming(message)
                 await show_draft_preview(peer_id, str(user_id), draft)
                 return
             if text == "Опубликовать" and draft.text.strip():
