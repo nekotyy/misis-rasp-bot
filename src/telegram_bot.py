@@ -203,6 +203,18 @@ def build_dispatcher(
                 pass
         context_messages[chat_id][context] = []
 
+    async def clear_context_messages_except(bot: Bot, chat_id: int, context: str, keep_message_id: int) -> None:
+        kept_ids: list[int] = []
+        for message_id in context_messages[chat_id].get(context, []):
+            if message_id == keep_message_id:
+                kept_ids.append(message_id)
+                continue
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except TelegramBadRequest:
+                pass
+        context_messages[chat_id][context] = kept_ids
+
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
         await replace_context_message(
             bot,
@@ -250,7 +262,7 @@ def build_dispatcher(
         entries = await db.get_homework_for_subject(subject_key)
         if not entries:
             if source_message is not None:
-                await clear_context_messages(bot, chat_id, "homework")
+                await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
                 await source_message.edit_text(
                     f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
                     reply_markup=HOMEWORK_BACK_KEYBOARD,
@@ -267,7 +279,7 @@ def build_dispatcher(
             return
 
         if source_message is not None:
-            await clear_context_messages(bot, chat_id, "homework")
+            await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
             await source_message.edit_text(
                 f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
                 reply_markup=HOMEWORK_BACK_KEYBOARD,
