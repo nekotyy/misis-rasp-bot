@@ -8,15 +8,16 @@ from vkbottle.bot import Bot, Message
 
 from src.config import Settings
 from src.db import Database
-from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
+from src.schedule_service import get_day_by_offset_from_content
 
 
 def main_keyboard() -> Keyboard:
     keyboard = Keyboard(one_time=False, inline=False)
-    keyboard.add(Text("Сегодня"))
-    keyboard.add(Text("Завтра"))
+    keyboard.add(Text("Расписание на сегодня"))
     keyboard.row()
-    keyboard.add(Text("2 дня"))
+    keyboard.add(Text("Расписание на завтра"))
+    keyboard.row()
+    keyboard.add(Text("Расписание на 2 дня"))
     return keyboard
 
 
@@ -47,6 +48,19 @@ def build_vk_bot(settings: Settings, db: Database, parser) -> Bot | None:
     async def get_saved_snapshot() -> dict | None:
         return await db.get_latest_snapshot("current")
 
+    def format_day_text(day, fallback_label: str) -> str:
+        if day is None:
+            return f"Расписание на {fallback_label}\n\nПар нет."
+        if not day.lessons:
+            return f"Расписание на {day.date_label}\n\nПар нет."
+
+        lines = [f"Расписание на {day.date_label}", ""]
+        for lesson in day.lessons:
+            lines.append(
+                f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}"
+            )
+        return "\n".join(lines)
+
     def empty_day_text(label: str) -> str:
         return f"Расписание на {label}\n\nПар нет."
 
@@ -54,11 +68,11 @@ def build_vk_bot(settings: Settings, db: Database, parser) -> Bot | None:
     async def start_handler(message: Message) -> None:
         await register_user(message)
         await message.answer(
-            f"Расписание группы {settings.group_name}\n\nВыбери день кнопками ниже.",
+            f"Расписание группы {settings.group_name}\n\nИспользуй кнопки ниже, чтобы открыть сохраненное расписание.",
             keyboard=main_keyboard().get_json(),
         )
 
-    @bot.on.message(text="Сегодня")
+    @bot.on.message(text="Расписание на сегодня")
     async def today_handler(message: Message) -> None:
         await register_user(message)
         snapshot_row = await get_saved_snapshot()
@@ -66,10 +80,10 @@ def build_vk_bot(settings: Settings, db: Database, parser) -> Bot | None:
             await message.answer("Сохраненное расписание пока отсутствует.", keyboard=main_keyboard().get_json())
             return
         day = get_day_by_offset_from_content(snapshot_row["content"], 0)
-        text = ScheduleFormatter.format_day(day) if day else empty_day_text("сегодня")
+        text = format_day_text(day, "сегодня")
         await message.answer(text, keyboard=main_keyboard().get_json())
 
-    @bot.on.message(text="Завтра")
+    @bot.on.message(text="Расписание на завтра")
     async def tomorrow_handler(message: Message) -> None:
         await register_user(message)
         snapshot_row = await get_saved_snapshot()
@@ -77,10 +91,10 @@ def build_vk_bot(settings: Settings, db: Database, parser) -> Bot | None:
             await message.answer("Сохраненное расписание пока отсутствует.", keyboard=main_keyboard().get_json())
             return
         day = get_day_by_offset_from_content(snapshot_row["content"], 1)
-        text = ScheduleFormatter.format_day(day) if day else empty_day_text("завтра")
+        text = format_day_text(day, "завтра")
         await message.answer(text, keyboard=main_keyboard().get_json())
 
-    @bot.on.message(text="2 дня")
+    @bot.on.message(text="Расписание на 2 дня")
     async def two_days_handler(message: Message) -> None:
         await register_user(message)
         snapshot_row = await get_saved_snapshot()
@@ -88,7 +102,7 @@ def build_vk_bot(settings: Settings, db: Database, parser) -> Bot | None:
             await message.answer("Сохраненное расписание пока отсутствует.", keyboard=main_keyboard().get_json())
             return
         day = get_day_by_offset_from_content(snapshot_row["content"], 2)
-        text = ScheduleFormatter.format_day(day) if day else empty_day_text("послезавтра")
+        text = format_day_text(day, "2 дня")
         await message.answer(text, keyboard=main_keyboard().get_json())
 
     @bot.on.message(text="Админка")
