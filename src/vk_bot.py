@@ -82,15 +82,45 @@ def build_vk_bot(
         user = await db.get_user("vk", user_id)
         return bool(user and user.is_editor)
 
+    async def fetch_vk_names(user_ids: list[int]) -> dict[int, str]:
+        unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
+        if not unique_ids:
+            return {}
+        profiles = await bot.api.users.get(user_ids=unique_ids)
+        result: dict[int, str] = {}
+        for profile in profiles:
+            full_name = " ".join(part for part in [profile.first_name, profile.last_name] if part).strip()
+            if full_name:
+                result[profile.id] = full_name
+        return result
+
+    async def sync_vk_user_names(user_ids: list[int]) -> dict[int, str]:
+        names = await fetch_vk_names(user_ids)
+        for user_id, full_name in names.items():
+            existing = await db.get_user("vk", user_id)
+            if existing is None:
+                continue
+            await db.upsert_user(
+                platform="vk",
+                user_id=user_id,
+                username=existing.username,
+                full_name=full_name,
+                is_admin=existing.is_admin,
+                is_editor=existing.is_editor,
+            )
+        return names
+
     async def register_user(message: Message) -> None:
         if message.from_id is None:
             return
+        names = await fetch_vk_names([message.from_id])
         existing = await db.get_user("vk", message.from_id)
+        full_name = names.get(message.from_id) or (existing.full_name if existing else None)
         await db.upsert_user(
             platform="vk",
             user_id=message.from_id,
             username=None,
-            full_name=None,
+            full_name=full_name,
             is_admin=user_is_admin(message.from_id),
             is_editor=existing.is_editor if existing else False,
         )
@@ -564,6 +594,8 @@ def build_vk_bot(
                 return
             if text == "Пользователи":
                 users = await db.list_users()
+                await sync_vk_user_names([user.user_id for user in users if user.platform == "vk"])
+                users = await db.list_users()
                 lines = ["Пользователи", ""]
                 if not users:
                     lines.append("Пока никто не зарегистрирован.")
@@ -581,10 +613,14 @@ def build_vk_bot(
                 return
             if text == "Редакторы":
                 users = await db.list_users("vk")
+                await sync_vk_user_names([user.user_id for user in users])
+                users = await db.list_users("vk")
                 peer_modes[peer_id] = "admin_editors"
                 await show_screen(peer_id, "Управление редакторами\n\nВыбери пользователя, чтобы выдать или снять роль редактора.", keyboard=build_editor_keyboard(peer_id, users, 0))
                 return
             if mode == "admin_editors":
+                users = await db.list_users("vk")
+                await sync_vk_user_names([user.user_id for user in users])
                 users = await db.list_users("vk")
                 if text == "Следующая страница":
                     await show_screen(peer_id, "Управление редакторами\n\nВыбери пользователя, чтобы выдать или снять роль редактора.", keyboard=build_editor_keyboard(peer_id, users, peer_pages[peer_id].get("editors", 0) + 1))
