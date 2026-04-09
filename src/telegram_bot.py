@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from html import escape
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
 
@@ -15,12 +17,18 @@ from src.parser import ScheduleParser
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
 
 
-MAIN_KEYBOARD = InlineKeyboardMarkup(
+START_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Домашние задания", callback_data="menu:homework")],
+    ]
+)
+
+SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Расписание на сегодня", callback_data="schedule:today")],
         [InlineKeyboardButton(text="Расписание на завтра", callback_data="schedule:tomorrow")],
         [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="schedule:day_after")],
-        [InlineKeyboardButton(text="Домашние задания", callback_data="menu:homework")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
 
@@ -66,6 +74,7 @@ def build_dispatcher(
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     homework_drafts: dict[int, HomeworkDraft] = {}
+    context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
 
     def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
@@ -97,12 +106,7 @@ def build_dispatcher(
             display = user.full_name or user.username or str(user.user_id)
             prefix = "Убрать редактора" if user.is_editor else "Сделать редактором"
             rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"{prefix}: {display}",
-                        callback_data=f"editor:toggle:{user.user_id}",
-                    )
-                ]
+                [InlineKeyboardButton(text=f"{prefix}: {display}", callback_data=f"editor:toggle:{user.user_id}")]
             )
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -154,8 +158,7 @@ def build_dispatcher(
             f"<b>Привет! Я бот группы {escape(settings.group_name)}</b>\n\n"
             "/rasp — посмотреть расписание\n"
             "/homework — посмотреть домашние задания"
-            f"{editor_hint}\n\n"
-            "Ниже доступны быстрые кнопки."
+            f"{editor_hint}"
         )
 
     def format_admin_panel() -> str:
@@ -167,67 +170,138 @@ def build_dispatcher(
     def empty_day_text(label: str) -> str:
         return f"Расписание на {escape(label)}\n\nПар нет."
 
-    async def send_schedule_text(message: Message, offset: int, label: str) -> None:
-        snapshot_row = await get_saved_snapshot()
-        if snapshot_row is None:
-            await message.answer(
-                "Сохраненное расписание пока отсутствует. Подожди первую автоматическую синхронизацию.",
-                reply_markup=MAIN_KEYBOARD,
-            )
-            return
-        day = get_day_by_offset_from_content(snapshot_row["content"], offset)
-        text = ScheduleFormatter.format_day_card(day, label) if day else empty_day_text(label)
-        await message.answer(text, reply_markup=MAIN_KEYBOARD)
+    async def replace_context_message(
+        bot: Bot,
+        chat_id: int,
+        context: str,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
+        message_ids = context_messages[chat_id].get(context, [])
+        if message_ids:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_ids[0],
+                    text=text,
+                    reply_markup=reply_markup,
+                )
+                for extra_id in message_ids[1:]:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=extra_id)
+                    except TelegramBadRequest:
+                        pass
+                context_messages[chat_id][context] = [message_ids[0]]
+                return
+            except TelegramBadRequest:
+                pass
+        await clear_context_messages(bot, chat_id, context)
+        sent = await bot.send_message(chat_id, text, reply_markup=reply_markup)
+        context_messages[chat_id][context] = [sent.message_id]
 
-    async def send_homework_subject_picker(message: Message, mode: str) -> None:
+    async def clear_context_messages(bot: Bot, chat_id: int, context: str) -> None:
+        for message_id in context_messages[chat_id].get(context, []):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except TelegramBadRequest:
+                pass
+        context_messages[chat_id][context] = []
+
+    async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
+        await replace_context_message(
+            bot,
+            chat_id,
+            "schedule",
+            "Выбери нужный вариант расписания.",
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
+
+    async def send_homework_subject_picker(bot: Bot, chat_id: int, mode: str) -> None:
         text = (
-            "<b>Выбери предмет</b>\n\n"
-            "После выбора я покажу домашние задания."
+            "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания."
             if mode == "homework"
             else "<b>Выбери предмет для нового домашнего задания</b>"
         )
-        await message.answer(text, reply_markup=build_homework_subjects_keyboard(mode))
+        await replace_context_message(
+            bot,
+            chat_id,
+            "homework" if mode == "homework" else "dz",
+            text,
+            reply_markup=build_homework_subjects_keyboard(mode),
+        )
 
     async def send_homework_entries(bot: Bot, chat_id: int, subject_key: str) -> None:
         subject = get_subject(subject_key)
         if subject is None:
-            await bot.send_message(chat_id, "Предмет не найден.", reply_markup=MAIN_KEYBOARD)
+            await replace_context_message(bot, chat_id, "homework", "Предмет не найден.", reply_markup=START_KEYBOARD)
             return
+
+        await clear_context_messages(bot, chat_id, "homework")
         entries = await db.get_homework_for_subject(subject_key)
         if not entries:
-            await bot.send_message(
+            sent = await bot.send_message(
                 chat_id,
                 f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
                 reply_markup=build_homework_subjects_keyboard("homework"),
             )
+            context_messages[chat_id]["homework"] = [sent.message_id]
             return
 
-        await bot.send_message(
+        sent_ids: list[int] = []
+        header = await bot.send_message(
             chat_id,
             f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
             reply_markup=build_homework_subjects_keyboard("homework"),
         )
-        for entry in entries:
-            await bot.send_message(chat_id, format_homework_message(entry))
-            for attachment in entry["attachments"]:
-                await send_attachment(bot, chat_id, attachment)
+        sent_ids.append(header.message_id)
 
-    async def send_attachment(bot: Bot, chat_id: int, attachment: dict) -> None:
-        caption = attachment.get("file_name") or "Вложение"
+        for entry in entries:
+            entry_message_ids = await send_homework_entry_with_attachments(bot, chat_id, entry)
+            sent_ids.extend(entry_message_ids)
+
+        context_messages[chat_id]["homework"] = sent_ids
+
+    async def send_homework_entry_with_attachments(bot: Bot, chat_id: int, entry: dict) -> list[int]:
+        message_text = format_homework_message(entry)
+        attachments = entry["attachments"]
+        sent_ids: list[int] = []
+        if not attachments:
+            sent = await bot.send_message(chat_id, message_text)
+            sent_ids.append(sent.message_id)
+            return sent_ids
+
+        first, *rest = attachments
+        first_sent = await send_attachment(bot, chat_id, first, caption=message_text)
+        if first_sent is not None:
+            sent_ids.append(first_sent.message_id)
+        for attachment in rest:
+            extra_sent = await send_attachment(
+                bot,
+                chat_id,
+                attachment,
+                caption=attachment.get("file_name") or "Вложение",
+            )
+            if extra_sent is not None:
+                sent_ids.append(extra_sent.message_id)
+        return sent_ids
+
+    async def send_attachment(bot: Bot, chat_id: int, attachment: dict, caption: str | None = None):
         file_type = attachment["file_type"]
         file_id = attachment["file_id"]
         if file_type == "photo":
-            await bot.send_photo(chat_id, photo=file_id, caption=caption)
-        elif file_type == "video":
-            await bot.send_video(chat_id, video=file_id, caption=caption)
-        elif file_type == "audio":
-            await bot.send_audio(chat_id, audio=file_id, caption=caption)
-        else:
-            await bot.send_document(chat_id, document=file_id, caption=caption)
+            return await bot.send_photo(chat_id, photo=file_id, caption=caption)
+        if file_type == "video":
+            return await bot.send_video(chat_id, video=file_id, caption=caption)
+        if file_type == "audio":
+            return await bot.send_audio(chat_id, audio=file_id, caption=caption)
+        return await bot.send_document(chat_id, document=file_id, caption=caption)
 
     async def send_draft_preview(message: Message, draft: HomeworkDraft) -> None:
         author = message.from_user.full_name if message.from_user else "Неизвестный пользователь"
-        await message.answer(
+        await replace_context_message(
+            message.bot,
+            message.chat.id,
+            "dz",
             format_homework_preview(
                 subject_name=draft.subject_name,
                 teacher_name=draft.teacher_name,
@@ -242,57 +316,58 @@ def build_dispatcher(
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
         editor = await user_is_editor(message.from_user.id if message.from_user else None)
-        await message.answer(format_welcome(is_editor=editor), reply_markup=MAIN_KEYBOARD)
+        await replace_context_message(message.bot, message.chat.id, "menu", format_welcome(is_editor=editor), START_KEYBOARD)
 
     @dispatcher.message(Command("rasp"))
     async def handle_rasp_command(message: Message) -> None:
         await register_message_user(message)
-        await message.answer("Выбери нужный вариант расписания.", reply_markup=MAIN_KEYBOARD)
+        await send_schedule_menu(message.bot, message.chat.id)
 
     @dispatcher.message(Command("homework"))
     async def handle_homework_command(message: Message) -> None:
         await register_message_user(message)
-        await send_homework_subject_picker(message, "homework")
+        await send_homework_subject_picker(message.bot, message.chat.id, "homework")
 
     @dispatcher.message(Command("dz"))
     async def handle_dz_command(message: Message) -> None:
         await register_message_user(message)
         if not await user_is_editor(message.from_user.id if message.from_user else None):
-            await message.answer("Команда доступна только редакторам домашнего задания.")
+            await replace_context_message(message.bot, message.chat.id, "dz", "Команда доступна только редакторам домашнего задания.")
             return
-        await send_homework_subject_picker(message, "dz")
+        await send_homework_subject_picker(message.bot, message.chat.id, "dz")
 
     @dispatcher.message(Command("cancel"))
     async def handle_cancel_command(message: Message) -> None:
         await register_message_user(message)
         if message.from_user:
             homework_drafts.pop(message.from_user.id, None)
-        await message.answer("Текущий сценарий добавления ДЗ отменен.", reply_markup=MAIN_KEYBOARD)
+        await clear_context_messages(message.bot, message.chat.id, "dz")
+        await replace_context_message(message.bot, message.chat.id, "menu", format_welcome(is_editor=await user_is_editor(message.from_user.id if message.from_user else None)), START_KEYBOARD)
 
     @dispatcher.message(Command("admin"))
     async def handle_admin_command(message: Message) -> None:
         await register_message_user(message)
         if not user_is_admin(message.from_user.id if message.from_user else None):
-            await message.answer("Команда доступна только администратору.")
+            await replace_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
             return
-        await message.answer(format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
+        await replace_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
 
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        editor = await user_is_editor(callback.from_user.id)
         if callback.message is not None:
-            editor = await user_is_editor(callback.from_user.id)
-            await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=MAIN_KEYBOARD)
+            try:
+                await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=START_KEYBOARD)
+                context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
+            except TelegramBadRequest:
+                await replace_context_message(callback.bot, callback.message.chat.id, "menu", format_welcome(is_editor=editor), START_KEYBOARD)
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "menu:homework")
     async def handle_menu_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
-        if callback.message is not None:
-            await callback.message.edit_text(
-                "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания.",
-                reply_markup=build_homework_subjects_keyboard("homework"),
-            )
+        await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
         await callback.answer()
 
     @dispatcher.callback_query(F.data.startswith("schedule:"))
@@ -301,12 +376,11 @@ def build_dispatcher(
         if callback.message is None:
             await callback.answer()
             return
-
         snapshot_row = await get_saved_snapshot()
         if snapshot_row is None:
             await callback.message.edit_text(
                 "Сохраненное расписание пока отсутствует. Подожди первую автоматическую синхронизацию.",
-                reply_markup=MAIN_KEYBOARD,
+                reply_markup=SCHEDULE_KEYBOARD,
             )
             await callback.answer()
             return
@@ -322,15 +396,15 @@ def build_dispatcher(
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
 
-        await callback.message.edit_text(text, reply_markup=MAIN_KEYBOARD)
+        await callback.message.edit_text(text, reply_markup=SCHEDULE_KEYBOARD)
+        context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
         await callback.answer()
 
     @dispatcher.callback_query(F.data.startswith("homework:view:"))
     async def handle_homework_subject(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
-        subject_key = callback.data.split(":")[-1]
         await callback.answer()
-        await send_homework_entries(callback.bot, callback.from_user.id, subject_key)
+        await send_homework_entries(callback.bot, callback.from_user.id, callback.data.split(":")[-1])
 
     @dispatcher.callback_query(F.data.startswith("dz:subject:"))
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
@@ -338,13 +412,12 @@ def build_dispatcher(
         if not await user_is_editor(callback.from_user.id):
             await callback.answer("Недостаточно прав.", show_alert=True)
             return
-        subject_key = callback.data.split(":")[-1]
-        subject = get_subject(subject_key)
+        subject = get_subject(callback.data.split(":")[-1])
         if subject is None:
             await callback.answer("Предмет не найден.", show_alert=True)
             return
         homework_drafts[callback.from_user.id] = HomeworkDraft(
-            subject_key=subject_key,
+            subject_key=subject["key"],
             subject_name=subject["subject"],
             teacher_name=subject["teacher"],
         )
@@ -355,6 +428,7 @@ def build_dispatcher(
                     inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="dz:cancel")]]
                 ),
             )
+            context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "dz:add_attachments")
@@ -370,6 +444,7 @@ def build_dispatcher(
                 "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nКогда закончишь, нажми «Сохранить».",
                 reply_markup=HOMEWORK_ATTACHMENT_KEYBOARD,
             )
+            context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "dz:save")
@@ -391,20 +466,22 @@ def build_dispatcher(
             attachments=draft.attachments or [],
         )
         homework_drafts.pop(callback.from_user.id, None)
-        if callback.message is not None:
-            await callback.message.edit_text(
-                f"Домашнее задание сохранено.\n\nID записи: <b>{homework_id}</b>",
-                reply_markup=MAIN_KEYBOARD,
-            )
+        await replace_context_message(
+            callback.bot,
+            callback.from_user.id,
+            "dz",
+            f"Домашнее задание сохранено.\n\nID записи: <b>{homework_id}</b>",
+            reply_markup=START_KEYBOARD,
+        )
         await callback.answer("Сохранено")
 
     @dispatcher.callback_query(F.data == "dz:cancel")
     async def handle_cancel_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         homework_drafts.pop(callback.from_user.id, None)
-        if callback.message is not None:
-            editor = await user_is_editor(callback.from_user.id)
-            await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=MAIN_KEYBOARD)
+        editor = await user_is_editor(callback.from_user.id)
+        await replace_context_message(callback.bot, callback.from_user.id, "menu", format_welcome(is_editor=editor), START_KEYBOARD)
+        await clear_context_messages(callback.bot, callback.from_user.id, "dz")
         await callback.answer("Отменено")
 
     @dispatcher.callback_query(F.data.startswith("admin:"))
@@ -420,7 +497,8 @@ def build_dispatcher(
         action = callback.data.split(":", 1)[1]
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
-            await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=MAIN_KEYBOARD)
+            await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=START_KEYBOARD)
+            context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await callback.answer()
             return
         if action == "back":
@@ -485,6 +563,7 @@ def build_dispatcher(
             reply_markup = ADMIN_KEYBOARD
 
         await callback.message.edit_text(text, reply_markup=reply_markup)
+        context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
         await callback.answer()
 
     @dispatcher.callback_query(F.data.startswith("editor:toggle:"))
@@ -551,17 +630,24 @@ def build_dispatcher(
             return
 
         draft.attachments.append(attachment)
-        await message.answer(
+        await replace_context_message(
+            message.bot,
+            message.chat.id,
+            "dz",
             f"Вложение добавлено. Сейчас в черновике <b>{len(draft.attachments)}</b> вложений.",
             reply_markup=HOMEWORK_ATTACHMENT_KEYBOARD,
         )
+
+    @dispatcher.message(F.text == "Домашние задания")
+    async def handle_homework_text_shortcut(message: Message) -> None:
+        await register_message_user(message)
+        await send_homework_subject_picker(message.bot, message.chat.id, "homework")
 
     @dispatcher.message(F.text)
     async def handle_text_message(message: Message) -> None:
         await register_message_user(message)
         if message.from_user is None or message.text is None:
             return
-
         draft = homework_drafts.get(message.from_user.id)
         if draft is not None and draft.awaiting_text:
             draft.text = message.text.strip()
@@ -570,13 +656,12 @@ def build_dispatcher(
             await send_draft_preview(message, draft)
             return
 
-        if message.text == "Домашние задания":
-            await send_homework_subject_picker(message, "homework")
-            return
-
-        await message.answer(
+        await replace_context_message(
+            message.bot,
+            message.chat.id,
+            "menu",
             "Используй /rasp для расписания, /homework для просмотра ДЗ и /dz для добавления домашки, если у тебя есть роль редактора.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=START_KEYBOARD,
         )
 
     return dispatcher
