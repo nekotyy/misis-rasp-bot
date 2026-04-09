@@ -437,6 +437,8 @@ def build_dispatcher(
     ):
         file_type = attachment["file_type"]
         file_id = attachment["file_id"]
+        if file_type == "vk_attachment":
+            return None
         if file_type == "photo":
             return await bot.send_photo(chat_id, photo=file_id, caption=caption, reply_markup=reply_markup)
         if file_type == "video":

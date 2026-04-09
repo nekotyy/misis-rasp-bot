@@ -67,6 +67,7 @@ async def main() -> None:
     await run_vk_polling(vk_bot)
 
     broadcaster.telegram_bot = telegram_bot
+    broadcaster.vk_bot = vk_bot
     jobs = ScheduleJobs(db=db, parser=parser, broadcaster=broadcaster, timezone=settings.app_timezone)
     jobs.start()
     await jobs.sync_current_snapshot()

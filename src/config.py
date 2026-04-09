@@ -20,11 +20,13 @@ class Settings:
     vk_bot_token: str
     vk_disable_ssl_verify: bool
     admin_telegram_id: int | None
+    admin_vk_id: int | None
 
     @classmethod
     def from_env(cls) -> "Settings":
         database_path = Path(os.getenv("DATABASE_PATH", "bot.db")).resolve()
         admin_telegram_id_raw = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
+        admin_vk_id_raw = os.getenv("ADMIN_VK_ID", "").strip()
         return cls(
             schedule_url=os.getenv("SCHEDULE_URL", "http://asu.sf-misis.ru/rasp/600"),
             group_name=os.getenv("GROUP_NAME", "ИСП-25-1"),
@@ -34,4 +36,5 @@ class Settings:
             vk_bot_token=os.getenv("VK_BOT_TOKEN", "").strip(),
             vk_disable_ssl_verify=os.getenv("VK_DISABLE_SSL_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"},
             admin_telegram_id=int(admin_telegram_id_raw) if admin_telegram_id_raw else None,
+            admin_vk_id=int(admin_vk_id_raw) if admin_vk_id_raw else None,
         )
