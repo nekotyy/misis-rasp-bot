@@ -68,11 +68,6 @@ def format_homework_preview(
     created_by_name: str,
     status_label: str = "предпросмотр",
 ) -> str:
-    attachments_text = (
-        f"\n\nВложений: <b>{len(attachments)}</b>"
-        if attachments
-        else "\n\nВложений пока нет."
-    )
     return (
         f"<b>{escape(subject_name)} — {escape(teacher_name)}</b> | "
         f"<tg-spoiler>{escape(status_label)}</tg-spoiler> | "
@@ -81,5 +76,4 @@ def format_homework_preview(
         f"<blockquote>{escape(text)}</blockquote>\n"
         "———\n"
         "<tg-spoiler><b>Будет сохранено после подтверждения</b></tg-spoiler>"
-        f"{attachments_text}"
     )

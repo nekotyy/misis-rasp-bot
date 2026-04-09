@@ -51,6 +51,28 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Статус", callback_data="admin:status"),
+            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
+        ],
+        [
+            InlineKeyboardButton(text="Сохранить эталон", callback_data="admin:baseline"),
+            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
+        ],
+        [
+            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
+            InlineKeyboardButton(text="Редакторы", callback_data="admin:editors"),
+        ],
+        [
+            InlineKeyboardButton(text="Удалить ДЗ", callback_data="admin:homework_delete"),
+            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
+        ],
+        [InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close")],
+    ]
+)
+
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -109,6 +131,26 @@ def build_dispatcher(
             ]
         )
 
+    def build_admin_homework_subjects_keyboard() -> InlineKeyboardMarkup:
+        rows = [
+            [InlineKeyboardButton(text=subject["subject"], callback_data=f"admin:hw_subject:{subject['key']}")]
+            for subject in SUBJECTS
+        ]
+        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def build_admin_homework_entries_keyboard(subject_key: str, entries: list[dict]) -> InlineKeyboardMarkup:
+        rows: list[list[InlineKeyboardButton]] = []
+        for entry in entries:
+            preview = entry["text"].strip().replace("\n", " ")
+            if len(preview) > 24:
+                preview = f"{preview[:24].rstrip()}..."
+            label = f"Удалить #{entry['id']} {preview or 'без текста'}"
+            rows.append([InlineKeyboardButton(text=label, callback_data=f"admin:hw_delete:{entry['id']}:{subject_key}")])
+        rows.append([InlineKeyboardButton(text="Назад к предметам", callback_data="admin:homework_delete")])
+        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     async def register_message_user(message: Message) -> None:
         user = message.from_user
         if user is None:
@@ -162,11 +204,38 @@ def build_dispatcher(
     def format_admin_panel() -> str:
         return (
             "<b>Админ-панель</b>\n\n"
-            "Здесь можно перепарсить сайт, посмотреть пользователей, выдать редактора и проверить состояние бота."
+            "Здесь можно перепарсить сайт, сохранить эталон для сравнения, посмотреть статистику и управлять домашними заданиями."
         )
 
     def empty_day_text(label: str) -> str:
         return f"Расписание на {escape(label)}\n\nПар нет."
+
+    def format_snapshot_info(title: str, snapshot_row: dict | None) -> str:
+        if snapshot_row is None:
+            return f"{title}: <b>еще не было</b>"
+        return (
+            f"{title}: <b>{escape(snapshot_row['created_at'])}</b>\n"
+            f"Сайт отдал данные: <b>{escape(snapshot_row['fetched_at'])}</b>"
+        )
+
+    async def format_admin_status() -> str:
+        users = await db.list_users()
+        homework_count = await db.count_homework_entries()
+        last_change = await db.get_last_change()
+        current_snapshot = await db.get_latest_snapshot("current")
+        baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
+        editor_count = sum(1 for user in users if user.is_editor)
+        last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
+        return (
+            "<b>Статус бота</b>\n\n"
+            f"Группа: <b>{escape(settings.group_name)}</b>\n"
+            f"Пользователей: <b>{len(users)}</b>\n"
+            f"Редакторов: <b>{editor_count}</b>\n"
+            f"Записей ДЗ: <b>{homework_count}</b>\n"
+            f"Последнее изменение: <b>{last_change_at}</b>\n\n"
+            f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
+            f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
+        )
 
     async def replace_context_message(
         bot: Bot,
@@ -382,25 +451,66 @@ def build_dispatcher(
             return await bot.send_audio(chat_id, audio=file_id, caption=caption, reply_markup=reply_markup)
         return await bot.send_document(chat_id, document=file_id, caption=caption, reply_markup=reply_markup)
 
+    async def send_draft_preview_message(
+        bot: Bot,
+        chat_id: int,
+        draft: HomeworkDraft,
+        author: str,
+    ) -> list[int]:
+        preview_text = format_homework_preview(
+            subject_name=draft.subject_name,
+            teacher_name=draft.teacher_name,
+            text=draft.text,
+            attachments=draft.attachments or [],
+            created_by_name=author,
+        )
+        preview_keyboard = build_homework_preview_keyboard()
+        attachments = draft.attachments or []
+        if not attachments:
+            sent = await bot.send_message(chat_id, preview_text, reply_markup=preview_keyboard)
+            return [sent.message_id]
+
+        sent_ids: list[int] = []
+        first_attachment = {
+            "file_id": attachments[0].file_id,
+            "file_type": attachments[0].file_type,
+            "file_name": attachments[0].file_name,
+            "mime_type": attachments[0].mime_type,
+        }
+        first_sent = await send_attachment(
+            bot,
+            chat_id,
+            first_attachment,
+            caption=preview_text,
+            reply_markup=preview_keyboard,
+        )
+        if first_sent is not None:
+            sent_ids.append(first_sent.message_id)
+
+        for attachment in attachments[1:]:
+            extra_sent = await send_attachment(
+                bot,
+                chat_id,
+                {
+                    "file_id": attachment.file_id,
+                    "file_type": attachment.file_type,
+                    "file_name": attachment.file_name,
+                    "mime_type": attachment.mime_type,
+                },
+            )
+            if extra_sent is not None:
+                sent_ids.append(extra_sent.message_id)
+
+        return sent_ids
+
     async def send_draft_preview(
         bot: Bot,
         chat_id: int,
         author: str,
         draft: HomeworkDraft,
     ) -> None:
-        await replace_context_message(
-            bot,
-            chat_id,
-            "dz",
-            format_homework_preview(
-                subject_name=draft.subject_name,
-                teacher_name=draft.teacher_name,
-                text=draft.text,
-                attachments=draft.attachments or [],
-                created_by_name=author,
-            ),
-            reply_markup=build_homework_preview_keyboard(),
-        )
+        await clear_context_messages(bot, chat_id, "dz")
+        context_messages[chat_id]["dz"] = await send_draft_preview_message(bot, chat_id, draft, author)
 
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
@@ -535,11 +645,14 @@ def build_dispatcher(
             return
         draft.awaiting_attachments = True
         if callback.message is not None:
-            await callback.message.edit_text(
+            await clear_context_messages(callback.bot, callback.message.chat.id, "dz")
+            await replace_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "dz",
                 "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nПосле каждого файла я обновлю предпросмотр. Когда закончишь, нажми «Опубликовать».",
                 reply_markup=build_homework_attachment_keyboard(),
             )
-            context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "dz:save")
@@ -611,6 +724,69 @@ def build_dispatcher(
             return
 
         action = callback.data.split(":", 1)[1]
+        if action == "status":
+            text = await format_admin_status()
+            await callback.message.edit_text(text, reply_markup=ADMIN_KEYBOARD)
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await callback.answer()
+            return
+        if action == "baseline":
+            snapshot, snapshot_hash = await parser.parse()
+            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot)
+            day = get_day_by_offset(snapshot, 0)
+            preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
+            await callback.message.edit_text(
+                "<b>Эталон для сравнения сохранен</b>\n\n" + preview,
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await callback.answer("Эталон сохранен")
+            return
+        if action == "homework_delete":
+            await callback.message.edit_text(
+                "<b>Удаление домашнего задания</b>\n\nВыбери предмет, чтобы увидеть последние записи.",
+                reply_markup=build_admin_homework_subjects_keyboard(),
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await callback.answer()
+            return
+        if action.startswith("hw_subject:"):
+            subject_key = action.split(":", 1)[1]
+            subject = get_subject(subject_key)
+            entries = await db.get_homework_for_subject(subject_key)
+            if subject is None:
+                text = "Предмет не найден."
+                reply_markup = build_admin_homework_subjects_keyboard()
+            elif not entries:
+                text = f"<b>{escape(subject['subject'])}</b>\n\nДля этого предмета пока нет записей."
+                reply_markup = build_admin_homework_subjects_keyboard()
+            else:
+                text = f"<b>{escape(subject['subject'])}</b>\n\nВыбери запись, которую нужно удалить."
+                reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
+            await callback.message.edit_text(text, reply_markup=reply_markup)
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await callback.answer()
+            return
+        if action.startswith("hw_delete:"):
+            _, homework_id_text, subject_key = action.split(":", 2)
+            deleted = await db.delete_homework(int(homework_id_text))
+            subject = get_subject(subject_key)
+            entries = await db.get_homework_for_subject(subject_key)
+            subject_name = escape(subject["subject"]) if subject else "Предмет"
+            if not entries:
+                text = (
+                    f"<b>{subject_name}</b>\n\n"
+                    + ("Запись удалена." if deleted else "Запись не найдена.")
+                )
+                reply_markup = build_admin_homework_subjects_keyboard()
+            else:
+                prefix = "Запись удалена.\n\n" if deleted else "Запись не найдена.\n\n"
+                text = f"<b>{subject_name}</b>\n\n{prefix}Выбери следующую запись для удаления."
+                reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
+            await callback.message.edit_text(text, reply_markup=reply_markup)
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await callback.answer("Удалено" if deleted else "Не найдено")
+            return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
             await callback.message.edit_text(format_welcome(is_editor=editor))
@@ -746,7 +922,7 @@ def build_dispatcher(
             return
 
         draft.attachments.append(attachment)
-        draft.awaiting_attachments = False
+        draft.awaiting_attachments = True
         await try_delete_message(message)
         author = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
         await send_draft_preview(message.bot, message.chat.id, author, draft)

@@ -253,6 +253,12 @@ class Database:
             "created_at": row[3],
         }
 
+    async def count_homework_entries(self) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM homework_entries")
+            row = await cursor.fetchone()
+        return int(row[0] if row else 0)
+
     async def create_homework(
         self,
         subject_key: str,
@@ -335,6 +341,13 @@ class Database:
                 }
             )
         return entries
+
+    async def delete_homework(self, homework_id: int) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM homework_attachments WHERE homework_id = ?", (homework_id,))
+            cursor = await db.execute("DELETE FROM homework_entries WHERE id = ?", (homework_id,))
+            await db.commit()
+        return cursor.rowcount > 0
 
     async def get_homework_attachments(self, homework_id: int) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:
