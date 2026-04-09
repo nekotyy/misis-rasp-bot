@@ -34,6 +34,7 @@ class UserRecord:
     full_name: str | None
     is_admin: bool
     is_editor: bool
+    homework_notifications_enabled: bool
     created_at: str
     last_seen_at: str
 

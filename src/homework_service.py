@@ -77,3 +77,14 @@ def format_homework_preview(
         "———\n"
         "<tg-spoiler><b>Будет сохранено после подтверждения</b></tg-spoiler>"
     )
+
+
+def format_homework_notification(entry: dict) -> str:
+    text = " ".join(entry["text"].split())
+    preview = text if len(text) <= 120 else f"{text[:117].rstrip()}..."
+    return (
+        f"Новое ДЗ: {entry['subject']}\n"
+        f"Преподаватель: {entry['teacher']}\n"
+        f"Добавил: {entry['created_by_name']}\n\n"
+        f"{preview}"
+    )

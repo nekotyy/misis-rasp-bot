@@ -13,8 +13,9 @@ from vkbottle.tools.uploader.photo import PhotoMessageUploader
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
-from src.homework_service import SUBJECTS, get_subject
+from src.homework_service import SUBJECTS, format_homework_notification, get_subject
 from src.models import HomeworkAttachment, HomeworkDraft
+from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import get_day_by_offset, get_day_by_offset_from_content
 
@@ -25,6 +26,7 @@ def build_vk_bot(
     settings: Settings,
     db: Database,
     parser: ScheduleParser,
+    broadcaster: Broadcaster | None = None,
     attachment_storage: AttachmentStorage | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
@@ -166,7 +168,7 @@ def build_vk_bot(
         return ",".join(uploaded) if uploaded else None
 
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
-        rows = [["Расписание"], ["Домашние задания"]]
+        rows = [["Расписание"], ["Домашние задания"], ["Настройки"]]
         if is_editor:
             rows.append(["Добавить ДЗ"])
         if is_admin:
@@ -192,6 +194,23 @@ def build_vk_bot(
     def draft_attachment_keyboard() -> str:
         return make_keyboard([["Опубликовать"], ["Отменить"]])
 
+    def settings_keyboard(linked: bool, notifications_enabled: bool, awaiting_code: bool = False) -> str:
+        rows = [
+            [
+                "Выключить уведомления о ДЗ"
+                if notifications_enabled
+                else "Включить уведомления о ДЗ"
+            ]
+        ]
+        if linked:
+            rows.append(["Отвязать Telegram"])
+        else:
+            rows.append(["У меня есть код привязки"])
+        if awaiting_code:
+            rows.append(["Отменить ввод кода"])
+        rows.append(["Назад в меню"])
+        return make_keyboard(rows)
+
     def admin_keyboard() -> str:
         return make_keyboard(
             [
@@ -213,6 +232,24 @@ def build_vk_bot(
             lines.append("Кнопка «Добавить ДЗ» доступна тебе как редактору.")
         if is_admin:
             lines.append("Кнопка «Админка» доступна тебе как администратору.")
+        return "\n".join(lines)
+
+    async def settings_text(user_id: int, extra: str | None = None) -> str:
+        user = await db.get_user("vk", user_id)
+        linked = await db.get_linked_account("vk", user_id)
+        notifications = "включены" if (user.homework_notifications_enabled if user else True) else "выключены"
+        lines = [
+            "Настройки",
+            "",
+            f"Уведомления о новом ДЗ: {notifications}",
+        ]
+        if linked:
+            lines.append(f"Telegram привязан: {linked['linked_user_id']}")
+        else:
+            lines.append("Telegram пока не привязан.")
+            lines.append("Открой Telegram-бота, создай код привязки и отправь его сюда.")
+        if extra:
+            lines.extend(["", extra])
         return "\n".join(lines)
 
     def schedule_text(day, fallback: str) -> str:
@@ -285,6 +322,20 @@ def build_vk_bot(
             peer_id,
             welcome_text(is_editor, is_admin),
             keyboard=menu_keyboard(is_editor, is_admin),
+        )
+
+    async def show_settings(peer_id: int, user_id: int, extra: str | None = None, awaiting_code: bool = False) -> None:
+        user = await db.get_user("vk", user_id)
+        linked = await db.get_linked_account("vk", user_id)
+        peer_modes[peer_id] = "settings_link_wait" if awaiting_code else "settings"
+        await show_screen(
+            peer_id,
+            await settings_text(user_id, extra=extra),
+            keyboard=settings_keyboard(
+                linked=linked is not None,
+                notifications_enabled=user.homework_notifications_enabled if user else True,
+                awaiting_code=awaiting_code,
+            ),
         )
 
     async def show_homework_subjects(peer_id: int, page: int = 0) -> None:
@@ -376,6 +427,8 @@ def build_vk_bot(
             keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)),
             attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
         )
+        if broadcaster is not None:
+            await broadcaster.broadcast_homework_update(format_homework_notification(entry))
 
     def subject_by_title(title: str) -> dict[str, str] | None:
         normalized = title.strip().casefold()
@@ -437,6 +490,39 @@ def build_vk_bot(
         if text in {"Назад в меню", "Закрыть админку"}:
             homework_drafts.pop(user_id, None)
             await show_main_menu(peer_id, user_id)
+            return
+
+        if text == "Настройки":
+            await show_settings(peer_id, user_id)
+            return
+
+        if text == "Выключить уведомления о ДЗ":
+            await db.set_homework_notifications("vk", user_id, False)
+            await show_settings(peer_id, user_id, extra="Уведомления о ДЗ выключены.")
+            return
+
+        if text == "Включить уведомления о ДЗ":
+            await db.set_homework_notifications("vk", user_id, True)
+            await show_settings(peer_id, user_id, extra="Уведомления о ДЗ включены.")
+            return
+
+        if text == "У меня есть код привязки":
+            await show_settings(peer_id, user_id, extra="Отправь сюда код из Telegram одним сообщением.", awaiting_code=True)
+            return
+
+        if text == "Отменить ввод кода":
+            await show_settings(peer_id, user_id)
+            return
+
+        if text == "Отвязать Telegram":
+            deleted = await db.unlink_account("vk", user_id)
+            await show_settings(peer_id, user_id, extra="Привязка удалена." if deleted else "Привязки не было.")
+            return
+
+        token_candidate = text.strip().upper()
+        if mode == "settings_link_wait" and len(token_candidate) == 6 and token_candidate.isalnum():
+            success, response = await db.consume_link_token(token_candidate, "vk", user_id)
+            await show_settings(peer_id, user_id, extra=response)
             return
 
         if text in {"/rasp", "Расписание"}:

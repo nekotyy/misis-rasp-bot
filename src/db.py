@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,7 @@ class Database:
                     full_name TEXT,
                     is_admin INTEGER NOT NULL DEFAULT 0,
                     is_editor INTEGER NOT NULL DEFAULT 0,
+                    homework_notifications_enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     PRIMARY KEY (platform, user_id)
@@ -73,9 +75,26 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(homework_id) REFERENCES homework_entries(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS linked_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER UNIQUE,
+                    vk_user_id INTEGER UNIQUE,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS link_tokens (
+                    token TEXT PRIMARY KEY,
+                    source_platform TEXT NOT NULL,
+                    source_user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT
+                );
                 """
             )
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "homework_attachments", "storage_path", "TEXT")
             await self._ensure_column(db, "homework_attachments", "source_platform", "TEXT")
             await db.commit()
@@ -100,8 +119,10 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO users (platform, user_id, username, full_name, is_admin, is_editor, created_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO users (
+                    platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name,
@@ -109,13 +130,13 @@ class Database:
                     is_editor = COALESCE(users.is_editor, excluded.is_editor),
                     last_seen_at = excluded.last_seen_at
                 """,
-                (platform, user_id, username, full_name, int(is_admin), int(is_editor), now, now),
+                (platform, user_id, username, full_name, int(is_admin), int(is_editor), 1, now, now),
             )
             await db.commit()
 
     async def list_users(self, platform: str | None = None) -> list[UserRecord]:
         query = """
-            SELECT platform, user_id, username, full_name, is_admin, is_editor, created_at, last_seen_at
+            SELECT platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
             FROM users
         """
         params: tuple = ()
@@ -136,8 +157,9 @@ class Database:
                 full_name=row[3],
                 is_admin=bool(row[4]),
                 is_editor=bool(row[5]),
-                created_at=row[6],
-                last_seen_at=row[7],
+                homework_notifications_enabled=bool(row[6]),
+                created_at=row[7],
+                last_seen_at=row[8],
             )
             for row in rows
         ]
@@ -149,7 +171,7 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT platform, user_id, username, full_name, is_admin, is_editor, created_at, last_seen_at
+                SELECT platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
                 FROM users
                 WHERE platform = ? AND user_id = ?
                 LIMIT 1
@@ -166,8 +188,9 @@ class Database:
             full_name=row[3],
             is_admin=bool(row[4]),
             is_editor=bool(row[5]),
-            created_at=row[6],
-            last_seen_at=row[7],
+            homework_notifications_enabled=bool(row[6]),
+            created_at=row[7],
+            last_seen_at=row[8],
         )
 
     async def set_editor(self, platform: str, user_id: int, is_editor: bool) -> None:
@@ -181,6 +204,22 @@ class Database:
                 (int(is_editor), platform, user_id),
             )
             await db.commit()
+
+    async def set_homework_notifications(self, platform: str, user_id: int, enabled: bool) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET homework_notifications_enabled = ?
+                WHERE platform = ? AND user_id = ?
+                """,
+                (int(enabled), platform, user_id),
+            )
+            await db.commit()
+
+    async def get_users_for_homework_notifications(self, platform: str) -> list[UserRecord]:
+        users = await self.get_users_for_platform(platform)
+        return [user for user in users if user.homework_notifications_enabled]
 
     async def save_snapshot(self, snapshot_type: str, snapshot_hash: str, snapshot: ScheduleSnapshot) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
@@ -356,6 +395,122 @@ class Database:
             cursor = await db.execute("DELETE FROM homework_entries WHERE id = ?", (homework_id,))
             await db.commit()
         return cursor.rowcount > 0
+
+    async def create_link_token(self, source_platform: str, source_user_id: int, ttl_minutes: int = 10) -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        now = datetime.now()
+        expires_at = datetime.fromtimestamp(now.timestamp() + ttl_minutes * 60)
+        token = "".join(secrets.choice(alphabet) for _ in range(6))
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                DELETE FROM link_tokens
+                WHERE source_platform = ? AND source_user_id = ? AND used_at IS NULL
+                """,
+                (source_platform, source_user_id),
+            )
+            await db.execute(
+                """
+                INSERT INTO link_tokens (token, source_platform, source_user_id, created_at, expires_at, used_at)
+                VALUES (?, ?, ?, ?, ?, NULL)
+                """,
+                (token, source_platform, source_user_id, now.isoformat(timespec="seconds"), expires_at.isoformat(timespec="seconds")),
+            )
+            await db.commit()
+        return token
+
+    async def get_linked_account(self, platform: str, user_id: int) -> dict | None:
+        if platform not in {"telegram", "vk"}:
+            return None
+        select_field = "vk_user_id" if platform == "telegram" else "telegram_user_id"
+        where_field = "telegram_user_id" if platform == "telegram" else "vk_user_id"
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                f"""
+                SELECT telegram_user_id, vk_user_id, created_at
+                FROM linked_accounts
+                WHERE {where_field} = ?
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "telegram_user_id": row[0],
+            "vk_user_id": row[1],
+            "linked_user_id": row[1] if platform == "telegram" else row[0],
+            "created_at": row[2],
+            "linked_platform": "vk" if platform == "telegram" else "telegram",
+            "selected_field": select_field,
+        }
+
+    async def unlink_account(self, platform: str, user_id: int) -> bool:
+        where_field = "telegram_user_id" if platform == "telegram" else "vk_user_id"
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(f"DELETE FROM linked_accounts WHERE {where_field} = ?", (user_id,))
+            await db.commit()
+        return cursor.rowcount > 0
+
+    async def consume_link_token(self, token: str, target_platform: str, target_user_id: int) -> tuple[bool, str]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT token, source_platform, source_user_id, expires_at, used_at
+                FROM link_tokens
+                WHERE token = ?
+                LIMIT 1
+                """,
+                (token,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False, "Код привязки не найден."
+            if row[4] is not None:
+                return False, "Этот код уже использован."
+            if datetime.fromisoformat(row[3]) < datetime.now():
+                return False, "Срок действия кода истек."
+            source_platform = row[1]
+            source_user_id = row[2]
+            if source_platform == target_platform:
+                return False, "Этот код создан для другой платформы."
+
+            source_where = "telegram_user_id" if source_platform == "telegram" else "vk_user_id"
+            target_where = "telegram_user_id" if target_platform == "telegram" else "vk_user_id"
+            source_existing = await db.execute(
+                f"SELECT id FROM linked_accounts WHERE {source_where} = ? LIMIT 1",
+                (source_user_id,),
+            )
+            if await source_existing.fetchone():
+                return False, "Исходный аккаунт уже привязан."
+            target_existing = await db.execute(
+                f"SELECT id FROM linked_accounts WHERE {target_where} = ? LIMIT 1",
+                (target_user_id,),
+            )
+            if await target_existing.fetchone():
+                return False, "Этот аккаунт уже привязан."
+
+            telegram_user_id = source_user_id if source_platform == "telegram" else target_user_id
+            vk_user_id = source_user_id if source_platform == "vk" else target_user_id
+            now = datetime.now().isoformat(timespec="seconds")
+            await db.execute(
+                """
+                INSERT INTO linked_accounts (telegram_user_id, vk_user_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (telegram_user_id, vk_user_id, now),
+            )
+            await db.execute(
+                """
+                UPDATE link_tokens
+                SET used_at = ?
+                WHERE token = ?
+                """,
+                (now, token),
+            )
+            await db.commit()
+        return True, "Аккаунты успешно привязаны."
 
     async def get_homework_attachments(self, homework_id: int) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:

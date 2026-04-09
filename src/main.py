@@ -66,7 +66,7 @@ async def main() -> None:
     attachment_storage = AttachmentStorage(settings.attachments_path)
     broadcaster = Broadcaster(db=db, telegram_bot=None)
     telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage)
-    vk_bot = build_vk_bot(settings, db, parser, attachment_storage)
+    vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage)
     await run_vk_polling(vk_bot)
 
     broadcaster.telegram_bot = telegram_bot

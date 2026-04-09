@@ -24,20 +24,32 @@ class Broadcaster:
     async def broadcast_test_message(self) -> None:
         await self.broadcast("Тестовое уведомление: бот активен и рассылка работает.")
 
-    async def _broadcast_telegram(self, message: str) -> None:
+    async def broadcast_homework_update(self, message: str) -> None:
+        await self._broadcast_telegram(message, homework_only=True)
+        await self._broadcast_vk(message, homework_only=True)
+
+    async def _broadcast_telegram(self, message: str, homework_only: bool = False) -> None:
         if self.telegram_bot is None:
             return
-        users = await self.db.get_users_for_platform("telegram")
+        users = (
+            await self.db.get_users_for_homework_notifications("telegram")
+            if homework_only
+            else await self.db.get_users_for_platform("telegram")
+        )
         for user in users:
             try:
                 await self.telegram_bot.send_message(chat_id=user.user_id, text=message)
             except (TelegramForbiddenError, TelegramBadRequest) as exc:
                 logger.warning("Telegram broadcast failed for %s: %s", user.user_id, exc)
 
-    async def _broadcast_vk(self, message: str) -> None:
+    async def _broadcast_vk(self, message: str, homework_only: bool = False) -> None:
         if self.vk_bot is None:
             return
-        users = await self.db.get_users_for_platform("vk")
+        users = (
+            await self.db.get_users_for_homework_notifications("vk")
+            if homework_only
+            else await self.db.get_users_for_platform("vk")
+        )
         for user in users:
             try:
                 await self.vk_bot.api.messages.send(peer_ids=[user.user_id], message=message, random_id=0)
