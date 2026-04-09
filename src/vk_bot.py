@@ -167,11 +167,17 @@ def build_vk_bot(
             ]
         )
 
-    def welcome_text() -> str:
-        return (
-            f"Бот группы {settings.group_name}\n\n"
-            "Ниже есть кнопки для расписания, домашних заданий и админки."
-        )
+    def welcome_text(is_editor: bool, is_admin: bool) -> str:
+        lines = [
+            f"Бот группы {settings.group_name}",
+            "",
+            "Используй кнопки ниже для расписания и домашних заданий.",
+        ]
+        if is_editor:
+            lines.append("Кнопка «Добавить ДЗ» доступна тебе как редактору.")
+        if is_admin:
+            lines.append("Кнопка «Админка» доступна тебе как администратору.")
+        return "\n".join(lines)
 
     def schedule_text(day, fallback: str) -> str:
         if day is None or not day.lessons:
@@ -237,10 +243,12 @@ def build_vk_bot(
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
+        is_editor = await user_is_editor(user_id)
+        is_admin = user_is_admin(user_id)
         await show_screen(
             peer_id,
-            welcome_text(),
-            keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)),
+            welcome_text(is_editor, is_admin),
+            keyboard=menu_keyboard(is_editor, is_admin),
         )
 
     async def show_homework_subjects(peer_id: int, page: int = 0) -> None:
