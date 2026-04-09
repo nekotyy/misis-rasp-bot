@@ -387,19 +387,13 @@ def build_dispatcher(
                 pass
         await clear_context_messages(bot, chat_id, "homework")
 
-        sent_ids: list[int] = []
-        first_entry = True
-        for entry in entries:
-            entry_message_ids = await send_homework_entry_with_attachments(
-                bot,
-                chat_id,
-                entry,
-                include_back_button=first_entry,
-            )
-            sent_ids.extend(entry_message_ids)
-            first_entry = False
-
-        context_messages[chat_id]["homework"] = sent_ids
+        latest_entry = entries[0]
+        context_messages[chat_id]["homework"] = await send_homework_entry_with_attachments(
+            bot,
+            chat_id,
+            latest_entry,
+            include_back_button=True,
+        )
 
     async def send_homework_entry_with_attachments(
         bot: Bot,
