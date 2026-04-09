@@ -36,6 +36,8 @@ HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
 
 START_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
+        [InlineKeyboardButton(text="Расписание", callback_data="start:rasp")],
+        [InlineKeyboardButton(text="Homework", callback_data="start:homework")],
         [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
     ]
 )
@@ -667,6 +669,18 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:homework")
     async def handle_menu_homework(callback: CallbackQuery) -> None:
+        await register_callback_user(callback)
+        await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
+        await callback.answer()
+
+    @dispatcher.callback_query(F.data == "start:rasp")
+    async def handle_start_rasp(callback: CallbackQuery) -> None:
+        await register_callback_user(callback)
+        await send_schedule_menu(callback.bot, callback.from_user.id)
+        await callback.answer()
+
+    @dispatcher.callback_query(F.data == "start:homework")
+    async def handle_start_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
         await callback.answer()
