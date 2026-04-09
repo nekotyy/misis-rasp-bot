@@ -90,12 +90,22 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
         except Exception:
             pass
 
-    async def clear_screen(peer_id: int) -> None:
-        await delete_cmids(peer_id, screen_messages[peer_id])
-        screen_messages[peer_id] = []
-
     async def show_screen(peer_id: int, text: str, keyboard: str | None = None, attachment: str | None = None) -> None:
-        await clear_screen(peer_id)
+        current = screen_messages[peer_id]
+        if current:
+            try:
+                await bot.api.messages.edit(
+                    peer_id=peer_id,
+                    cmid=current[0],
+                    message=text,
+                    keyboard=keyboard,
+                    attachment=attachment,
+                )
+                return
+            except Exception:
+                await delete_cmids(peer_id, current)
+                screen_messages[peer_id] = []
+
         response = await bot.api.messages.send(
             peer_ids=[peer_id],
             message=text,
@@ -149,7 +159,10 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
         )
 
     def welcome_text() -> str:
-        return f"Привет! Я бот группы {settings.group_name}\n\nПользуйся кнопками ниже."
+        return (
+            f"Бот группы {settings.group_name}\n\n"
+            "Ниже есть кнопки для расписания, домашних заданий и админки."
+        )
 
     def schedule_text(day, fallback: str) -> str:
         if day is None or not day.lessons:
@@ -167,10 +180,11 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             lines.extend([success_title, ""])
         lines.extend(
             [
-                f"{entry['subject']} - {entry['teacher']} | #{entry['id']} | {entry['created_by_name']}",
-                "-------",
+                f"{entry['subject']} - {entry['teacher']}",
+                f"#{entry['id']} | {entry['created_by_name']}",
+                "-------------",
                 entry["text"],
-                "-------",
+                "-------------",
                 created_at.strftime("%d.%m.%Y %H:%M"),
             ]
         )
@@ -179,10 +193,11 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
     def preview_text(draft: HomeworkDraft, author: str) -> str:
         return "\n".join(
             [
-                f"{draft.subject_name} - {draft.teacher_name} | предпросмотр | {author}",
-                "-------",
+                f"{draft.subject_name} - {draft.teacher_name}",
+                f"предпросмотр | {author}",
+                "-------------",
                 draft.text,
-                "-------",
+                "-------------",
                 "Будет сохранено после подтверждения",
             ]
         )
