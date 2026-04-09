@@ -1,0 +1,1 @@
+"""MISIS schedule bot package."""
