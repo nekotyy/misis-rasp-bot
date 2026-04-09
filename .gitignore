@@ -16,9 +16,15 @@ env/
 
 # Databases
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 storage/attachments/
+storage/tmp/
+uploads/
 
 # Logs and temporary files
 *.log
