@@ -66,6 +66,7 @@ def format_homework_preview(
     text: str,
     attachments: list[HomeworkAttachment],
     created_by_name: str,
+    status_label: str = "предпросмотр",
 ) -> str:
     attachments_text = (
         f"\n\nВложений: <b>{len(attachments)}</b>"
@@ -74,7 +75,7 @@ def format_homework_preview(
     )
     return (
         f"<b>{escape(subject_name)} — {escape(teacher_name)}</b> | "
-        "<tg-spoiler>предпросмотр</tg-spoiler> | "
+        f"<tg-spoiler>{escape(status_label)}</tg-spoiler> | "
         f"<tg-spoiler>{escape(created_by_name)}</tg-spoiler>\n"
         "———\n"
         f"<blockquote>{escape(text)}</blockquote>\n"

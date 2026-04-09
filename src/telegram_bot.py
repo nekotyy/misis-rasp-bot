@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from html import escape
 
 from aiogram import Bot, Dispatcher, F
@@ -50,22 +51,6 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-HOMEWORK_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="Добавить вложения", callback_data="dz:add_attachments")],
-        [InlineKeyboardButton(text="Сохранить", callback_data="dz:save")],
-        [InlineKeyboardButton(text="Отмена", callback_data="dz:cancel")],
-    ]
-)
-
-HOMEWORK_ATTACHMENT_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="Сохранить", callback_data="dz:save")],
-        [InlineKeyboardButton(text="Отмена", callback_data="dz:cancel")],
-    ]
-)
-
-
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -106,6 +91,23 @@ def build_dispatcher(
             )
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def build_homework_preview_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Добавить вложения", callback_data="dz:add_attachments")],
+                [InlineKeyboardButton(text="Опубликовать", callback_data="dz:save")],
+                [InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")],
+            ]
+        )
+
+    def build_homework_attachment_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Опубликовать", callback_data="dz:save")],
+                [InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")],
+            ]
+        )
 
     async def register_message_user(message: Message) -> None:
         user = message.from_user
@@ -202,6 +204,14 @@ def build_dispatcher(
             except TelegramBadRequest:
                 pass
         context_messages[chat_id][context] = []
+
+    async def try_delete_message(message: Message | None) -> None:
+        if message is None:
+            return
+        try:
+            await message.delete()
+        except TelegramBadRequest:
+            pass
 
     async def clear_context_messages_except(bot: Bot, chat_id: int, context: str, keep_message_id: int) -> None:
         kept_ids: list[int] = []
@@ -327,11 +337,14 @@ def build_dispatcher(
         chat_id: int,
         entry: dict,
         include_back_button: bool = False,
+        title: str | None = None,
     ) -> list[int]:
         message_text = format_homework_message(entry)
         attachments = entry["attachments"]
         sent_ids: list[int] = []
         reply_markup = HOMEWORK_BACK_KEYBOARD if include_back_button else None
+        if title:
+            message_text = f"{title}\n\n{message_text}"
         if not attachments:
             sent = await bot.send_message(chat_id, message_text, reply_markup=reply_markup)
             sent_ids.append(sent.message_id)
@@ -369,11 +382,15 @@ def build_dispatcher(
             return await bot.send_audio(chat_id, audio=file_id, caption=caption, reply_markup=reply_markup)
         return await bot.send_document(chat_id, document=file_id, caption=caption, reply_markup=reply_markup)
 
-    async def send_draft_preview(message: Message, draft: HomeworkDraft) -> None:
-        author = message.from_user.full_name if message.from_user else "Неизвестный пользователь"
+    async def send_draft_preview(
+        bot: Bot,
+        chat_id: int,
+        author: str,
+        draft: HomeworkDraft,
+    ) -> None:
         await replace_context_message(
-            message.bot,
-            message.chat.id,
+            bot,
+            chat_id,
             "dz",
             format_homework_preview(
                 subject_name=draft.subject_name,
@@ -382,7 +399,7 @@ def build_dispatcher(
                 attachments=draft.attachments or [],
                 created_by_name=author,
             ),
-            reply_markup=HOMEWORK_PREVIEW_KEYBOARD,
+            reply_markup=build_homework_preview_keyboard(),
         )
 
     @dispatcher.message(CommandStart())
@@ -503,7 +520,7 @@ def build_dispatcher(
             await callback.message.edit_text(
                 f"Выбран предмет <b>{escape(subject['subject'])}</b>.\n\nТеперь отправь текст домашнего задания одним сообщением.",
                 reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="dz:cancel")]]
+                    inline_keyboard=[[InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")]]
                 ),
             )
             context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
@@ -519,8 +536,8 @@ def build_dispatcher(
         draft.awaiting_attachments = True
         if callback.message is not None:
             await callback.message.edit_text(
-                "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nКогда закончишь, нажми «Сохранить».",
-                reply_markup=HOMEWORK_ATTACHMENT_KEYBOARD,
+                "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nПосле каждого файла я обновлю предпросмотр. Когда закончишь, нажми «Опубликовать».",
+                reply_markup=build_homework_attachment_keyboard(),
             )
             context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
         await callback.answer()
@@ -544,13 +561,35 @@ def build_dispatcher(
             attachments=draft.attachments or [],
         )
         homework_drafts.pop(callback.from_user.id, None)
-        await replace_context_message(
+        entry = {
+            "id": homework_id,
+            "subject_key": draft.subject_key,
+            "subject": draft.subject_name,
+            "teacher": draft.teacher_name,
+            "text": draft.text,
+            "created_by_platform": "telegram",
+            "created_by_user_id": callback.from_user.id,
+            "created_by_name": author,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "attachments": [
+                {
+                    "file_id": attachment.file_id,
+                    "file_type": attachment.file_type,
+                    "file_name": attachment.file_name,
+                    "mime_type": attachment.mime_type,
+                }
+                for attachment in (draft.attachments or [])
+            ],
+        }
+        await clear_context_messages(callback.bot, callback.from_user.id, "dz")
+        sent_ids = await send_homework_entry_with_attachments(
             callback.bot,
             callback.from_user.id,
-            "dz",
-            f"Домашнее задание сохранено.\n\nID записи: <b>{homework_id}</b>",
+            entry,
+            title="<b>Домашнее задание успешно создано</b>",
         )
-        await callback.answer("Сохранено")
+        context_messages[callback.from_user.id]["dz"] = sent_ids
+        await callback.answer("Опубликовано")
 
     @dispatcher.callback_query(F.data == "dz:cancel")
     async def handle_cancel_homework(callback: CallbackQuery) -> None:
@@ -707,13 +746,10 @@ def build_dispatcher(
             return
 
         draft.attachments.append(attachment)
-        await replace_context_message(
-            message.bot,
-            message.chat.id,
-            "dz",
-            f"Вложение добавлено. Сейчас в черновике <b>{len(draft.attachments)}</b> вложений.",
-            reply_markup=HOMEWORK_ATTACHMENT_KEYBOARD,
-        )
+        draft.awaiting_attachments = False
+        await try_delete_message(message)
+        author = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
+        await send_draft_preview(message.bot, message.chat.id, author, draft)
 
     @dispatcher.message(F.text == "Домашние задания")
     async def handle_homework_text_shortcut(message: Message) -> None:
@@ -730,7 +766,20 @@ def build_dispatcher(
             draft.text = message.text.strip()
             draft.awaiting_text = False
             draft.awaiting_attachments = False
-            await send_draft_preview(message, draft)
+            await try_delete_message(message)
+            author = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
+            await send_draft_preview(message.bot, message.chat.id, author, draft)
+            return
+
+        if draft is not None and draft.awaiting_attachments:
+            await try_delete_message(message)
+            await replace_context_message(
+                message.bot,
+                message.chat.id,
+                "dz",
+                "Сейчас я жду вложение. Отправь документ, фото, видео или аудио, либо нажми «Опубликовать».",
+                reply_markup=build_homework_attachment_keyboard(),
+            )
             return
 
         await replace_context_message(
