@@ -28,7 +28,7 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
 
 HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Назад к предметам", callback_data="menu:homework")],
+        [InlineKeyboardButton(text="Вернуться к предметам", callback_data="menu:homework")],
     ]
 )
 
@@ -78,23 +78,19 @@ def build_dispatcher(
 
     def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
-        current_row: list[InlineKeyboardButton] = []
         for subject in SUBJECTS:
-            current_row.append(
-                InlineKeyboardButton(
-                    text=subject["subject"],
-                    callback_data=(
-                        f"homework:view:{subject['key']}"
-                        if mode == "homework"
-                        else f"dz:subject:{subject['key']}"
-                    ),
-                )
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=subject["subject"],
+                        callback_data=(
+                            f"homework:view:{subject['key']}"
+                            if mode == "homework"
+                            else f"dz:subject:{subject['key']}"
+                        ),
+                    )
+                ]
             )
-            if len(current_row) == 2:
-                rows.append(current_row)
-                current_row = []
-        if current_row:
-            rows.append(current_row)
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -233,28 +229,35 @@ def build_dispatcher(
     async def send_homework_entries(bot: Bot, chat_id: int, subject_key: str) -> None:
         subject = get_subject(subject_key)
         if subject is None:
-            await replace_context_message(bot, chat_id, "homework", "Предмет не найден.")
+            await replace_context_message(
+                bot,
+                chat_id,
+                "homework",
+                "Предмет не найден.",
+                reply_markup=HOMEWORK_BACK_KEYBOARD,
+            )
             return
 
-        await clear_context_messages(bot, chat_id, "homework")
         entries = await db.get_homework_for_subject(subject_key)
         if not entries:
-            sent = await bot.send_message(
+            await replace_context_message(
+                bot,
                 chat_id,
+                "homework",
                 f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
                 reply_markup=HOMEWORK_BACK_KEYBOARD,
             )
-            context_messages[chat_id]["homework"] = [sent.message_id]
             return
 
-        sent_ids: list[int] = []
-        header = await bot.send_message(
+        await replace_context_message(
+            bot,
             chat_id,
+            "homework",
             f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
             reply_markup=HOMEWORK_BACK_KEYBOARD,
         )
-        sent_ids.append(header.message_id)
 
+        sent_ids = context_messages[chat_id]["homework"][:1]
         for entry in entries:
             entry_message_ids = await send_homework_entry_with_attachments(bot, chat_id, entry)
             sent_ids.extend(entry_message_ids)
