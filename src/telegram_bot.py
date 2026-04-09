@@ -917,7 +917,11 @@ def build_dispatcher(
             return
         if action.startswith("hw_delete:"):
             _, homework_id_text, subject_key = action.split(":", 2)
-            deleted = await db.delete_homework(int(homework_id_text))
+            homework_id = int(homework_id_text)
+            attachments = await db.get_homework_attachments(homework_id)
+            deleted = await db.delete_homework(homework_id)
+            if deleted and attachment_storage is not None:
+                attachment_storage.delete_attachments(attachments)
             subject = get_subject(subject_key)
             entries = await db.get_homework_for_subject(subject_key)
             subject_name = escape(subject["subject"]) if subject else "Предмет"

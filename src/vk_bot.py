@@ -760,7 +760,10 @@ def build_vk_bot(
                     return
                 if text in mapping:
                     homework_id, subject_key = mapping[text]
+                    attachments = await db.get_homework_attachments(homework_id)
                     deleted = await db.delete_homework(homework_id)
+                    if deleted and attachment_storage is not None:
+                        attachment_storage.delete_attachments(attachments)
                     entries = await db.get_homework_for_subject(subject_key)
                     subject = get_subject(subject_key)
                     subject_name = subject["subject"] if subject else "Предмет"

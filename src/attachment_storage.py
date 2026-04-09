@@ -27,6 +27,14 @@ class AttachmentStorage:
         path = self.resolve_path(storage_path)
         return bool(path and path.exists())
 
+    def delete_attachments(self, attachments: list[HomeworkAttachment | dict]) -> None:
+        for attachment in attachments:
+            storage_path = attachment.storage_path if isinstance(attachment, HomeworkAttachment) else attachment.get("storage_path")
+            path = self.resolve_path(storage_path)
+            if path is None or not path.exists():
+                continue
+            path.unlink(missing_ok=True)
+
     async def save_telegram_file(
         self,
         bot: TelegramBot,
