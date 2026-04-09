@@ -201,13 +201,11 @@ def build_dispatcher(
         return await db.get_latest_snapshot("current")
 
     def format_welcome(is_editor: bool = False) -> str:
-        editor_hint = "\n/dz — добавить домашнее задание" if is_editor else ""
         return (
             f"<b>Привет! Я бот группы {escape(settings.group_name)}</b>\n\n"
-            "/rasp — посмотреть расписание\n"
-            "/homework — посмотреть домашние задания"
+            "/rasp или Расписание — посмотреть расписание\n"
+            "/homework или Homework — посмотреть домашние задания"
             "\n/settings — настройки"
-            f"{editor_hint}"
         )
 
     async def format_settings_text(user_id: int) -> str:
