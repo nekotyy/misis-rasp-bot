@@ -36,8 +36,8 @@ HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
 
 START_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Расписание", callback_data="start:rasp")],
-        [InlineKeyboardButton(text="Homework", callback_data="start:homework")],
+        [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
+        [InlineKeyboardButton(text="Узнать ДЗ", callback_data="start:homework")],
         [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
     ]
 )
@@ -205,8 +205,8 @@ def build_dispatcher(
     def format_welcome(is_editor: bool = False) -> str:
         return (
             f"<b>Привет! Я бот группы {escape(settings.group_name)}</b>\n\n"
-            "/rasp или Расписание — посмотреть расписание\n"
-            "/homework или Homework — посмотреть домашние задания"
+            "/rasp — посмотреть расписание\n"
+            "/homework — посмотреть домашние задания"
             "\n/settings — настройки"
         )
 
