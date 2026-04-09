@@ -67,6 +67,12 @@ def build_vk_bot(
             rows.append(nav)
         return rows, page
 
+    def shorten_button_label(text: str, limit: int = 40) -> str:
+        clean = " ".join(text.split())
+        if len(clean) <= limit:
+            return clean
+        return f"{clean[: limit - 3].rstrip()}..."
+
     def user_is_admin(user_id: int | None) -> bool:
         return bool(user_id and settings.admin_vk_id and user_id == settings.admin_vk_id)
 
@@ -355,8 +361,8 @@ def build_vk_bot(
             if user.platform != "vk":
                 continue
             display = user.full_name or user.username or str(user.user_id)
-            prefix = "Убрать редактора" if user.is_editor else "Сделать редактором"
-            label = f"{prefix}: {display} ({user.user_id})"
+            prefix = "Снять ред." if user.is_editor else "Выдать ред."
+            label = shorten_button_label(f"{prefix}: {display} ({user.user_id})")
             labels[label] = user.user_id
             button_texts.append(label)
         rows, actual_page = paged_rows(button_texts, page)
@@ -370,9 +376,7 @@ def build_vk_bot(
         button_texts: list[str] = []
         for entry in entries:
             preview = entry["text"].strip().replace("\n", " ")
-            if len(preview) > 24:
-                preview = f"{preview[:24].rstrip()}..."
-            label = f"Удалить #{entry['id']} {preview or 'без текста'}"
+            label = shorten_button_label(f"Удалить #{entry['id']} {preview or 'без текста'}")
             labels[label] = (entry["id"], subject_key)
             button_texts.append(label)
         rows, actual_page = paged_rows(button_texts, page)
