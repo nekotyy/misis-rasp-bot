@@ -51,6 +51,8 @@ class HomeworkAttachment:
     file_type: str
     file_name: str | None
     mime_type: str | None
+    storage_path: str | None = None
+    source_platform: str | None = None
 
 
 @dataclass(slots=True)

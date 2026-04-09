@@ -18,6 +18,7 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+storage/attachments/
 
 # Logs and temporary files
 *.log

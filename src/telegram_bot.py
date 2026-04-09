@@ -7,8 +7,9 @@ from html import escape
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
 
+from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
 from src.homework_service import SUBJECTS, format_homework_message, format_homework_preview, get_subject
@@ -78,6 +79,7 @@ def build_dispatcher(
     db: Database,
     parser: ScheduleParser,
     broadcaster: Broadcaster | None = None,
+    attachment_storage: AttachmentStorage | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     homework_drafts: dict[int, HomeworkDraft] = {}
@@ -437,6 +439,18 @@ def build_dispatcher(
     ):
         file_type = attachment["file_type"]
         file_id = attachment["file_id"]
+        storage_path = attachment.get("storage_path")
+        if attachment_storage and storage_path:
+            local_path = attachment_storage.resolve_path(storage_path)
+            if local_path and local_path.exists():
+                input_file = FSInputFile(local_path)
+                if file_type == "photo":
+                    return await bot.send_photo(chat_id, photo=input_file, caption=caption, reply_markup=reply_markup)
+                if file_type == "video":
+                    return await bot.send_video(chat_id, video=input_file, caption=caption, reply_markup=reply_markup)
+                if file_type == "audio":
+                    return await bot.send_audio(chat_id, audio=input_file, caption=caption, reply_markup=reply_markup)
+                return await bot.send_document(chat_id, document=input_file, caption=caption, reply_markup=reply_markup)
         if file_type == "vk_attachment":
             return None
         if file_type == "photo":
@@ -472,6 +486,7 @@ def build_dispatcher(
             "file_type": attachments[0].file_type,
             "file_name": attachments[0].file_name,
             "mime_type": attachments[0].mime_type,
+            "storage_path": attachments[0].storage_path,
         }
         first_sent = await send_attachment(
             bot,
@@ -492,6 +507,7 @@ def build_dispatcher(
                     "file_type": attachment.file_type,
                     "file_name": attachment.file_name,
                     "mime_type": attachment.mime_type,
+                    "storage_path": attachment.storage_path,
                 },
             )
             if extra_sent is not None:
@@ -686,6 +702,8 @@ def build_dispatcher(
                     "file_type": attachment.file_type,
                     "file_name": attachment.file_name,
                     "mime_type": attachment.mime_type,
+                    "storage_path": attachment.storage_path,
+                    "source_platform": attachment.source_platform,
                 }
                 for attachment in (draft.attachments or [])
             ],
@@ -884,34 +902,74 @@ def build_dispatcher(
 
         attachment: HomeworkAttachment | None = None
         if message.document:
-            attachment = HomeworkAttachment(
-                file_id=message.document.file_id,
-                file_type="document",
-                file_name=message.document.file_name,
-                mime_type=message.document.mime_type,
+            attachment = (
+                await attachment_storage.save_telegram_file(
+                    bot=message.bot,
+                    file_id=message.document.file_id,
+                    file_type="document",
+                    file_name=message.document.file_name,
+                    mime_type=message.document.mime_type,
+                )
+                if attachment_storage is not None
+                else HomeworkAttachment(
+                    file_id=message.document.file_id,
+                    file_type="document",
+                    file_name=message.document.file_name,
+                    mime_type=message.document.mime_type,
+                )
             )
         elif message.photo:
             photo: PhotoSize = message.photo[-1]
-            attachment = HomeworkAttachment(
-                file_id=photo.file_id,
-                file_type="photo",
-                file_name="photo.jpg",
-                mime_type="image/jpeg",
+            attachment = (
+                await attachment_storage.save_telegram_file(
+                    bot=message.bot,
+                    file_id=photo.file_id,
+                    file_type="photo",
+                    file_name="photo.jpg",
+                    mime_type="image/jpeg",
+                )
+                if attachment_storage is not None
+                else HomeworkAttachment(
+                    file_id=photo.file_id,
+                    file_type="photo",
+                    file_name="photo.jpg",
+                    mime_type="image/jpeg",
+                )
             )
         elif message.video:
             video: Video = message.video
-            attachment = HomeworkAttachment(
-                file_id=video.file_id,
-                file_type="video",
-                file_name=video.file_name,
-                mime_type=video.mime_type,
+            attachment = (
+                await attachment_storage.save_telegram_file(
+                    bot=message.bot,
+                    file_id=video.file_id,
+                    file_type="video",
+                    file_name=video.file_name,
+                    mime_type=video.mime_type,
+                )
+                if attachment_storage is not None
+                else HomeworkAttachment(
+                    file_id=video.file_id,
+                    file_type="video",
+                    file_name=video.file_name,
+                    mime_type=video.mime_type,
+                )
             )
         elif message.audio:
-            attachment = HomeworkAttachment(
-                file_id=message.audio.file_id,
-                file_type="audio",
-                file_name=message.audio.file_name,
-                mime_type=message.audio.mime_type,
+            attachment = (
+                await attachment_storage.save_telegram_file(
+                    bot=message.bot,
+                    file_id=message.audio.file_id,
+                    file_type="audio",
+                    file_name=message.audio.file_name,
+                    mime_type=message.audio.mime_type,
+                )
+                if attachment_storage is not None
+                else HomeworkAttachment(
+                    file_id=message.audio.file_id,
+                    file_type="audio",
+                    file_name=message.audio.file_name,
+                    mime_type=message.audio.mime_type,
+                )
             )
 
         if attachment is None:

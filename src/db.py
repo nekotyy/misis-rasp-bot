@@ -68,12 +68,16 @@ class Database:
                     file_type TEXT NOT NULL,
                     file_name TEXT,
                     mime_type TEXT,
+                    storage_path TEXT,
+                    source_platform TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(homework_id) REFERENCES homework_entries(id) ON DELETE CASCADE
                 );
                 """
             )
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "homework_attachments", "storage_path", "TEXT")
+            await self._ensure_column(db, "homework_attachments", "source_platform", "TEXT")
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -294,8 +298,10 @@ class Database:
             for attachment in attachments:
                 await db.execute(
                     """
-                    INSERT INTO homework_attachments (homework_id, file_id, file_type, file_name, mime_type, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO homework_attachments (
+                        homework_id, file_id, file_type, file_name, mime_type, storage_path, source_platform, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         homework_id,
@@ -303,6 +309,8 @@ class Database:
                         attachment.file_type,
                         attachment.file_name,
                         attachment.mime_type,
+                        attachment.storage_path,
+                        attachment.source_platform,
                         now,
                     ),
                 )
@@ -353,7 +361,7 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT id, file_id, file_type, file_name, mime_type, created_at
+                SELECT id, file_id, file_type, file_name, mime_type, storage_path, source_platform, created_at
                 FROM homework_attachments
                 WHERE homework_id = ?
                 ORDER BY id
@@ -368,7 +376,9 @@ class Database:
                 "file_type": row[2],
                 "file_name": row[3],
                 "mime_type": row[4],
-                "created_at": row[5],
+                "storage_path": row[5],
+                "source_platform": row[6],
+                "created_at": row[7],
             }
             for row in rows
         ]

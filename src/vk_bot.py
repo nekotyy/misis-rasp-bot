@@ -7,7 +7,10 @@ from aiohttp import TCPConnector
 from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.http import AiohttpClient
+from vkbottle.tools.uploader.doc import DocMessagesUploader
+from vkbottle.tools.uploader.photo import PhotoMessageUploader
 
+from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
 from src.homework_service import SUBJECTS, get_subject
@@ -18,7 +21,12 @@ from src.schedule_service import get_day_by_offset, get_day_by_offset_from_conte
 PAGE_SIZE = 6
 
 
-def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bot | None:
+def build_vk_bot(
+    settings: Settings,
+    db: Database,
+    parser: ScheduleParser,
+    attachment_storage: AttachmentStorage | None = None,
+) -> Bot | None:
     if not settings.vk_bot_token:
         return None
 
@@ -90,6 +98,37 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             random_id=0,
         )
 
+    async def upload_attachment_for_vk(peer_id: int, attachment: HomeworkAttachment | dict) -> str | None:
+        file_type = attachment.file_type if isinstance(attachment, HomeworkAttachment) else attachment.get("file_type")
+        file_id = attachment.file_id if isinstance(attachment, HomeworkAttachment) else attachment.get("file_id")
+        storage_path = attachment.storage_path if isinstance(attachment, HomeworkAttachment) else attachment.get("storage_path")
+        if file_id and not storage_path and file_type == "vk_attachment":
+            return file_id
+        if attachment_storage is None:
+            return file_id if file_type == "vk_attachment" else None
+
+        local_path = attachment_storage.resolve_path(storage_path)
+        if not local_path or not local_path.exists():
+            return file_id if file_type == "vk_attachment" else None
+
+        if file_type == "photo":
+            return await PhotoMessageUploader(bot.api).upload(str(local_path), peer_id=peer_id)
+
+        file_name = attachment.file_name if isinstance(attachment, HomeworkAttachment) else attachment.get("file_name")
+        return await DocMessagesUploader(bot.api).upload(
+            str(local_path),
+            peer_id=peer_id,
+            title=file_name or local_path.name,
+        )
+
+    async def collect_vk_attachments(peer_id: int, attachments: list[HomeworkAttachment | dict]) -> str | None:
+        uploaded: list[str] = []
+        for attachment in attachments:
+            uploaded_attachment = await upload_attachment_for_vk(peer_id, attachment)
+            if uploaded_attachment:
+                uploaded.append(uploaded_attachment)
+        return ",".join(uploaded) if uploaded else None
+
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Домашние задания"]]
         if is_editor:
@@ -158,8 +197,6 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
                 created_at.strftime("%d.%m.%Y %H:%M"),
             ]
         )
-        if entry.get("has_external_attachments"):
-            lines.extend(["", "Вложения из Telegram доступны только в Telegram."])
         return "\n".join(lines)
 
     def preview_text(draft: HomeworkDraft, author: str) -> str:
@@ -241,23 +278,20 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             await show_screen(peer_id, f"По предмету {subject['subject']} пока нет домашних заданий.", keyboard=homework_view_keyboard())
             return
         entry = entries[0]
-        attachments = [item["file_id"] for item in entry["attachments"] if item["file_type"] == "vk_attachment"]
-        has_external_attachments = any(item["file_type"] != "vk_attachment" for item in entry["attachments"])
         await show_screen(
             peer_id,
-            homework_text({**entry, "has_external_attachments": has_external_attachments}),
+            homework_text(entry),
             keyboard=homework_view_keyboard(),
-            attachment=",".join(attachments) if attachments else None,
+            attachment=await collect_vk_attachments(peer_id, entry["attachments"]),
         )
 
     async def show_draft_preview(peer_id: int, author: str, draft: HomeworkDraft) -> None:
         peer_modes[peer_id] = "dz_preview"
-        attachments = [item.file_id for item in (draft.attachments or []) if item.file_type == "vk_attachment"]
         await show_screen(
             peer_id,
             preview_text(draft, author),
             keyboard=draft_preview_keyboard(),
-            attachment=",".join(attachments) if attachments else None,
+            attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
         )
 
     async def publish_homework(peer_id: int, user_id: int, author: str) -> None:
@@ -279,14 +313,24 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
             "text": draft.text,
             "created_by_name": author,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "attachments": [
+                {
+                    "file_id": item.file_id,
+                    "file_type": item.file_type,
+                    "file_name": item.file_name,
+                    "mime_type": item.mime_type,
+                    "storage_path": item.storage_path,
+                    "source_platform": item.source_platform,
+                }
+                for item in (draft.attachments or [])
+            ],
         }
-        attachments = [item.file_id for item in (draft.attachments or []) if item.file_type == "vk_attachment"]
         homework_drafts.pop(user_id, None)
         await show_screen(
             peer_id,
             homework_text(entry, success_title="Домашнее задание успешно создано"),
             keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)),
-            attachment=",".join(attachments) if attachments else None,
+            attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
         )
 
     def subject_by_title(title: str) -> dict[str, str] | None:
@@ -441,17 +485,25 @@ def build_vk_bot(settings: Settings, db: Database, parser: ScheduleParser) -> Bo
 
         if draft is not None and draft.awaiting_attachments:
             full_message = await message.get_full_message()
-            attachments = full_message.get_attachment_strings() or []
-            if attachments:
-                for attachment in attachments:
-                    draft.attachments.append(
-                        HomeworkAttachment(
-                            file_id=attachment,
-                            file_type="vk_attachment",
-                            file_name=None,
-                            mime_type=None,
-                        )
+            attachments = (
+                await attachment_storage.save_vk_message_attachments(full_message)
+                if attachment_storage is not None
+                else []
+            )
+            if not attachments:
+                attachment_strings = full_message.get_attachment_strings() or []
+                attachments = [
+                    HomeworkAttachment(
+                        file_id=attachment,
+                        file_type="vk_attachment",
+                        file_name=None,
+                        mime_type=None,
+                        source_platform="vk",
                     )
+                    for attachment in attachment_strings
+                ]
+            if attachments:
+                draft.attachments.extend(attachments)
                 await show_draft_preview(peer_id, str(user_id), draft)
                 return
             if text == "Опубликовать" and draft.text.strip():
