@@ -302,49 +302,43 @@ def build_dispatcher(
             return
 
         if source_message is not None:
-            await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
-            if await try_edit_source_message(
-                source_message,
-                f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
-                reply_markup=HOMEWORK_BACK_KEYBOARD,
-            ):
-                sent_ids = [source_message.message_id]
-            else:
-                await replace_context_message(
-                    bot,
-                    chat_id,
-                    "homework",
-                    f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
-                    reply_markup=HOMEWORK_BACK_KEYBOARD,
-                )
-                sent_ids = context_messages[chat_id]["homework"][:1]
-        else:
-            await replace_context_message(
+            try:
+                await source_message.delete()
+            except TelegramBadRequest:
+                pass
+        await clear_context_messages(bot, chat_id, "homework")
+
+        sent_ids: list[int] = []
+        first_entry = True
+        for entry in entries:
+            entry_message_ids = await send_homework_entry_with_attachments(
                 bot,
                 chat_id,
-                "homework",
-                f"<b>Домашние задания: {escape(subject['subject'])}</b>\n\nПоказываю последние записи.",
-                reply_markup=HOMEWORK_BACK_KEYBOARD,
+                entry,
+                include_back_button=first_entry,
             )
-            sent_ids = context_messages[chat_id]["homework"][:1]
-
-        for entry in entries:
-            entry_message_ids = await send_homework_entry_with_attachments(bot, chat_id, entry)
             sent_ids.extend(entry_message_ids)
+            first_entry = False
 
         context_messages[chat_id]["homework"] = sent_ids
 
-    async def send_homework_entry_with_attachments(bot: Bot, chat_id: int, entry: dict) -> list[int]:
+    async def send_homework_entry_with_attachments(
+        bot: Bot,
+        chat_id: int,
+        entry: dict,
+        include_back_button: bool = False,
+    ) -> list[int]:
         message_text = format_homework_message(entry)
         attachments = entry["attachments"]
         sent_ids: list[int] = []
+        reply_markup = HOMEWORK_BACK_KEYBOARD if include_back_button else None
         if not attachments:
-            sent = await bot.send_message(chat_id, message_text)
+            sent = await bot.send_message(chat_id, message_text, reply_markup=reply_markup)
             sent_ids.append(sent.message_id)
             return sent_ids
 
         first, *rest = attachments
-        first_sent = await send_attachment(bot, chat_id, first, caption=message_text)
+        first_sent = await send_attachment(bot, chat_id, first, caption=message_text, reply_markup=reply_markup)
         if first_sent is not None:
             sent_ids.append(first_sent.message_id)
         for attachment in rest:
@@ -358,16 +352,22 @@ def build_dispatcher(
                 sent_ids.append(extra_sent.message_id)
         return sent_ids
 
-    async def send_attachment(bot: Bot, chat_id: int, attachment: dict, caption: str | None = None):
+    async def send_attachment(
+        bot: Bot,
+        chat_id: int,
+        attachment: dict,
+        caption: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ):
         file_type = attachment["file_type"]
         file_id = attachment["file_id"]
         if file_type == "photo":
-            return await bot.send_photo(chat_id, photo=file_id, caption=caption)
+            return await bot.send_photo(chat_id, photo=file_id, caption=caption, reply_markup=reply_markup)
         if file_type == "video":
-            return await bot.send_video(chat_id, video=file_id, caption=caption)
+            return await bot.send_video(chat_id, video=file_id, caption=caption, reply_markup=reply_markup)
         if file_type == "audio":
-            return await bot.send_audio(chat_id, audio=file_id, caption=caption)
-        return await bot.send_document(chat_id, document=file_id, caption=caption)
+            return await bot.send_audio(chat_id, audio=file_id, caption=caption, reply_markup=reply_markup)
+        return await bot.send_document(chat_id, document=file_id, caption=caption, reply_markup=reply_markup)
 
     async def send_draft_preview(message: Message, draft: HomeworkDraft) -> None:
         author = message.from_user.full_name if message.from_user else "Неизвестный пользователь"
