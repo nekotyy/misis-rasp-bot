@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from html import escape
+from traceback import format_exception
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
+from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
 
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
@@ -21,6 +22,7 @@ from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_b
 
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
+SUPPORT_CONTACT = "@nekoty"
 
 
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
@@ -401,6 +403,56 @@ def build_dispatcher(
             return True
         except TelegramBadRequest:
             return False
+
+    def short_error_text(error: Exception) -> str:
+        text = f"{type(error).__name__}: {error}"
+        if len(text) > 350:
+            text = f"{text[:347]}..."
+        return text
+
+    async def notify_user_about_error(bot: Bot, chat_id: int, error: Exception) -> None:
+        try:
+            await bot.send_message(
+                chat_id,
+                (
+                    "<b>Произошла ошибка при обработке запроса.</b>\n\n"
+                    f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
+                    f"Напиши мне для решения: {SUPPORT_CONTACT}"
+                ),
+            )
+        except TelegramBadRequest:
+            return
+
+    async def notify_admin_about_error(platform: str, user_id: int | None, chat_id: int | None, error: Exception) -> None:
+        if broadcaster is None:
+            return
+        traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
+        if len(traceback_text) > 2500:
+            traceback_text = f"...{traceback_text[-2500:]}"
+        telegram_text = (
+            f"<b>Сбой в боте ({escape(platform)})</b>\n\n"
+            f"Пользователь: <b>{user_id if user_id is not None else 'неизвестно'}</b>\n"
+            f"Чат: <b>{chat_id if chat_id is not None else 'неизвестно'}</b>\n"
+            f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
+            f"<pre>{escape(traceback_text)}</pre>"
+        )
+        vk_text = (
+            f"Сбой в боте ({platform})\n\n"
+            f"Пользователь: {user_id if user_id is not None else 'неизвестно'}\n"
+            f"Чат: {chat_id if chat_id is not None else 'неизвестно'}\n"
+            f"Ошибка: {short_error_text(error)}\n\n"
+            f"{traceback_text}"
+        )
+        await broadcaster.notify_admins(telegram_text, vk_text)
+
+    def extract_error_context(event: ErrorEvent) -> tuple[int | None, int | None]:
+        update = event.update
+        if update.message is not None:
+            return update.message.from_user.id if update.message.from_user else None, update.message.chat.id
+        if update.callback_query is not None:
+            callback = update.callback_query
+            return callback.from_user.id if callback.from_user else None, callback.message.chat.id if callback.message else None
+        return None, None
 
     async def prompt_group_selection(bot: Bot, chat_id: int, error_text: str | None = None) -> None:
         await send_new_context_message(
@@ -1334,5 +1386,13 @@ def build_dispatcher(
             format_welcome(user.group_name, is_editor=await user_is_editor(message.from_user.id)),
             reply_markup=START_KEYBOARD,
         )
+
+    @dispatcher.errors()
+    async def handle_telegram_errors(event: ErrorEvent, bot: Bot) -> bool:
+        user_id, chat_id = extract_error_context(event)
+        if chat_id is not None:
+            await notify_user_about_error(bot, chat_id, event.exception)
+        await notify_admin_about_error("telegram", user_id, chat_id, event.exception)
+        return True
 
     return dispatcher

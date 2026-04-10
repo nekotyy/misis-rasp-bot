@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from html import escape
+from traceback import format_exception
 
 from aiohttp import TCPConnector
 from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
+from vkbottle.exception_factory import ErrorHandler
 from vkbottle.http import AiohttpClient
 from vkbottle.tools.uploader.doc import DocMessagesUploader
 from vkbottle.tools.uploader.photo import PhotoMessageUploader
@@ -23,6 +26,7 @@ from src.schedule_service import get_day_by_offset, get_day_by_offset_from_conte
 PAGE_SIZE = 6
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
+SUPPORT_CONTACT = "@nekoty"
 
 
 def build_vk_bot(
@@ -43,7 +47,8 @@ def build_vk_bot(
             http_client=AiohttpClient(connector=TCPConnector(ssl=False)),
         )
 
-    bot = Bot(token=settings.vk_bot_token, api=api)
+    error_handler = ErrorHandler(redirect_arguments=True)
+    bot = Bot(token=settings.vk_bot_token, api=api, error_handler=error_handler)
     homework_drafts: dict[int, HomeworkDraft] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
@@ -78,6 +83,48 @@ def build_vk_bot(
         if len(clean) <= limit:
             return clean
         return f"{clean[: limit - 3].rstrip()}..."
+
+    def short_error_text(error: Exception) -> str:
+        text = f"{type(error).__name__}: {error}"
+        if len(text) > 350:
+            text = f"{text[:347]}..."
+        return text
+
+    async def notify_user_about_error(peer_id: int, error: Exception) -> None:
+        try:
+            await bot.api.messages.send(
+                peer_ids=[peer_id],
+                message=(
+                    "Произошла ошибка при обработке запроса.\n\n"
+                    f"Ошибка: {short_error_text(error)}\n\n"
+                    f"Напиши мне для решения: {SUPPORT_CONTACT}"
+                ),
+                random_id=0,
+            )
+        except Exception:
+            return
+
+    async def notify_admin_about_error(user_id: int | None, peer_id: int | None, error: Exception) -> None:
+        if broadcaster is None:
+            return
+        traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
+        if len(traceback_text) > 2500:
+            traceback_text = f"...{traceback_text[-2500:]}"
+        telegram_text = (
+            "<b>Сбой в боте (vk)</b>\n\n"
+            f"Пользователь: <b>{user_id if user_id is not None else 'неизвестно'}</b>\n"
+            f"Чат: <b>{peer_id if peer_id is not None else 'неизвестно'}</b>\n"
+            f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
+            f"<pre>{escape(traceback_text)}</pre>"
+        )
+        vk_text = (
+            "Сбой в боте (vk)\n\n"
+            f"Пользователь: {user_id if user_id is not None else 'неизвестно'}\n"
+            f"Чат: {peer_id if peer_id is not None else 'неизвестно'}\n"
+            f"Ошибка: {short_error_text(error)}\n\n"
+            f"{traceback_text}"
+        )
+        await broadcaster.notify_admins(telegram_text, vk_text)
 
     def user_is_admin(user_id: int | None) -> bool:
         return bool(user_id and settings.admin_vk_id and user_id == settings.admin_vk_id)
@@ -377,6 +424,14 @@ def build_vk_bot(
         snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
         await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
         return await db.get_latest_snapshot("current", user.schedule_id)
+
+    @error_handler.register_undefined_error_handler
+    async def handle_vk_errors(error: Exception, message: Message | None = None, **_: object) -> None:
+        peer_id = message.peer_id if message is not None else None
+        user_id = message.from_id if message is not None else None
+        if peer_id is not None:
+            await notify_user_about_error(peer_id, error)
+        await notify_admin_about_error(user_id, peer_id, error)
 
     async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)

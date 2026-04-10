@@ -12,10 +12,19 @@ logger = logging.getLogger(__name__)
 
 
 class Broadcaster:
-    def __init__(self, db: Database, telegram_bot: Bot | None = None, vk_bot: VkBot | None = None) -> None:
+    def __init__(
+        self,
+        db: Database,
+        telegram_bot: Bot | None = None,
+        vk_bot: VkBot | None = None,
+        admin_telegram_id: int | None = None,
+        admin_vk_id: int | None = None,
+    ) -> None:
         self.db = db
         self.telegram_bot = telegram_bot
         self.vk_bot = vk_bot
+        self.admin_telegram_id = admin_telegram_id
+        self.admin_vk_id = admin_vk_id
 
     async def broadcast(
         self,
@@ -33,6 +42,22 @@ class Broadcaster:
     async def broadcast_homework_update(self, message: str, schedule_id: int | None = None) -> None:
         await self._broadcast_telegram(message, homework_only=True, schedule_id=schedule_id)
         await self._broadcast_vk(message, homework_only=True, schedule_id=schedule_id)
+
+    async def notify_admins(self, telegram_message: str, vk_message: str | None = None) -> None:
+        if self.telegram_bot is not None and self.admin_telegram_id is not None:
+            try:
+                await self.telegram_bot.send_message(chat_id=self.admin_telegram_id, text=telegram_message)
+            except (TelegramForbiddenError, TelegramBadRequest) as exc:
+                logger.warning("Telegram admin notify failed for %s: %s", self.admin_telegram_id, exc)
+        if self.vk_bot is not None and self.admin_vk_id is not None:
+            try:
+                await self.vk_bot.api.messages.send(
+                    peer_ids=[self.admin_vk_id],
+                    message=vk_message or telegram_message,
+                    random_id=0,
+                )
+            except Exception as exc:  # pragma: no cover - depends on VK API
+                logger.warning("VK admin notify failed for %s: %s", self.admin_vk_id, exc)
 
     async def _broadcast_telegram(self, message: str, homework_only: bool = False, schedule_id: int | None = None) -> None:
         if self.telegram_bot is None:
