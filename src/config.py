@@ -17,6 +17,8 @@ class Settings:
     database_path: Path
     attachments_path: Path
     app_timezone: str
+    schedule_request_delay_seconds: float
+    schedule_request_jitter_seconds: float
     telegram_bot_token: str
     vk_bot_token: str
     vk_disable_ssl_verify: bool
@@ -35,6 +37,8 @@ class Settings:
             database_path=database_path,
             attachments_path=attachments_path,
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
+            schedule_request_delay_seconds=float(os.getenv("SCHEDULE_REQUEST_DELAY_SECONDS", "8").strip()),
+            schedule_request_jitter_seconds=float(os.getenv("SCHEDULE_REQUEST_JITTER_SECONDS", "4").strip()),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             vk_bot_token=os.getenv("VK_BOT_TOKEN", "").strip(),
             vk_disable_ssl_verify=os.getenv("VK_DISABLE_SSL_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"},

@@ -83,7 +83,14 @@ async def main() -> None:
 
     broadcaster.telegram_bot = telegram_bot
     broadcaster.vk_bot = vk_bot
-    jobs = ScheduleJobs(db=db, parser=parser, broadcaster=broadcaster, timezone=settings.app_timezone)
+    jobs = ScheduleJobs(
+        db=db,
+        parser=parser,
+        broadcaster=broadcaster,
+        timezone=settings.app_timezone,
+        request_delay_seconds=settings.schedule_request_delay_seconds,
+        request_jitter_seconds=settings.schedule_request_jitter_seconds,
+    )
     jobs.start()
     await jobs.sync_current_snapshot()
 
