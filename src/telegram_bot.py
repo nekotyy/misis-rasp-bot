@@ -1305,6 +1305,7 @@ def build_dispatcher(
                     "",
                 ]
                 for user in users:
+                    platform_label = "tg" if user.platform == "telegram" else user.platform
                     user_label = user.full_name or "Без имени"
                     nick_or_name = (
                         user.full_name
@@ -1320,7 +1321,7 @@ def build_dispatcher(
                     role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
                     lines.append(
                         "- "
-                        f"{escape(user.platform)} | "
+                        f"{escape(platform_label)} | "
                         f"{escape(user_label)} | "
                         f"{escape(nick_or_name)} | "
                         f"<b>{user.user_id}</b> | "
