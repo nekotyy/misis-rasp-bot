@@ -430,6 +430,27 @@ def build_dispatcher(
         except TelegramBadRequest:
             return False
 
+    async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> None:
+        try:
+            await callback.answer(*args, **kwargs)
+        except TelegramBadRequest:
+            return
+
+    async def safe_edit_message_text(
+        message: Message | None,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        if message is None:
+            return False
+        try:
+            await message.edit_text(text, reply_markup=reply_markup)
+            return True
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return True
+            return False
+
     def short_error_text(error: Exception) -> str:
         text = f"{type(error).__name__}: {error}"
         if len(text) > 350:
@@ -930,14 +951,20 @@ def build_dispatcher(
     async def handle_menu_settings(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if callback.message is None:
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
-        await callback.message.edit_text(
-            await format_settings_text(callback.from_user.id),
-            reply_markup=await build_settings_keyboard(callback.from_user.id),
-        )
+        settings_text = await format_settings_text(callback.from_user.id)
+        settings_keyboard = await build_settings_keyboard(callback.from_user.id)
+        if not await safe_edit_message_text(callback.message, settings_text, reply_markup=settings_keyboard):
+            await replace_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "settings",
+                settings_text,
+                reply_markup=settings_keyboard,
+            )
         context_messages[callback.message.chat.id]["settings"] = [callback.message.message_id]
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "menu:homework")
     async def handle_menu_homework(callback: CallbackQuery) -> None:
@@ -961,29 +988,29 @@ def build_dispatcher(
     async def handle_start_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if not await user_has_homework_access(callback.from_user.id):
-            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
             return
         await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data.startswith("schedule:"))
     async def handle_schedule_callback(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if callback.message is None:
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
         if action == "find":
             await prompt_schedule_search(callback.bot, callback.message.chat.id, callback.from_user.id)
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         snapshot_row = await get_saved_snapshot(callback.from_user.id)
         if snapshot_row is None:
-            await callback.message.edit_text("Не удалось получить расписание для твоей группы.", reply_markup=SCHEDULE_KEYBOARD)
-            await callback.answer()
+            await safe_edit_message_text(callback.message, "Не удалось получить расписание для твоей группы.", reply_markup=SCHEDULE_KEYBOARD)
+            await safe_callback_answer(callback)
             return
 
         if action == "today":
@@ -996,9 +1023,9 @@ def build_dispatcher(
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
 
-        await callback.message.edit_text(text, reply_markup=SCHEDULE_KEYBOARD)
+        await safe_edit_message_text(callback.message, text, reply_markup=SCHEDULE_KEYBOARD)
         context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data.startswith("homework:view:"))
     async def handle_homework_subject(callback: CallbackQuery) -> None:
