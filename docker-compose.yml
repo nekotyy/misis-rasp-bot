@@ -6,6 +6,7 @@ services:
     env_file:
       - .env
     environment:
+      TZ: ${APP_TIMEZONE:-Europe/Moscow}
       DATABASE_PATH: /app/runtime/bot.db
       ATTACHMENTS_PATH: /app/runtime/attachments
     volumes:

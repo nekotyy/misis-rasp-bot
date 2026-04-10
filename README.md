@@ -55,6 +55,18 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
+Если на VPS время отстает на 3 часа, проверь, что в `.env` стоит:
+
+```env
+APP_TIMEZONE=Europe/Moscow
+```
+
+Compose уже прокидывает это значение в переменную `TZ`, так что после правки достаточно выполнить:
+
+```bash
+docker compose up -d --build
+```
+
 6. Обновить после новых коммитов:
 
 ```bash
