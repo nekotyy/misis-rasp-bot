@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
+from src.group_catalog import GroupCatalog
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
@@ -29,6 +30,7 @@ async def run_telegram_polling(
     parser: ScheduleParser,
     broadcaster: Broadcaster,
     attachment_storage: AttachmentStorage,
+    group_catalog: GroupCatalog,
 ) -> Bot | None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
@@ -38,7 +40,7 @@ async def run_telegram_polling(
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     broadcaster.telegram_bot = bot
-    dispatcher = build_dispatcher(settings, db, parser, broadcaster, attachment_storage)
+    dispatcher = build_dispatcher(settings, db, parser, broadcaster, attachment_storage, group_catalog)
     asyncio.create_task(dispatcher.start_polling(bot))
     return bot
 
@@ -62,11 +64,13 @@ async def main() -> None:
     db = Database(settings.database_path)
     await db.initialize()
 
+    group_catalog = GroupCatalog(settings.schedule_url)
+    await group_catalog.ensure_loaded()
     parser = ScheduleParser(settings.schedule_url)
     attachment_storage = AttachmentStorage(settings.attachments_path)
     broadcaster = Broadcaster(db=db, telegram_bot=None)
-    telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage)
-    vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage)
+    telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage, group_catalog)
+    vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage, group_catalog)
     await run_vk_polling(vk_bot)
 
     broadcaster.telegram_bot = telegram_bot

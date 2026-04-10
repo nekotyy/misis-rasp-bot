@@ -13,6 +13,7 @@ from vkbottle.tools.uploader.photo import PhotoMessageUploader
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
+from src.group_catalog import GroupCatalog
 from src.homework_service import SUBJECTS, format_homework_notification, get_subject
 from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import Broadcaster
@@ -20,6 +21,8 @@ from src.parser import ScheduleParser
 from src.schedule_service import get_day_by_offset, get_day_by_offset_from_content
 
 PAGE_SIZE = 6
+HOMEWORK_GROUP_NAME = "ИСП-25-1"
+HOMEWORK_SCHEDULE_ID = 600
 
 
 def build_vk_bot(
@@ -28,6 +31,7 @@ def build_vk_bot(
     parser: ScheduleParser,
     broadcaster: Broadcaster | None = None,
     attachment_storage: AttachmentStorage | None = None,
+    group_catalog: GroupCatalog | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
@@ -84,6 +88,12 @@ def build_vk_bot(
         user = await db.get_user("vk", user_id)
         return bool(user and user.is_editor)
 
+    async def user_has_homework_access(user_id: int | None) -> bool:
+        if user_id is None:
+            return False
+        user = await db.get_user("vk", user_id)
+        return bool(user and user.schedule_id == HOMEWORK_SCHEDULE_ID)
+
     async def fetch_vk_names(user_ids: list[int]) -> dict[int, str]:
         unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
         if not unique_ids:
@@ -123,6 +133,8 @@ def build_vk_bot(
             user_id=message.from_id,
             username=None,
             full_name=full_name,
+            group_name=existing.group_name if existing else None,
+            schedule_id=existing.schedule_id if existing else None,
             is_admin=user_is_admin(message.from_id),
             is_editor=existing.is_editor if existing else False,
         )
@@ -175,6 +187,19 @@ def build_vk_bot(
             rows.append(["Админка"])
         return make_keyboard(rows)
 
+    def group_prompt_text(error_text: str | None = None) -> str:
+        lines = [
+            "Укажи свою группу",
+            "",
+            "Напиши ее в формате, как на сайте колледжа.",
+            "Например: ИСП-25-1",
+            "",
+            "Регистр не важен.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
     def schedule_keyboard() -> str:
         return make_keyboard(
             [
@@ -216,9 +241,11 @@ def build_vk_bot(
             ]
         )
 
-    def welcome_text(is_editor: bool, is_admin: bool) -> str:
+    def welcome_text(group_name: str | None, is_editor: bool, is_admin: bool) -> str:
         lines = [
-            f"Бот группы {settings.group_name}",
+            "Бот расписания колледжа",
+            "",
+            f"Твоя группа: {group_name}" if group_name else "Группа пока не выбрана.",
             "",
             "Используй кнопки ниже для расписания и домашних заданий.",
         ]
@@ -234,6 +261,7 @@ def build_vk_bot(
         lines = [
             "Настройки",
             "",
+            f"Группа: {user.group_name if user and user.group_name else 'не выбрана'}",
             f"Уведомления о новом ДЗ: {notifications}",
         ]
         if extra:
@@ -285,6 +313,7 @@ def build_vk_bot(
 
     async def admin_status_text() -> str:
         users = await db.list_users()
+        active_groups = await db.get_active_groups()
         homework_count = await db.count_homework_entries()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
@@ -293,8 +322,8 @@ def build_vk_bot(
         last_change_at = last_change["created_at"] if last_change else "еще не было"
         return (
             "Статус бота\n\n"
-            f"Группа: {settings.group_name}\n"
             f"Пользователей: {len(users)}\n"
+            f"Активных групп: {len(active_groups)}\n"
             f"Редакторов: {editor_count}\n"
             f"Записей ДЗ: {homework_count}\n"
             f"Последнее изменение: {last_change_at}\n\n"
@@ -304,13 +333,37 @@ def build_vk_bot(
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
+        user = await db.get_user("vk", user_id)
         is_editor = await user_is_editor(user_id)
         is_admin = user_is_admin(user_id)
         await show_screen(
             peer_id,
-            welcome_text(is_editor, is_admin),
+            welcome_text(user.group_name if user else None, is_editor, is_admin),
             keyboard=menu_keyboard(is_editor, is_admin),
         )
+
+    async def prompt_group_selection(peer_id: int, error_text: str | None = None) -> None:
+        peer_modes[peer_id] = "group_select"
+        await show_screen(peer_id, group_prompt_text(error_text))
+
+    async def ensure_group_selected(peer_id: int, user_id: int) -> bool:
+        user = await db.get_user("vk", user_id)
+        if user is not None and user.schedule_id is not None and user.group_name:
+            return True
+        await prompt_group_selection(peer_id)
+        return False
+
+    async def handle_group_input(peer_id: int, user_id: int, text: str) -> bool:
+        if group_catalog is None:
+            await prompt_group_selection(peer_id, "Справочник групп пока недоступен. Попробуй позже.")
+            return False
+        group = await group_catalog.find_group(text)
+        if group is None:
+            await prompt_group_selection(peer_id, "Группа не найдена. Проверь написание и попробуй еще раз.")
+            return False
+        await db.set_user_group("vk", user_id, group.group_name, group.schedule_id)
+        await show_main_menu(peer_id, user_id)
+        return True
 
     async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)
@@ -411,7 +464,7 @@ def build_vk_bot(
             attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
         )
         if broadcaster is not None:
-            await broadcaster.broadcast_homework_update(format_homework_notification(entry))
+            await broadcaster.broadcast_homework_update(format_homework_notification(entry), schedule_id=HOMEWORK_SCHEDULE_ID)
 
     def subject_by_title(title: str) -> dict[str, str] | None:
         normalized = title.strip().casefold()
@@ -467,8 +520,23 @@ def build_vk_bot(
 
         if normalized in {"/start", "start", "начать"}:
             homework_drafts.pop(user_id, None)
-            await show_main_menu(peer_id, user_id)
+            user = await db.get_user("vk", user_id)
+            if user is None or user.schedule_id is None or not user.group_name:
+                await prompt_group_selection(peer_id)
+            else:
+                await show_main_menu(peer_id, user_id)
             return
+
+        user = await db.get_user("vk", user_id)
+        if user is None or user.schedule_id is None or not user.group_name:
+            if text in {"/admin", "Админка"}:
+                pass
+            elif text.startswith("/") or text in {"Настройки", "Расписание", "Домашние задания", "Добавить ДЗ"}:
+                await prompt_group_selection(peer_id)
+                return
+            else:
+                await handle_group_input(peer_id, user_id, text)
+                return
 
         if text in {"Назад в меню", "Закрыть админку"}:
             homework_drafts.pop(user_id, None)
@@ -490,12 +558,14 @@ def build_vk_bot(
             return
 
         if text in {"/rasp", "Расписание"}:
+            if not await ensure_group_selected(peer_id, user_id):
+                return
             peer_modes[peer_id] = "schedule_menu"
             await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
             return
 
         if mode == "schedule_menu":
-            snapshot = await db.get_latest_snapshot("current")
+            snapshot = await db.get_latest_snapshot("current", user.schedule_id if user else None)
             if snapshot is None:
                 await show_screen(peer_id, "Сохраненное расписание пока отсутствует.", keyboard=schedule_keyboard())
                 return
@@ -510,6 +580,11 @@ def build_vk_bot(
                 return
 
         if text in {"/homework", "Домашние задания"}:
+            if not await ensure_group_selected(peer_id, user_id):
+                return
+            if not await user_has_homework_access(user_id):
+                await show_screen(peer_id, f"Просмотр ДЗ сейчас доступен только для группы {HOMEWORK_GROUP_NAME}.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
+                return
             await show_homework_subjects(peer_id)
             return
 
@@ -530,6 +605,11 @@ def build_vk_bot(
                 return
 
         if text in {"/dz", "Добавить ДЗ"}:
+            if not await ensure_group_selected(peer_id, user_id):
+                return
+            if not await user_has_homework_access(user_id):
+                await show_screen(peer_id, f"Добавление ДЗ сейчас доступно только для группы {HOMEWORK_GROUP_NAME}.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
+                return
             if not await user_is_editor(user_id):
                 await show_screen(peer_id, "Эта кнопка доступна только редакторам домашнего задания.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
                 return
@@ -620,6 +700,7 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
+            admin_user = await db.get_user("vk", user_id)
             if text == "Назад в админку":
                 peer_modes[peer_id] = "admin_menu"
                 await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
@@ -628,13 +709,19 @@ def build_vk_bot(
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return
             if text == "Перепарсить":
-                snapshot, snapshot_hash = await parser.parse()
-                await db.save_snapshot("current", snapshot_hash, snapshot)
+                if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
+                    await show_screen(peer_id, "Сначала выбери свою группу через стартовое сообщение.", keyboard=admin_keyboard())
+                    return
+                snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
+                await db.save_snapshot("current", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
                 await show_screen(peer_id, "Расписание перепарсено\n\n" + schedule_text(get_day_by_offset(snapshot, 0), "сегодня"), keyboard=admin_keyboard())
                 return
             if text == "Сохранить эталон":
-                snapshot, snapshot_hash = await parser.parse()
-                await db.save_snapshot("daily_baseline", snapshot_hash, snapshot)
+                if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
+                    await show_screen(peer_id, "Сначала выбери свою группу через стартовое сообщение.", keyboard=admin_keyboard())
+                    return
+                snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
+                await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
                 await show_screen(peer_id, "Эталон для сравнения сохранен\n\n" + schedule_text(get_day_by_offset(snapshot, 0), "сегодня"), keyboard=admin_keyboard())
                 return
             if text == "Последнее изменение":
@@ -657,6 +744,8 @@ def build_vk_bot(
                             roles.append("админ")
                         if user.is_editor:
                             roles.append("редактор")
+                        if user.group_name:
+                            roles.append(user.group_name)
                         role_text = f" ({', '.join(roles)})" if roles else ""
                         lines.append(f"- {user.platform} | {display} | {user.user_id}{role_text}")
                 await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard([["Назад в админку"]]))

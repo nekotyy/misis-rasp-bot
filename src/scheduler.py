@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -9,6 +10,8 @@ from src.db import Database
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleComparator
+
+logger = logging.getLogger(__name__)
 
 
 class ScheduleJobs:
@@ -28,33 +31,73 @@ class ScheduleJobs:
         self.scheduler.start()
 
     async def save_daily_baseline(self) -> None:
-        snapshot, snapshot_hash = await self.parser.parse()
-        await self.db.save_snapshot("daily_baseline", snapshot_hash, snapshot)
+        for group in await self.db.get_active_groups():
+            try:
+                snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
+                await self.db.save_snapshot(
+                    "daily_baseline",
+                    snapshot_hash,
+                    snapshot,
+                    schedule_id=group["schedule_id"],
+                    group_name=group["group_name"],
+                )
+            except Exception as exc:
+                logger.warning("Не удалось сохранить эталон для %s: %s", group["group_name"], exc)
 
     async def save_daily_baseline_fallback(self) -> None:
         today_prefix = datetime.now().date().isoformat()
-        if await self.db.has_baseline_for_date(today_prefix):
-            return
-        await self.save_daily_baseline()
+        for group in await self.db.get_active_groups():
+            if await self.db.has_baseline_for_date(today_prefix, group["schedule_id"]):
+                continue
+            try:
+                snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
+                await self.db.save_snapshot(
+                    "daily_baseline",
+                    snapshot_hash,
+                    snapshot,
+                    schedule_id=group["schedule_id"],
+                    group_name=group["group_name"],
+                )
+            except Exception as exc:
+                logger.warning("Не удалось сохранить fallback-эталон для %s: %s", group["group_name"], exc)
 
     async def sync_current_snapshot(self) -> None:
-        snapshot, snapshot_hash = await self.parser.parse()
-        baseline = await self.db.get_latest_snapshot("daily_baseline")
-        change_summary = ScheduleComparator.compare(baseline, snapshot)
-        await self.db.save_snapshot("current", snapshot_hash, snapshot)
+        for group in await self.db.get_active_groups():
+            try:
+                snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
+                baseline = await self.db.get_latest_snapshot("daily_baseline", group["schedule_id"])
+                change_summary = ScheduleComparator.compare(baseline, snapshot)
+                await self.db.save_snapshot(
+                    "current",
+                    snapshot_hash,
+                    snapshot,
+                    schedule_id=group["schedule_id"],
+                    group_name=group["group_name"],
+                )
 
-        if change_summary is None:
-            return
+                if change_summary is None:
+                    continue
 
-        await self.db.record_change(
-            snapshot_hash=snapshot_hash,
-            message=change_summary.message,
-            changed_dates=change_summary.changed_dates,
-            payload=change_summary.payload,
-        )
-        await self.broadcaster.broadcast(
-            change_summary.message,
-            telegram_message=change_summary.telegram_message,
-            vk_message=change_summary.vk_message,
-        )
-        await self.db.save_snapshot("daily_baseline", snapshot_hash, snapshot)
+                await self.db.record_change(
+                    snapshot_hash=snapshot_hash,
+                    message=change_summary.message,
+                    changed_dates=change_summary.changed_dates,
+                    payload=change_summary.payload,
+                    schedule_id=group["schedule_id"],
+                    group_name=group["group_name"],
+                )
+                await self.broadcaster.broadcast(
+                    change_summary.message,
+                    telegram_message=change_summary.telegram_message,
+                    vk_message=change_summary.vk_message,
+                    schedule_id=group["schedule_id"],
+                )
+                await self.db.save_snapshot(
+                    "daily_baseline",
+                    snapshot_hash,
+                    snapshot,
+                    schedule_id=group["schedule_id"],
+                    group_name=group["group_name"],
+                )
+            except Exception as exc:
+                logger.warning("Не удалось синхронизировать группу %s: %s", group["group_name"], exc)

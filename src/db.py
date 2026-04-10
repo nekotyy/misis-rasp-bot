@@ -25,6 +25,8 @@ class Database:
                     user_id INTEGER NOT NULL,
                     username TEXT,
                     full_name TEXT,
+                    group_name TEXT,
+                    schedule_id INTEGER,
                     is_admin INTEGER NOT NULL DEFAULT 0,
                     is_editor INTEGER NOT NULL DEFAULT 0,
                     homework_notifications_enabled INTEGER NOT NULL DEFAULT 1,
@@ -36,6 +38,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS schedule_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     snapshot_type TEXT NOT NULL,
+                    group_name TEXT,
+                    schedule_id INTEGER,
                     snapshot_hash TEXT NOT NULL,
                     content_json TEXT NOT NULL,
                     fetched_at TEXT NOT NULL,
@@ -44,6 +48,8 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS change_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_name TEXT,
+                    schedule_id INTEGER,
                     snapshot_hash TEXT NOT NULL,
                     message TEXT NOT NULL,
                     changed_dates_json TEXT NOT NULL,
@@ -93,8 +99,14 @@ class Database:
                 );
                 """
             )
+            await self._ensure_column(db, "users", "group_name", "TEXT")
+            await self._ensure_column(db, "users", "schedule_id", "INTEGER")
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
+            await self._ensure_column(db, "schedule_snapshots", "group_name", "TEXT")
+            await self._ensure_column(db, "schedule_snapshots", "schedule_id", "INTEGER")
+            await self._ensure_column(db, "change_events", "group_name", "TEXT")
+            await self._ensure_column(db, "change_events", "schedule_id", "INTEGER")
             await self._ensure_column(db, "homework_attachments", "storage_path", "TEXT")
             await self._ensure_column(db, "homework_attachments", "source_platform", "TEXT")
             await db.commit()
@@ -112,6 +124,8 @@ class Database:
         user_id: int,
         username: str | None,
         full_name: str | None,
+        group_name: str | None = None,
+        schedule_id: int | None = None,
         is_admin: bool = False,
         is_editor: bool = False,
     ) -> None:
@@ -120,33 +134,41 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO users (
-                    platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                    platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name,
+                    group_name = COALESCE(excluded.group_name, users.group_name),
+                    schedule_id = COALESCE(excluded.schedule_id, users.schedule_id),
                     is_admin = excluded.is_admin,
                     is_editor = COALESCE(users.is_editor, excluded.is_editor),
                     last_seen_at = excluded.last_seen_at
                 """,
-                (platform, user_id, username, full_name, int(is_admin), int(is_editor), 1, now, now),
+                (platform, user_id, username, full_name, group_name, schedule_id, int(is_admin), int(is_editor), 1, now, now),
             )
             await db.commit()
 
-    async def list_users(self, platform: str | None = None) -> list[UserRecord]:
+    async def list_users(self, platform: str | None = None, schedule_id: int | None = None) -> list[UserRecord]:
         query = """
-            SELECT platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+            SELECT platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
             FROM users
         """
-        params: tuple = ()
+        clauses: list[str] = []
+        params: list[object] = []
         if platform:
-            query += " WHERE platform = ?"
-            params = (platform,)
+            clauses.append("platform = ?")
+            params.append(platform)
+        if schedule_id is not None:
+            clauses.append("schedule_id = ?")
+            params.append(schedule_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY platform, created_at"
 
         async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(query, params)
+            cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
 
         return [
@@ -155,23 +177,25 @@ class Database:
                 user_id=row[1],
                 username=row[2],
                 full_name=row[3],
-                is_admin=bool(row[4]),
-                is_editor=bool(row[5]),
-                homework_notifications_enabled=bool(row[6]),
-                created_at=row[7],
-                last_seen_at=row[8],
+                group_name=row[4],
+                schedule_id=row[5],
+                is_admin=bool(row[6]),
+                is_editor=bool(row[7]),
+                homework_notifications_enabled=bool(row[8]),
+                created_at=row[9],
+                last_seen_at=row[10],
             )
             for row in rows
         ]
 
-    async def get_users_for_platform(self, platform: str) -> list[UserRecord]:
-        return await self.list_users(platform=platform)
+    async def get_users_for_platform(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
+        return await self.list_users(platform=platform, schedule_id=schedule_id)
 
     async def get_user(self, platform: str, user_id: int) -> UserRecord | None:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT platform, user_id, username, full_name, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                SELECT platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
                 FROM users
                 WHERE platform = ? AND user_id = ?
                 LIMIT 1
@@ -186,12 +210,26 @@ class Database:
             user_id=row[1],
             username=row[2],
             full_name=row[3],
-            is_admin=bool(row[4]),
-            is_editor=bool(row[5]),
-            homework_notifications_enabled=bool(row[6]),
-            created_at=row[7],
-            last_seen_at=row[8],
+            group_name=row[4],
+            schedule_id=row[5],
+            is_admin=bool(row[6]),
+            is_editor=bool(row[7]),
+            homework_notifications_enabled=bool(row[8]),
+            created_at=row[9],
+            last_seen_at=row[10],
         )
+
+    async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET group_name = ?, schedule_id = ?
+                WHERE platform = ? AND user_id = ?
+                """,
+                (group_name, schedule_id, platform, user_id),
+            )
+            await db.commit()
 
     async def set_editor(self, platform: str, user_id: int, is_editor: bool) -> None:
         async with aiosqlite.connect(self.path) as db:
@@ -217,55 +255,108 @@ class Database:
             )
             await db.commit()
 
-    async def get_users_for_homework_notifications(self, platform: str) -> list[UserRecord]:
-        users = await self.get_users_for_platform(platform)
+    async def get_users_for_homework_notifications(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
+        users = await self.get_users_for_platform(platform, schedule_id=schedule_id)
         return [user for user in users if user.homework_notifications_enabled]
 
-    async def save_snapshot(self, snapshot_type: str, snapshot_hash: str, snapshot: ScheduleSnapshot) -> None:
+    async def get_active_groups(self) -> list[dict]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT schedule_id, group_name, COUNT(*)
+                FROM users
+                WHERE schedule_id IS NOT NULL
+                GROUP BY schedule_id, group_name
+                ORDER BY group_name
+                """
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "schedule_id": row[0],
+                "group_name": row[1],
+                "users_count": row[2],
+            }
+            for row in rows
+            if row[0] is not None and row[1]
+        ]
+
+    async def save_snapshot(
+        self,
+        snapshot_type: str,
+        snapshot_hash: str,
+        snapshot: ScheduleSnapshot,
+        schedule_id: int,
+        group_name: str,
+    ) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
         now = datetime.now().isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO schedule_snapshots (snapshot_type, snapshot_hash, content_json, fetched_at, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO schedule_snapshots (snapshot_type, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (snapshot_type, snapshot_hash, content_json, snapshot.fetched_at.isoformat(timespec="seconds"), now),
+                (snapshot_type, group_name, schedule_id, snapshot_hash, content_json, snapshot.fetched_at.isoformat(timespec="seconds"), now),
             )
             await db.commit()
 
-    async def get_latest_snapshot(self, snapshot_type: str) -> dict | None:
+    async def get_latest_snapshot(self, snapshot_type: str, schedule_id: int | None = None) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(
-                """
-                SELECT snapshot_hash, content_json, fetched_at, created_at
-                FROM schedule_snapshots
-                WHERE snapshot_type = ?
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (snapshot_type,),
-            )
+            if schedule_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (snapshot_type,),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = ? AND schedule_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (snapshot_type, schedule_id),
+                )
             row = await cursor.fetchone()
 
         if not row:
             return None
         return {
-            "snapshot_hash": row[0],
-            "content": json.loads(row[1]),
-            "fetched_at": row[2],
-            "created_at": row[3],
+            "group_name": row[0],
+            "schedule_id": row[1],
+            "snapshot_hash": row[2],
+            "content": json.loads(row[3]),
+            "fetched_at": row[4],
+            "created_at": row[5],
         }
 
-    async def record_change(self, snapshot_hash: str, message: str, changed_dates: list[str], payload: dict) -> None:
+    async def record_change(
+        self,
+        snapshot_hash: str,
+        message: str,
+        changed_dates: list[str],
+        payload: dict,
+        schedule_id: int,
+        group_name: str,
+    ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO change_events (snapshot_hash, message, changed_dates_json, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO change_events (group_name, schedule_id, snapshot_hash, message, changed_dates_json, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    group_name,
+                    schedule_id,
                     snapshot_hash,
                     message,
                     json.dumps(changed_dates, ensure_ascii=False),
@@ -275,25 +366,39 @@ class Database:
             )
             await db.commit()
 
-    async def get_last_change(self) -> dict | None:
+    async def get_last_change(self, schedule_id: int | None = None) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(
-                """
-                SELECT message, changed_dates_json, payload_json, created_at
-                FROM change_events
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            )
+            if schedule_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                    FROM change_events
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                    FROM change_events
+                    WHERE schedule_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (schedule_id,),
+                )
             row = await cursor.fetchone()
 
         if not row:
             return None
         return {
-            "message": row[0],
-            "changed_dates": json.loads(row[1]),
-            "payload": json.loads(row[2]),
-            "created_at": row[3],
+            "group_name": row[0],
+            "schedule_id": row[1],
+            "message": row[2],
+            "changed_dates": json.loads(row[3]),
+            "payload": json.loads(row[4]),
+            "created_at": row[5],
         }
 
     async def count_homework_entries(self) -> int:
@@ -538,17 +643,18 @@ class Database:
             for row in rows
         ]
 
-    async def has_baseline_for_date(self, day_prefix: str) -> bool:
+    async def has_baseline_for_date(self, day_prefix: str, schedule_id: int) -> bool:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
                 SELECT 1
                 FROM schedule_snapshots
                 WHERE snapshot_type = 'daily_baseline'
+                  AND schedule_id = ?
                   AND created_at LIKE ?
                 LIMIT 1
                 """,
-                (f"{day_prefix}%",),
+                (schedule_id, f"{day_prefix}%"),
             )
             row = await cursor.fetchone()
         return row is not None

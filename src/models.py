@@ -32,6 +32,8 @@ class UserRecord:
     user_id: int
     username: str | None
     full_name: str | None
+    group_name: str | None
+    schedule_id: int | None
     is_admin: bool
     is_editor: bool
     homework_notifications_enabled: bool

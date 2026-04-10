@@ -12,11 +12,15 @@ from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, Inli
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
+from src.group_catalog import GroupCatalog
 from src.homework_service import SUBJECTS, format_homework_message, format_homework_notification, format_homework_preview, get_subject
 from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
+
+HOMEWORK_GROUP_NAME = "ИСП-25-1"
+HOMEWORK_SCHEDULE_ID = 600
 
 
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
@@ -88,6 +92,7 @@ def build_dispatcher(
     parser: ScheduleParser,
     broadcaster: Broadcaster | None = None,
     attachment_storage: AttachmentStorage | None = None,
+    group_catalog: GroupCatalog | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     homework_drafts: dict[int, HomeworkDraft] = {}
@@ -173,6 +178,8 @@ def build_dispatcher(
             user_id=user.id,
             username=user.username,
             full_name=full_name,
+            group_name=existing.group_name if existing else None,
+            schedule_id=existing.schedule_id if existing else None,
             is_admin=is_admin,
             is_editor=existing.is_editor if existing else False,
         )
@@ -186,6 +193,8 @@ def build_dispatcher(
             user_id=user.id,
             username=user.username,
             full_name=full_name,
+            group_name=existing.group_name if existing else None,
+            schedule_id=existing.schedule_id if existing else None,
             is_admin=user_is_admin(user.id),
             is_editor=existing.is_editor if existing else False,
         )
@@ -199,16 +208,47 @@ def build_dispatcher(
         user = await db.get_user("telegram", user_id)
         return bool(user and user.is_editor)
 
-    async def get_saved_snapshot() -> dict | None:
-        return await db.get_latest_snapshot("current")
+    async def get_user_record(user_id: int | None):
+        if user_id is None:
+            return None
+        return await db.get_user("telegram", user_id)
 
-    def format_welcome(is_editor: bool = False) -> str:
-        return (
-            f"<b>Привет! Я бот группы {escape(settings.group_name)}</b>\n\n"
-            "/rasp — посмотреть расписание\n"
-            "/homework — посмотреть домашние задания"
-            "\n/settings — настройки"
+    async def user_has_homework_access(user_id: int | None) -> bool:
+        user = await get_user_record(user_id)
+        return bool(user and user.schedule_id == HOMEWORK_SCHEDULE_ID)
+
+    async def get_saved_snapshot(user_id: int | None) -> dict | None:
+        user = await get_user_record(user_id)
+        if user is None or user.schedule_id is None:
+            return None
+        return await db.get_latest_snapshot("current", user.schedule_id)
+
+    def format_group_prompt(error_text: str | None = None) -> str:
+        lines = [
+            "<b>Укажи свою группу</b>",
+            "",
+            "Напиши ее в формате, как на сайте колледжа.",
+            "Например: <b>ИСП-25-1</b>",
+            "",
+            "Регистр не важен.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
+    def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
+        lines = ["<b>Привет! Я бот расписания колледжа</b>"]
+        if group_name:
+            lines.extend(["", f"Твоя группа: <b>{escape(group_name)}</b>"])
+        lines.extend(
+            [
+                "",
+                "/rasp — посмотреть расписание",
+                "/homework — посмотреть домашние задания",
+                "/settings — настройки",
+            ]
         )
+        return "\n".join(lines)
 
     async def format_settings_text(user_id: int) -> str:
         user = await db.get_user("telegram", user_id)
@@ -216,6 +256,7 @@ def build_dispatcher(
         lines = [
             "<b>Настройки</b>",
             "",
+            f"Группа: <b>{escape(user.group_name) if user and user.group_name else 'не выбрана'}</b>",
             f"Уведомления о новом ДЗ: <b>{notifications}</b>",
         ]
         return "\n".join(lines)
@@ -252,6 +293,7 @@ def build_dispatcher(
 
     async def format_admin_status() -> str:
         users = await db.list_users()
+        active_groups = await db.get_active_groups()
         homework_count = await db.count_homework_entries()
         last_change = await db.get_last_change()
         current_snapshot = await db.get_latest_snapshot("current")
@@ -260,8 +302,8 @@ def build_dispatcher(
         last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
         return (
             "<b>Статус бота</b>\n\n"
-            f"Группа: <b>{escape(settings.group_name)}</b>\n"
             f"Пользователей: <b>{len(users)}</b>\n"
+            f"Активных групп: <b>{len(active_groups)}</b>\n"
             f"Редакторов: <b>{editor_count}</b>\n"
             f"Записей ДЗ: <b>{homework_count}</b>\n"
             f"Последнее изменение: <b>{last_change_at}</b>\n\n"
@@ -350,6 +392,41 @@ def build_dispatcher(
             return True
         except TelegramBadRequest:
             return False
+
+    async def prompt_group_selection(bot: Bot, chat_id: int, error_text: str | None = None) -> None:
+        await send_new_context_message(
+            bot,
+            chat_id,
+            "group_select",
+            format_group_prompt(error_text),
+        )
+
+    async def ensure_group_selected(bot: Bot, chat_id: int, user_id: int | None) -> bool:
+        user = await get_user_record(user_id)
+        if user is not None and user.schedule_id is not None and user.group_name:
+            return True
+        await prompt_group_selection(bot, chat_id)
+        return False
+
+    async def handle_group_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
+        if group_catalog is None:
+            await prompt_group_selection(bot, chat_id, "Справочник групп пока недоступен. Попробуй позже.")
+            return False
+        group = await group_catalog.find_group(raw_text)
+        if group is None:
+            await prompt_group_selection(bot, chat_id, "Группа не найдена. Проверь написание и попробуй еще раз.")
+            return False
+        await db.set_user_group("telegram", user_id, group.group_name, group.schedule_id)
+        editor = await user_is_editor(user_id)
+        await clear_context_messages(bot, chat_id, "group_select")
+        await send_new_context_message(
+            bot,
+            chat_id,
+            "menu",
+            format_welcome(group.group_name, is_editor=editor),
+            reply_markup=START_KEYBOARD,
+        )
+        return True
 
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
         await send_new_context_message(
@@ -568,12 +645,16 @@ def build_dispatcher(
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
+        user = await get_user_record(message.from_user.id if message.from_user else None)
+        if user is None or user.schedule_id is None or not user.group_name:
+            await prompt_group_selection(message.bot, message.chat.id)
+            return
         editor = await user_is_editor(message.from_user.id if message.from_user else None)
         await send_new_context_message(
             message.bot,
             message.chat.id,
             "menu",
-            format_welcome(is_editor=editor),
+            format_welcome(user.group_name, is_editor=editor),
             reply_markup=START_KEYBOARD,
         )
 
@@ -593,6 +674,8 @@ def build_dispatcher(
     @dispatcher.message(Command("rasp"))
     async def handle_rasp_command(message: Message) -> None:
         await register_message_user(message)
+        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
+            return
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -604,6 +687,16 @@ def build_dispatcher(
     @dispatcher.message(Command("homework"))
     async def handle_homework_command(message: Message) -> None:
         await register_message_user(message)
+        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
+            return
+        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "homework",
+                f"Просмотр ДЗ сейчас доступен только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
+            )
+            return
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -615,6 +708,16 @@ def build_dispatcher(
     @dispatcher.message(Command("dz"))
     async def handle_dz_command(message: Message) -> None:
         await register_message_user(message)
+        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
+            return
+        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "dz",
+                f"Добавление ДЗ сейчас доступно только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
+            )
+            return
         if not await user_is_editor(message.from_user.id if message.from_user else None):
             await send_new_context_message(message.bot, message.chat.id, "dz", "Команда доступна только редакторам домашнего задания.")
             return
@@ -636,7 +739,12 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            format_welcome(is_editor=await user_is_editor(message.from_user.id if message.from_user else None)),
+            format_welcome(
+                (await get_user_record(message.from_user.id if message.from_user else None)).group_name
+                if await get_user_record(message.from_user.id if message.from_user else None)
+                else None,
+                is_editor=await user_is_editor(message.from_user.id if message.from_user else None),
+            ),
             reply_markup=START_KEYBOARD,
         )
 
@@ -652,16 +760,17 @@ def build_dispatcher(
     async def handle_menu_start(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         editor = await user_is_editor(callback.from_user.id)
+        user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
             try:
-                await callback.message.edit_text(format_welcome(is_editor=editor), reply_markup=START_KEYBOARD)
+                await callback.message.edit_text(format_welcome(user.group_name if user else None, is_editor=editor), reply_markup=START_KEYBOARD)
                 context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             except TelegramBadRequest:
                 await replace_context_message(
                     callback.bot,
                     callback.message.chat.id,
                     "menu",
-                    format_welcome(is_editor=editor),
+                    format_welcome(user.group_name if user else None, is_editor=editor),
                     reply_markup=START_KEYBOARD,
                 )
         await callback.answer()
@@ -682,18 +791,30 @@ def build_dispatcher(
     @dispatcher.callback_query(F.data == "menu:homework")
     async def handle_menu_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
+            await callback.answer()
+            return
         await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
+            await callback.answer()
+            return
         await send_schedule_menu(callback.bot, callback.from_user.id)
         await callback.answer()
 
     @dispatcher.callback_query(F.data == "start:homework")
     async def handle_start_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
+            await callback.answer()
+            return
+        if not await user_has_homework_access(callback.from_user.id):
+            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            return
         await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
         await callback.answer()
 
@@ -703,7 +824,7 @@ def build_dispatcher(
         if callback.message is None:
             await callback.answer()
             return
-        snapshot_row = await get_saved_snapshot()
+        snapshot_row = await get_saved_snapshot(callback.from_user.id)
         if snapshot_row is None:
             await callback.message.edit_text(
                 "Сохраненное расписание пока отсутствует. Подожди первую автоматическую синхронизацию.",
@@ -730,6 +851,9 @@ def build_dispatcher(
     @dispatcher.callback_query(F.data.startswith("homework:view:"))
     async def handle_homework_subject(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        if not await user_has_homework_access(callback.from_user.id):
+            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            return
         await callback.answer()
         await send_homework_entries(
             callback.bot,
@@ -741,6 +865,9 @@ def build_dispatcher(
     @dispatcher.callback_query(F.data.startswith("dz:subject:"))
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        if not await user_has_homework_access(callback.from_user.id):
+            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            return
         if not await user_is_editor(callback.from_user.id):
             await callback.answer("Недостаточно прав.", show_alert=True)
             return
@@ -832,7 +959,7 @@ def build_dispatcher(
         )
         context_messages[callback.from_user.id]["dz"] = sent_ids
         if broadcaster is not None:
-            await broadcaster.broadcast_homework_update(format_homework_notification(entry))
+            await broadcaster.broadcast_homework_update(format_homework_notification(entry), schedule_id=HOMEWORK_SCHEDULE_ID)
         await callback.answer("Опубликовано")
 
     @dispatcher.callback_query(F.data == "dz:cancel")
@@ -840,11 +967,12 @@ def build_dispatcher(
         await register_callback_user(callback)
         homework_drafts.pop(callback.from_user.id, None)
         editor = await user_is_editor(callback.from_user.id)
+        user = await get_user_record(callback.from_user.id)
         await replace_context_message(
             callback.bot,
             callback.from_user.id,
             "menu",
-            format_welcome(is_editor=editor),
+            format_welcome(user.group_name if user else None, is_editor=editor),
             reply_markup=START_KEYBOARD,
         )
         await clear_context_messages(callback.bot, callback.from_user.id, "dz")
@@ -879,6 +1007,7 @@ def build_dispatcher(
             return
 
         action = callback.data.split(":", 1)[1]
+        admin_user = await get_user_record(callback.from_user.id)
         if action == "status":
             text = await format_admin_status()
             await callback.message.edit_text(text, reply_markup=ADMIN_KEYBOARD)
@@ -886,8 +1015,11 @@ def build_dispatcher(
             await callback.answer()
             return
         if action == "baseline":
-            snapshot, snapshot_hash = await parser.parse()
-            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot)
+            if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
+                await callback.answer("Сначала выбери свою группу через /start.", show_alert=True)
+                return
+            snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
+            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
             day = get_day_by_offset(snapshot, 0)
             preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
             await callback.message.edit_text(
@@ -948,7 +1080,7 @@ def build_dispatcher(
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
-            await callback.message.edit_text(format_welcome(is_editor=editor))
+            await callback.message.edit_text(format_welcome(admin_user.group_name if admin_user else None, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await callback.answer()
             return
@@ -963,7 +1095,6 @@ def build_dispatcher(
             last_change_at = escape(last_change["created_at"]) if last_change else "пока не было"
             text = (
                 "<b>Статус бота</b>\n\n"
-                f"Группа: <b>{escape(settings.group_name)}</b>\n"
                 f"Пользователей: <b>{len(users)}</b>\n"
                 f"Последнее изменение: <b>{last_change_at}</b>"
             )
@@ -981,6 +1112,8 @@ def build_dispatcher(
                         roles.append("админ")
                     if user.is_editor:
                         roles.append("редактор")
+                    if user.group_name:
+                        roles.append(user.group_name)
                     role_text = f" ({', '.join(roles)})" if roles else ""
                     lines.append(f"- {escape(user.platform)} | {escape(display)} | <b>{user.user_id}</b>{escape(role_text)}")
                 text = "\n".join(lines)
@@ -1001,8 +1134,11 @@ def build_dispatcher(
                 )
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
-            snapshot, snapshot_hash = await parser.parse()
-            await db.save_snapshot("current", snapshot_hash, snapshot)
+            if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
+                await callback.answer("Сначала выбери свою группу через /start.", show_alert=True)
+                return
+            snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
+            await db.save_snapshot("current", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
             day = get_day_by_offset(snapshot, 0)
             preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
             text = "<b>Расписание перепарсено</b>\n\n" + preview
@@ -1129,12 +1265,30 @@ def build_dispatcher(
     @dispatcher.message(F.text == "Домашние задания")
     async def handle_homework_text_shortcut(message: Message) -> None:
         await register_message_user(message)
+        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
+            return
+        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "homework",
+                f"Просмотр ДЗ сейчас доступен только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
+            )
+            return
         await send_homework_subject_picker(message.bot, message.chat.id, "homework")
 
     @dispatcher.message(F.text)
     async def handle_text_message(message: Message) -> None:
         await register_message_user(message)
         if message.from_user is None or message.text is None:
+            return
+        user = await get_user_record(message.from_user.id)
+        if user is None or user.schedule_id is None or not user.group_name:
+            if message.text.startswith("/"):
+                await prompt_group_selection(message.bot, message.chat.id)
+                return
+            await try_delete_message(message)
+            await handle_group_input(message.bot, message.chat.id, message.from_user.id, message.text)
             return
         draft = homework_drafts.get(message.from_user.id)
         if draft is not None and draft.awaiting_text:
@@ -1161,7 +1315,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            "Используй /rasp для расписания, /homework для просмотра ДЗ и /dz для добавления домашки, если у тебя есть роль редактора.",
+            format_welcome(user.group_name, is_editor=await user_is_editor(message.from_user.id)),
             reply_markup=START_KEYBOARD,
         )
 

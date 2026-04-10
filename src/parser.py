@@ -26,18 +26,23 @@ MONTHS = {
 
 class ScheduleParser:
     def __init__(self, schedule_url: str, timeout: float = 20.0) -> None:
-        self.schedule_url = schedule_url
+        self.schedule_base_url = schedule_url.rstrip("/")
+        if self.schedule_base_url.rsplit("/", 1)[-1].isdigit():
+            self.schedule_base_url = self.schedule_base_url.rsplit("/", 1)[0]
         self.timeout = timeout
 
-    async def fetch_html(self) -> str:
+    def build_schedule_url(self, schedule_id: int) -> str:
+        return f"{self.schedule_base_url}/{schedule_id}"
+
+    async def fetch_html(self, schedule_id: int) -> str:
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            response = await client.get(self.schedule_url)
+            response = await client.get(self.build_schedule_url(schedule_id))
             response.raise_for_status()
             response.encoding = "utf-8"
             return response.text
 
-    async def parse(self) -> tuple[ScheduleSnapshot, str]:
-        html = await self.fetch_html()
+    async def parse(self, schedule_id: int) -> tuple[ScheduleSnapshot, str]:
+        html = await self.fetch_html(schedule_id)
         snapshot = self.parse_html(html)
         return snapshot, self.compute_hash(snapshot)
 
