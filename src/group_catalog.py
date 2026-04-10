@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -19,10 +23,18 @@ class GroupInfo:
 
 
 class GroupCatalog:
-    def __init__(self, schedule_url: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        schedule_url: str,
+        timeout: float = 30.0,
+        request_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
         self.timeout = timeout
+        self.request_retries = max(1, request_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._lock = asyncio.Lock()
         self._loaded = False
         self._groups_by_name: dict[str, GroupInfo] = {}
@@ -39,10 +51,17 @@ class GroupCatalog:
                 return
 
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                root_response = await client.get(f"{self.base_origin}/")
-                root_response.raise_for_status()
-                root_response.encoding = "utf-8"
-                root_soup = BeautifulSoup(root_response.text, "html.parser")
+                try:
+                    root_response = await self._get_with_retry(client, f"{self.base_origin}/")
+                    root_response.encoding = "utf-8"
+                    root_soup = BeautifulSoup(root_response.text, "html.parser")
+                except httpx.HTTPError:
+                    logger.exception("Не удалось загрузить список отделений с %s", self.base_origin)
+                    if not self._loaded:
+                        self._groups_by_name = {}
+                        self._groups_by_schedule_id = {}
+                        self._loaded = True
+                    return
 
                 departments: list[tuple[int, str]] = []
                 for link in root_soup.select("a[href^='/group/']"):
@@ -55,8 +74,11 @@ class GroupCatalog:
                 groups_by_name: dict[str, GroupInfo] = {}
                 groups_by_schedule_id: dict[int, GroupInfo] = {}
                 for department_id, department_code in sorted(set(departments)):
-                    response = await client.get(f"{self.base_origin}/group/{department_id}")
-                    response.raise_for_status()
+                    try:
+                        response = await self._get_with_retry(client, f"{self.base_origin}/group/{department_id}")
+                    except httpx.HTTPError:
+                        logger.warning("Пропускаю отделение id=%s из-за ошибки сети", department_id)
+                        continue
                     response.encoding = "utf-8"
                     soup = BeautifulSoup(response.text, "html.parser")
                     department_name_node = soup.find(id="titleS")
@@ -81,6 +103,21 @@ class GroupCatalog:
                 self._groups_by_name = groups_by_name
                 self._groups_by_schedule_id = groups_by_schedule_id
                 self._loaded = True
+
+    async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, self.request_retries + 1):
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt >= self.request_retries:
+                    break
+                await asyncio.sleep(self.retry_backoff_seconds * attempt)
+        assert last_exc is not None
+        raise last_exc
 
     async def list_groups(self) -> list[GroupInfo]:
         await self.ensure_loaded()
