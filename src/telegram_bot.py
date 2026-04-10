@@ -1157,7 +1157,7 @@ def build_dispatcher(
             )
             return
 
-        await replace_context_message(
+        await send_new_context_message(
             message.bot,
             message.chat.id,
             "menu",
