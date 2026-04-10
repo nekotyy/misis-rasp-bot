@@ -275,8 +275,12 @@ def build_dispatcher(
         )
         rows: list[list[InlineKeyboardButton]] = [
             [InlineKeyboardButton(text=toggle_label, callback_data="settings:toggle_hw")],
-            [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
         ]
+        if user and user.group_name:
+            rows.append([InlineKeyboardButton(text="Отписаться от группы", callback_data="settings:clear_group")])
+        rows.extend([
+            [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
+        ])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def format_admin_panel() -> str:
@@ -996,6 +1000,16 @@ def build_dispatcher(
                 reply_markup=await build_settings_keyboard(callback.from_user.id),
             )
             await callback.answer("Настройка обновлена")
+            return
+        if action == "clear_group":
+            await db.clear_user_group("telegram", callback.from_user.id)
+            homework_drafts.pop(callback.from_user.id, None)
+            await callback.message.edit_text(
+                format_group_prompt("Ты отписался от своей группы. Выбери новую, когда захочешь."),
+            )
+            context_messages[callback.message.chat.id]["group_select"] = [callback.message.message_id]
+            context_messages[callback.message.chat.id]["settings"] = []
+            await callback.answer("Группа сброшена")
             return
 
     @dispatcher.callback_query(F.data.startswith("admin:"))

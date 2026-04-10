@@ -219,7 +219,7 @@ def build_vk_bot(
     def draft_attachment_keyboard() -> str:
         return make_keyboard([["Опубликовать"], ["Отменить"]])
 
-    def settings_keyboard(notifications_enabled: bool) -> str:
+    def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
         rows = [
             [
                 "Выключить уведомления о ДЗ"
@@ -227,6 +227,8 @@ def build_vk_bot(
                 else "Включить уведомления о ДЗ"
             ]
         ]
+        if has_group:
+            rows.append(["Отписаться от группы"])
         rows.append(["Назад в меню"])
         return make_keyboard(rows)
 
@@ -382,7 +384,10 @@ def build_vk_bot(
         await show_screen(
             peer_id,
             await settings_text(user_id, extra=extra),
-            keyboard=settings_keyboard(user.homework_notifications_enabled if user else True),
+            keyboard=settings_keyboard(
+                user.homework_notifications_enabled if user else True,
+                has_group=bool(user and user.group_name),
+            ),
         )
 
     async def show_homework_subjects(peer_id: int, page: int = 0) -> None:
@@ -566,6 +571,12 @@ def build_vk_bot(
         if text == "Включить уведомления о ДЗ":
             await db.set_homework_notifications("vk", user_id, True)
             await show_settings(peer_id, user_id, extra="Уведомления о ДЗ включены.")
+            return
+
+        if text == "Отписаться от группы":
+            await db.clear_user_group("vk", user_id)
+            homework_drafts.pop(user_id, None)
+            await prompt_group_selection(peer_id, "Ты отписался от своей группы. Выбери новую, когда захочешь.")
             return
 
         if text in {"/rasp", "Расписание"}:

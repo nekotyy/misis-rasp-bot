@@ -231,6 +231,18 @@ class Database:
             )
             await db.commit()
 
+    async def clear_user_group(self, platform: str, user_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET group_name = NULL, schedule_id = NULL
+                WHERE platform = ? AND user_id = ?
+                """,
+                (platform, user_id),
+            )
+            await db.commit()
+
     async def set_editor(self, platform: str, user_id: int, is_editor: bool) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
