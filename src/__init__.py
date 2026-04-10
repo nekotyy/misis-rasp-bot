@@ -1,2 +1,2 @@
 """MISIS schedule bot package."""
-# тест1
+# тест11
