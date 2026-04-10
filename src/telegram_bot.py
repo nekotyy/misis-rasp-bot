@@ -23,7 +23,7 @@ from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_b
 
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
-SUPPORT_CONTACT = "@nekoty"
+SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
 
 
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
