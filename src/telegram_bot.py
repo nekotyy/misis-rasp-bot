@@ -1189,42 +1189,44 @@ def build_dispatcher(
     async def handle_admin_callback(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not user_is_admin(callback.from_user.id):
-            await callback.answer("Недостаточно прав.", show_alert=True)
+            await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
             return
         if callback.message is None:
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
 
         action = callback.data.split(":", 1)[1]
         admin_user = await get_user_record(callback.from_user.id)
         if action == "status":
             text = await format_admin_status()
-            await callback.message.edit_text(text, reply_markup=ADMIN_KEYBOARD)
+            await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_KEYBOARD)
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if action == "baseline":
             if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                await callback.answer("Сначала выбери свою группу через /start.", show_alert=True)
+                await safe_callback_answer(callback, "Сначала выбери свою группу через /start.", show_alert=True)
                 return
             snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
             await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
             day = get_day_by_offset(snapshot, 0)
             preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
-            await callback.message.edit_text(
+            await safe_edit_message_text(
+                callback.message,
                 "<b>Эталон для сравнения сохранен</b>\n\n" + preview,
                 reply_markup=ADMIN_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await callback.answer("Эталон сохранен")
+            await safe_callback_answer(callback, "Эталон сохранен")
             return
         if action == "homework_delete":
-            await callback.message.edit_text(
+            await safe_edit_message_text(
+                callback.message,
                 "<b>Удаление домашнего задания</b>\n\nВыбери предмет, чтобы увидеть последние записи.",
                 reply_markup=build_admin_homework_subjects_keyboard(),
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if action.startswith("hw_subject:"):
             subject_key = action.split(":", 1)[1]
@@ -1239,9 +1241,9 @@ def build_dispatcher(
             else:
                 text = f"<b>{escape(subject['subject'])}</b>\n\nВыбери запись, которую нужно удалить."
                 reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
-            await callback.message.edit_text(text, reply_markup=reply_markup)
+            await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if action.startswith("hw_delete:"):
             _, homework_id_text, subject_key = action.split(":", 2)
@@ -1263,19 +1265,19 @@ def build_dispatcher(
                 prefix = "Запись удалена.\n\n" if deleted else "Запись не найдена.\n\n"
                 text = f"<b>{subject_name}</b>\n\n{prefix}Выбери следующую запись для удаления."
                 reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
-            await callback.message.edit_text(text, reply_markup=reply_markup)
+            await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await callback.answer("Удалено" if deleted else "Не найдено")
+            await safe_callback_answer(callback, "Удалено" if deleted else "Не найдено")
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
-            await callback.message.edit_text(format_welcome(admin_user.group_name if admin_user else None, is_editor=editor))
+            await safe_edit_message_text(callback.message, format_welcome(admin_user.group_name if admin_user else None, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         if action == "back":
-            await callback.message.edit_text(format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
-            await callback.answer()
+            await safe_edit_message_text(callback.message, format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
+            await safe_callback_answer(callback)
             return
 
         if action == "status":
@@ -1324,7 +1326,7 @@ def build_dispatcher(
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
             if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                await callback.answer("Сначала выбери свою группу через /start.", show_alert=True)
+                await safe_callback_answer(callback, "Сначала выбери свою группу через /start.", show_alert=True)
                 return
             snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
             await db.save_snapshot("current", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
@@ -1338,28 +1340,29 @@ def build_dispatcher(
             text = "<b>Тестовая рассылка</b>\n\nСообщение отправлено всем зарегистрированным пользователям."
             reply_markup = ADMIN_KEYBOARD
 
-        await callback.message.edit_text(text, reply_markup=reply_markup)
+        await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
         context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data.startswith("editor:toggle:"))
     async def handle_editor_toggle(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not user_is_admin(callback.from_user.id):
-            await callback.answer("Недостаточно прав.", show_alert=True)
+            await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
             return
         user_id = int(callback.data.split(":")[-1])
         target = await db.get_user("telegram", user_id)
         if target is None:
-            await callback.answer("Пользователь не найден.", show_alert=True)
+            await safe_callback_answer(callback, "Пользователь не найден.", show_alert=True)
             return
         await db.set_editor("telegram", user_id, not target.is_editor)
         users = [user for user in await db.list_users("telegram")]
-        await callback.message.edit_text(
+        await safe_edit_message_text(
+            callback.message,
             "<b>Управление редакторами</b>\n\nНажми на пользователя, чтобы выдать или снять роль редактора.",
             reply_markup=build_editors_keyboard(users),
         )
-        await callback.answer("Роль обновлена")
+        await safe_callback_answer(callback, "Роль обновлена")
 
     @dispatcher.message(F.document | F.photo | F.video | F.audio)
     async def handle_homework_attachment_message(message: Message) -> None:
