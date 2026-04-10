@@ -513,11 +513,11 @@ def build_dispatcher(
 
     async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
         if search_catalog is None:
-            await prompt_schedule_search(bot, chat_id, user_id, "Поиск временно недоступен.")
+            await bot.send_message(chat_id, "Поиск временно недоступен.")
             return False
         target = await search_catalog.find(query)
         if target is None:
-            await prompt_schedule_search(bot, chat_id, user_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
+            await bot.send_message(chat_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
             return False
         snapshot_obj, _ = await parser.parse_from_url(target.url)
         snapshot = {

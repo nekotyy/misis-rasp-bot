@@ -29,6 +29,8 @@ class ScheduleSearchCatalog:
         self._auds_loaded = False
         self._preps: dict[str, SearchTarget] = {}
         self._auds: dict[str, SearchTarget] = {}
+        self._prep_items: list[tuple[str, SearchTarget]] = []
+        self._aud_items: list[tuple[str, SearchTarget]] = []
 
     async def find(self, query: str) -> SearchTarget | None:
         normalized = self.normalize(query)
@@ -40,9 +42,15 @@ class ScheduleSearchCatalog:
         prep = self._preps.get(normalized)
         if prep is not None:
             return prep
+        prep = self._find_partial(normalized, self._prep_items)
+        if prep is not None:
+            return prep
 
         await self._ensure_auds_loaded()
-        return self._auds.get(normalized)
+        aud = self._auds.get(normalized)
+        if aud is not None:
+            return aud
+        return self._find_partial(normalized, self._aud_items)
 
     async def _ensure_preps_loaded(self) -> None:
         if self._preps_loaded:
@@ -60,11 +68,14 @@ class ScheduleSearchCatalog:
                     href = link.get("href", "")
                     if not title or not href:
                         continue
-                    self._preps[self.normalize(title)] = SearchTarget(
+                    normalized_title = self.normalize(title)
+                    target = SearchTarget(
                         kind="teacher",
                         title=title,
                         url=f"{self.base_origin}{href}",
                     )
+                    self._preps[normalized_title] = target
+                    self._prep_items.append((normalized_title, target))
                 self._preps_loaded = True
 
     async def _ensure_auds_loaded(self) -> None:
@@ -83,12 +94,36 @@ class ScheduleSearchCatalog:
                     href = link.get("href", "")
                     if not title or not href:
                         continue
-                    self._auds[self.normalize(title)] = SearchTarget(
+                    normalized_title = self.normalize(title)
+                    target = SearchTarget(
                         kind="audience",
                         title=title,
                         url=f"{self.base_origin}{href}",
                     )
+                    self._auds[normalized_title] = target
+                    self._aud_items.append((normalized_title, target))
                 self._auds_loaded = True
+
+    def _find_partial(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
+        if not normalized:
+            return None
+        exact_word_matches: list[SearchTarget] = []
+        startswith_matches: list[SearchTarget] = []
+        contains_matches: list[SearchTarget] = []
+        for candidate_text, target in items:
+            parts = candidate_text.split()
+            if normalized in parts:
+                exact_word_matches.append(target)
+                continue
+            if any(part.startswith(normalized) for part in parts) or candidate_text.startswith(normalized):
+                startswith_matches.append(target)
+                continue
+            if normalized in candidate_text:
+                contains_matches.append(target)
+        for matches in (exact_word_matches, startswith_matches, contains_matches):
+            if len(matches) == 1:
+                return matches[0]
+        return None
 
     @staticmethod
     def normalize(value: str) -> str:
