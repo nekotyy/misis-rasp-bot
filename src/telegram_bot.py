@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import asyncio
 from datetime import datetime
 from html import escape
 from traceback import format_exception
 
 import httpx
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
 
@@ -444,10 +445,17 @@ def build_dispatcher(
             return False
 
     async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> None:
-        try:
-            await callback.answer(*args, **kwargs)
-        except TelegramBadRequest:
-            return
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                await callback.answer(*args, **kwargs)
+                return
+            except TelegramBadRequest:
+                return
+            except TelegramNetworkError:
+                if attempt >= retries:
+                    return
+                await asyncio.sleep(0.5 * attempt)
 
     async def safe_edit_message_text(
         message: Message | None,
@@ -456,13 +464,20 @@ def build_dispatcher(
     ) -> bool:
         if message is None:
             return False
-        try:
-            await message.edit_text(text, reply_markup=reply_markup)
-            return True
-        except TelegramBadRequest as exc:
-            if "message is not modified" in str(exc).lower():
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                await message.edit_text(text, reply_markup=reply_markup)
                 return True
-            return False
+            except TelegramBadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    return True
+                return False
+            except TelegramNetworkError:
+                if attempt >= retries:
+                    return False
+                await asyncio.sleep(0.5 * attempt)
+        return False
 
     def short_error_text(error: Exception) -> str:
         text = f"{type(error).__name__}: {error}"

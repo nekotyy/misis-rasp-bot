@@ -560,6 +560,60 @@ def build_vk_bot(
         peer_modes[peer_id] = "admin_delete_subjects"
         await show_screen(peer_id, "Удаление домашнего задания\n\nВыбери предмет, чтобы увидеть последние записи.", keyboard=make_keyboard(rows))
 
+    async def show_admin_users(peer_id: int, page: int = 0) -> None:
+        users = await db.list_users()
+        await sync_vk_user_names([user.user_id for user in users if user.platform == "vk"])
+        users = await db.list_users()
+
+        if not users:
+            peer_modes[peer_id] = "admin_users"
+            await show_screen(peer_id, "Пользователи\n\nПока никто не зарегистрирован.", keyboard=make_keyboard([["Назад в админку"]]))
+            return
+
+        user_rows: list[str] = []
+        for user in users:
+            platform_label = "tg" if user.platform == "telegram" else user.platform
+            user_label = user.full_name or "Без имени"
+            nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
+            group_label = user.group_name or "-"
+            role_flags: list[str] = []
+            if user.is_admin:
+                role_flags.append("админ")
+            if user.is_editor:
+                role_flags.append("редактор")
+            role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
+            user_rows.append(f"- {platform_label} | {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}")
+
+        page_size = 20
+        total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        peer_pages[peer_id]["admin_users"] = page
+        peer_modes[peer_id] = "admin_users"
+
+        start = page * page_size
+        end = start + page_size
+        lines = [
+            "Пользователи",
+            "",
+            "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
+            "",
+            f"Страница {page + 1}/{total_pages}",
+            "",
+            *user_rows[start:end],
+        ]
+
+        rows: list[list[str]] = []
+        nav: list[str] = []
+        if page > 0:
+            nav.append("Предыдущая страница")
+        if page < total_pages - 1:
+            nav.append("Следующая страница")
+        if nav:
+            rows.append(nav)
+        rows.append(["Назад в админку"])
+
+        await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard(rows))
+
     async def show_latest_homework(peer_id: int, subject_key: str) -> None:
         subject = get_subject(subject_key)
         if subject is None:
@@ -922,26 +976,15 @@ def build_vk_bot(
                 await show_screen(peer_id, response, keyboard=admin_keyboard())
                 return
             if text == "Пользователи":
-                users = await db.list_users()
-                await sync_vk_user_names([user.user_id for user in users if user.platform == "vk"])
-                users = await db.list_users()
-                lines = ["Пользователи", ""]
-                if not users:
-                    lines.append("Пока никто не зарегистрирован.")
-                else:
-                    for user in users:
-                        display = user.full_name or user.username or "Без имени"
-                        roles = []
-                        if user.is_admin:
-                            roles.append("админ")
-                        if user.is_editor:
-                            roles.append("редактор")
-                        if user.group_name:
-                            roles.append(user.group_name)
-                        role_text = f" ({', '.join(roles)})" if roles else ""
-                        lines.append(f"- {user.platform} | {display} | {user.user_id}{role_text}")
-                await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard([["Назад в админку"]]))
+                await show_admin_users(peer_id, 0)
                 return
+            if mode == "admin_users":
+                if text == "Следующая страница":
+                    await show_admin_users(peer_id, peer_pages[peer_id].get("admin_users", 0) + 1)
+                    return
+                if text == "Предыдущая страница":
+                    await show_admin_users(peer_id, peer_pages[peer_id].get("admin_users", 0) - 1)
+                    return
             if text == "Редакторы":
                 users = await db.list_users("vk")
                 await sync_vk_user_names([user.user_id for user in users])
