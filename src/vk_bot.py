@@ -194,7 +194,7 @@ def build_vk_bot(
     def draft_attachment_keyboard() -> str:
         return make_keyboard([["Опубликовать"], ["Отменить"]])
 
-    def settings_keyboard(linked: bool, notifications_enabled: bool, awaiting_code: bool = False) -> str:
+    def settings_keyboard(notifications_enabled: bool) -> str:
         rows = [
             [
                 "Выключить уведомления о ДЗ"
@@ -202,12 +202,6 @@ def build_vk_bot(
                 else "Включить уведомления о ДЗ"
             ]
         ]
-        if linked:
-            rows.append(["Отвязать Telegram"])
-        else:
-            rows.append(["У меня есть код привязки"])
-        if awaiting_code:
-            rows.append(["Отменить ввод кода"])
         rows.append(["Назад в меню"])
         return make_keyboard(rows)
 
@@ -236,18 +230,12 @@ def build_vk_bot(
 
     async def settings_text(user_id: int, extra: str | None = None) -> str:
         user = await db.get_user("vk", user_id)
-        linked = await db.get_linked_account("vk", user_id)
         notifications = "включены" if (user.homework_notifications_enabled if user else True) else "выключены"
         lines = [
             "Настройки",
             "",
             f"Уведомления о новом ДЗ: {notifications}",
         ]
-        if linked:
-            lines.append(f"Telegram привязан: {linked['linked_user_id']}")
-        else:
-            lines.append("Telegram пока не привязан.")
-            lines.append("Открой Telegram-бота, создай код привязки и отправь его сюда.")
         if extra:
             lines.extend(["", extra])
         return "\n".join(lines)
@@ -324,18 +312,13 @@ def build_vk_bot(
             keyboard=menu_keyboard(is_editor, is_admin),
         )
 
-    async def show_settings(peer_id: int, user_id: int, extra: str | None = None, awaiting_code: bool = False) -> None:
+    async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)
-        linked = await db.get_linked_account("vk", user_id)
-        peer_modes[peer_id] = "settings_link_wait" if awaiting_code else "settings"
+        peer_modes[peer_id] = "settings"
         await show_screen(
             peer_id,
             await settings_text(user_id, extra=extra),
-            keyboard=settings_keyboard(
-                linked=linked is not None,
-                notifications_enabled=user.homework_notifications_enabled if user else True,
-                awaiting_code=awaiting_code,
-            ),
+            keyboard=settings_keyboard(user.homework_notifications_enabled if user else True),
         )
 
     async def show_homework_subjects(peer_id: int, page: int = 0) -> None:
@@ -505,26 +488,6 @@ def build_vk_bot(
             await db.set_homework_notifications("vk", user_id, True)
             await show_settings(peer_id, user_id, extra="Уведомления о ДЗ включены.")
             return
-
-        if text == "У меня есть код привязки":
-            await show_settings(peer_id, user_id, extra="Отправь сюда код из Telegram одним сообщением.", awaiting_code=True)
-            return
-
-        if text == "Отменить ввод кода":
-            await show_settings(peer_id, user_id)
-            return
-
-        if text == "Отвязать Telegram":
-            deleted = await db.unlink_account("vk", user_id)
-            await show_settings(peer_id, user_id, extra="Привязка удалена." if deleted else "Привязки не было.")
-            return
-
-        token_candidate = text.strip().upper()
-        if len(token_candidate) == 6 and token_candidate.isalnum():
-            success, response = await db.consume_link_token(token_candidate, "vk", user_id)
-            if success or mode == "settings_link_wait":
-                await show_settings(peer_id, user_id, extra=response)
-                return
 
         if text in {"/rasp", "Расписание"}:
             peer_modes[peer_id] = "schedule_menu"

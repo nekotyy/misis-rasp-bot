@@ -19,7 +19,6 @@ class Settings:
     app_timezone: str
     telegram_bot_token: str
     vk_bot_token: str
-    vk_bot_url: str
     vk_disable_ssl_verify: bool
     admin_telegram_id: int | None
     admin_vk_id: int | None
@@ -38,7 +37,6 @@ class Settings:
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             vk_bot_token=os.getenv("VK_BOT_TOKEN", "").strip(),
-            vk_bot_url=os.getenv("VK_BOT_URL", "").strip(),
             vk_disable_ssl_verify=os.getenv("VK_DISABLE_SSL_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"},
             admin_telegram_id=int(admin_telegram_id_raw) if admin_telegram_id_raw else None,
             admin_vk_id=int(admin_vk_id_raw) if admin_vk_id_raw else None,

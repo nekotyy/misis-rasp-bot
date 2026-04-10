@@ -10,7 +10,6 @@
 - рассылает уведомления об изменениях расписания
 - рассылает уведомления о новом ДЗ
 - поддерживает Telegram и VK
-- умеет привязывать Telegram и VK аккаунты
 
 ## Локальный запуск
 
@@ -41,7 +40,6 @@ TELEGRAM_BOT_TOKEN=
 VK_BOT_TOKEN=
 ADMIN_TELEGRAM_ID=
 ADMIN_VK_ID=
-VK_BOT_URL=
 APP_TIMEZONE=Europe/Moscow
 ```
 

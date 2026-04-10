@@ -212,22 +212,16 @@ def build_dispatcher(
 
     async def format_settings_text(user_id: int) -> str:
         user = await db.get_user("telegram", user_id)
-        linked = await db.get_linked_account("telegram", user_id)
         notifications = "включены" if (user.homework_notifications_enabled if user else True) else "выключены"
         lines = [
             "<b>Настройки</b>",
             "",
             f"Уведомления о новом ДЗ: <b>{notifications}</b>",
         ]
-        if linked:
-            lines.append(f"VK привязан: <b>{linked['linked_user_id']}</b>")
-        else:
-            lines.append("VK пока не привязан.")
         return "\n".join(lines)
 
     async def build_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
         user = await db.get_user("telegram", user_id)
-        linked = await db.get_linked_account("telegram", user_id)
         toggle_label = (
             "Выключить уведомления о ДЗ"
             if (user.homework_notifications_enabled if user else True)
@@ -235,19 +229,8 @@ def build_dispatcher(
         )
         rows: list[list[InlineKeyboardButton]] = [
             [InlineKeyboardButton(text=toggle_label, callback_data="settings:toggle_hw")],
+            [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
         ]
-        if linked:
-            rows.append([InlineKeyboardButton(text="Отвязать VK", callback_data="settings:unlink")])
-        else:
-            rows.append([InlineKeyboardButton(text="Привязать VK", callback_data="settings:link_vk")])
-        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def build_generated_link_keyboard() -> InlineKeyboardMarkup | None:
-        rows: list[list[InlineKeyboardButton]] = []
-        if settings.vk_bot_url:
-            rows.append([InlineKeyboardButton(text="Открыть VK бот", url=settings.vk_bot_url)])
-        rows.append([InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def format_admin_panel() -> str:
@@ -315,6 +298,17 @@ def build_dispatcher(
         sent = await bot.send_message(chat_id, text, reply_markup=reply_markup)
         context_messages[chat_id][context] = [sent.message_id]
 
+    async def send_new_context_message(
+        bot: Bot,
+        chat_id: int,
+        context: str,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
+        await clear_context_messages(bot, chat_id, context)
+        sent = await bot.send_message(chat_id, text, reply_markup=reply_markup)
+        context_messages[chat_id][context] = [sent.message_id]
+
     async def clear_context_messages(bot: Bot, chat_id: int, context: str) -> None:
         for message_id in context_messages[chat_id].get(context, []):
             try:
@@ -358,7 +352,7 @@ def build_dispatcher(
             return False
 
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
-        await replace_context_message(
+        await send_new_context_message(
             bot,
             chat_id,
             "schedule",
@@ -372,7 +366,7 @@ def build_dispatcher(
             if mode == "homework"
             else "<b>Выбери предмет для нового домашнего задания</b>"
         )
-        await replace_context_message(
+        await send_new_context_message(
             bot,
             chat_id,
             "homework" if mode == "homework" else "dz",
@@ -575,7 +569,7 @@ def build_dispatcher(
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
         editor = await user_is_editor(message.from_user.id if message.from_user else None)
-        await replace_context_message(
+        await send_new_context_message(
             message.bot,
             message.chat.id,
             "menu",
@@ -588,7 +582,7 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is None:
             return
-        await replace_context_message(
+        await send_new_context_message(
             message.bot,
             message.chat.id,
             "settings",
@@ -599,20 +593,38 @@ def build_dispatcher(
     @dispatcher.message(Command("rasp"))
     async def handle_rasp_command(message: Message) -> None:
         await register_message_user(message)
-        await send_schedule_menu(message.bot, message.chat.id)
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "schedule",
+            "Выбери нужный вариант расписания.",
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
 
     @dispatcher.message(Command("homework"))
     async def handle_homework_command(message: Message) -> None:
         await register_message_user(message)
-        await send_homework_subject_picker(message.bot, message.chat.id, "homework")
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "homework",
+            "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания.",
+            reply_markup=build_homework_subjects_keyboard("homework"),
+        )
 
     @dispatcher.message(Command("dz"))
     async def handle_dz_command(message: Message) -> None:
         await register_message_user(message)
         if not await user_is_editor(message.from_user.id if message.from_user else None):
-            await replace_context_message(message.bot, message.chat.id, "dz", "Команда доступна только редакторам домашнего задания.")
+            await send_new_context_message(message.bot, message.chat.id, "dz", "Команда доступна только редакторам домашнего задания.")
             return
-        await send_homework_subject_picker(message.bot, message.chat.id, "dz")
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "dz",
+            "<b>Выбери предмет для нового домашнего задания</b>",
+            reply_markup=build_homework_subjects_keyboard("dz"),
+        )
 
     @dispatcher.message(Command("cancel"))
     async def handle_cancel_command(message: Message) -> None:
@@ -620,7 +632,7 @@ def build_dispatcher(
         if message.from_user:
             homework_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "dz")
-        await replace_context_message(
+        await send_new_context_message(
             message.bot,
             message.chat.id,
             "menu",
@@ -632,9 +644,9 @@ def build_dispatcher(
     async def handle_admin_command(message: Message) -> None:
         await register_message_user(message)
         if not user_is_admin(message.from_user.id if message.from_user else None):
-            await replace_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
+            await send_new_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
             return
-        await replace_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
+        await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
 
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
@@ -854,25 +866,6 @@ def build_dispatcher(
                 reply_markup=await build_settings_keyboard(callback.from_user.id),
             )
             await callback.answer("Настройка обновлена")
-            return
-        if action == "link_vk":
-            token = await db.create_link_token("telegram", callback.from_user.id)
-            text = (
-                "<b>Привязка VK</b>\n\n"
-                f"Код привязки: <code>{token}</code>\n"
-                "Срок действия: 10 минут.\n\n"
-                "Открой VK-бота и отправь этот код одним сообщением."
-            )
-            await callback.message.edit_text(text, reply_markup=build_generated_link_keyboard())
-            await callback.answer("Код создан")
-            return
-        if action == "unlink":
-            deleted = await db.unlink_account("telegram", callback.from_user.id)
-            await callback.message.edit_text(
-                await format_settings_text(callback.from_user.id),
-                reply_markup=await build_settings_keyboard(callback.from_user.id),
-            )
-            await callback.answer("Привязка удалена" if deleted else "Привязки не было")
             return
 
     @dispatcher.callback_query(F.data.startswith("admin:"))
@@ -1143,19 +1136,6 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is None or message.text is None:
             return
-        token_candidate = message.text.strip().upper()
-        if len(token_candidate) == 6 and token_candidate.isalnum():
-            success, response = await db.consume_link_token(token_candidate, "telegram", message.from_user.id)
-            if success or "код" in response.lower():
-                await try_delete_message(message)
-                await replace_context_message(
-                    message.bot,
-                    message.chat.id,
-                    "settings",
-                    await format_settings_text(message.from_user.id) + f"\n\n{escape(response)}",
-                    reply_markup=await build_settings_keyboard(message.from_user.id),
-                )
-                return
         draft = homework_drafts.get(message.from_user.id)
         if draft is not None and draft.awaiting_text:
             draft.text = message.text.strip()
