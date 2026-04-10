@@ -21,7 +21,7 @@ class ScheduleJobs:
     def configure(self) -> None:
         self.scheduler.add_job(self.save_daily_baseline, CronTrigger(hour=0, minute=0))
         self.scheduler.add_job(self.save_daily_baseline_fallback, CronTrigger(hour=5, minute=0))
-        self.scheduler.add_job(self.sync_current_snapshot, CronTrigger(minute=0))
+        self.scheduler.add_job(self.sync_current_snapshot, CronTrigger(minute=10))
 
     def start(self) -> None:
         self.configure()
@@ -39,8 +39,8 @@ class ScheduleJobs:
 
     async def sync_current_snapshot(self) -> None:
         snapshot, snapshot_hash = await self.parser.parse()
-        previous = await self.db.get_latest_snapshot("current")
-        change_summary = ScheduleComparator.compare(previous, snapshot)
+        baseline = await self.db.get_latest_snapshot("daily_baseline")
+        change_summary = ScheduleComparator.compare(baseline, snapshot)
         await self.db.save_snapshot("current", snapshot_hash, snapshot)
 
         if change_summary is None:
@@ -52,4 +52,9 @@ class ScheduleJobs:
             changed_dates=change_summary.changed_dates,
             payload=change_summary.payload,
         )
-        await self.broadcaster.broadcast(change_summary.message)
+        await self.broadcaster.broadcast(
+            change_summary.message,
+            telegram_message=change_summary.telegram_message,
+            vk_message=change_summary.vk_message,
+        )
+        await self.db.save_snapshot("daily_baseline", snapshot_hash, snapshot)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
@@ -20,7 +20,6 @@ class ScheduleFormatter:
 
     @staticmethod
     def format_day_card(day: DaySchedule, title: str) -> str:
-        safe_title = escape(title)
         safe_label = escape(day.date_label)
         if not day.lessons:
             return f"Расписание на {safe_label}\n\nПар нет."
@@ -31,6 +30,15 @@ class ScheduleFormatter:
                 f"<b>{lesson.number}.</b> в <b>{escape(lesson.classroom)}</b> "
                 f"по <b>{escape(lesson.subject)}</b> у <b>{escape(lesson.teacher)}</b>"
             )
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_day_plain(day: DaySchedule) -> str:
+        if not day.lessons:
+            return f"Расписание на {day.date_label}\n\nПар нет."
+        lines = [f"Расписание на {day.date_label}", ""]
+        for lesson in sorted(day.lessons, key=lambda item: item.number):
+            lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
 
     @staticmethod
@@ -49,73 +57,61 @@ class ScheduleComparator:
 
         prev_days = {day["date_iso"]: day for day in previous["content"]["days"]}
         current_days = {day.date_iso: day for day in current.days}
+        today = datetime.now().date()
+        allowed_dates = {
+            (today + timedelta(days=offset)).isoformat()
+            for offset in range(2)
+        }
 
         changed_dates: list[str] = []
-        payload: dict[str, list[str]] = {}
+        payload: dict[str, str] = {}
+        changed_days: list[DaySchedule] = []
 
         for date_iso, day in current_days.items():
+            if date_iso not in allowed_dates:
+                continue
+            if not day.lessons:
+                continue
             prev_day = prev_days.get(date_iso)
-            diff_lines = ScheduleComparator._diff_day(prev_day, day)
-            if diff_lines:
+            if ScheduleComparator._day_changed(prev_day, day):
                 changed_dates.append(day.date_label)
-                payload[day.date_label] = diff_lines
-
-        for date_iso, prev_day in prev_days.items():
-            if date_iso not in current_days:
-                label = prev_day["date_label"]
-                changed_dates.append(label)
-                payload[label] = ["Расписание на эту дату пропало с сайта."]
+                payload[day.date_label] = ScheduleFormatter.format_day_plain(day)
+                changed_days.append(day)
 
         if not changed_dates:
             return None
 
-        message_lines = ["Обнаружены изменения в расписании:"]
-        for date_label in changed_dates:
-            message_lines.append("")
-            message_lines.append(f"{date_label}")
-            message_lines.extend(payload[date_label])
+        plain_blocks = ["Обнаружены изменения в расписании!"]
+        telegram_blocks = ["<b>Обнаружены изменения в расписании!</b>"]
+        for day in changed_days:
+            plain_blocks.extend(["", payload[day.date_label]])
+            telegram_blocks.extend(["", ScheduleFormatter.format_day_card(day, day.date_label)])
 
         return ChangeSummary(
             changed_dates=changed_dates,
-            message="\n".join(message_lines),
+            message="\n".join(plain_blocks),
             payload=payload,
+            telegram_message="\n".join(telegram_blocks),
+            vk_message="\n".join(plain_blocks),
         )
 
     @staticmethod
-    def _diff_day(prev_day: dict | None, current_day: DaySchedule) -> list[str]:
+    def _day_changed(prev_day: dict | None, current_day: DaySchedule) -> bool:
         current_map = {
             lesson.number: (lesson.subject, lesson.teacher, lesson.classroom)
             for lesson in current_day.lessons
         }
 
         if prev_day is None:
-            if current_map:
-                return [f"Добавлены пары: {', '.join(str(number) for number in sorted(current_map))}"]
-            return ["Появился пустой день."]
+            return bool(current_map)
 
         prev_map = {
             lesson["number"]: (lesson["subject"], lesson["teacher"], lesson["classroom"])
             for lesson in prev_day["lessons"]
         }
-        all_numbers = sorted(set(prev_map) | set(current_map))
-
-        changes: list[str] = []
-        for number in all_numbers:
-            before = prev_map.get(number)
-            after = current_map.get(number)
-            if before == after:
-                continue
-            if before is None and after is not None:
-                changes.append(f"Добавлена {number} пара: {after[0]} | {after[1]} | ауд. {after[2]}")
-                continue
-            if before is not None and after is None:
-                changes.append(f"Убрана {number} пара: {before[0]} | {before[1]} | ауд. {before[2]}")
-                continue
-            changes.append(
-                "Изменена "
-                f"{number} пара: {before[0]} -> {after[0]}, {before[1]} -> {after[1]}, ауд. {before[2]} -> {after[2]}"
-            )
-        return changes
+        if not current_map:
+            return False
+        return prev_map != current_map
 
 
 def filter_days(snapshot: ScheduleSnapshot, days_count: int) -> list[DaySchedule]:

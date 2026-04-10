@@ -44,6 +44,8 @@ class ChangeSummary:
     changed_dates: list[str]
     message: str
     payload: dict
+    telegram_message: str | None = None
+    vk_message: str | None = None
 
 
 @dataclass(slots=True)

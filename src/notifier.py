@@ -17,9 +17,14 @@ class Broadcaster:
         self.telegram_bot = telegram_bot
         self.vk_bot = vk_bot
 
-    async def broadcast(self, message: str) -> None:
-        await self._broadcast_telegram(message)
-        await self._broadcast_vk(message)
+    async def broadcast(
+        self,
+        message: str,
+        telegram_message: str | None = None,
+        vk_message: str | None = None,
+    ) -> None:
+        await self._broadcast_telegram(telegram_message or message)
+        await self._broadcast_vk(vk_message or message)
 
     async def broadcast_test_message(self) -> None:
         await self.broadcast("Тестовое уведомление: бот активен и рассылка работает.")
