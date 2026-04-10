@@ -5,6 +5,7 @@ from datetime import datetime
 from html import escape
 from traceback import format_exception
 
+import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
@@ -506,7 +507,16 @@ def build_dispatcher(
         if target is None:
             await bot.send_message(chat_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
             return False
-        snapshot_obj, _ = await parser.parse_from_url(target.url)
+        try:
+            snapshot_obj, _ = await parser.parse_from_url(target.url)
+        except httpx.HTTPError:
+            await replace_context_message(
+                bot,
+                chat_id,
+                "schedule",
+                format_search_prompt("Сайт расписания временно недоступен. Попробуй еще раз через минуту."),
+            )
+            return False
         snapshot = {
             "title": target.title,
             "kind": target.kind,

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 from datetime import datetime
+import logging
 
 import httpx
 from bs4 import BeautifulSoup
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
+
+logger = logging.getLogger(__name__)
 
 MONTHS = {
     "января": "01",
@@ -25,28 +29,50 @@ MONTHS = {
 
 
 class ScheduleParser:
-    def __init__(self, schedule_url: str, timeout: float = 20.0) -> None:
+    def __init__(
+        self,
+        schedule_url: str,
+        timeout: float = 20.0,
+        request_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
         self.schedule_base_url = schedule_url.rstrip("/")
         if self.schedule_base_url.rsplit("/", 1)[-1].isdigit():
             self.schedule_base_url = self.schedule_base_url.rsplit("/", 1)[0]
         self.timeout = timeout
+        self.request_retries = max(1, request_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
     def build_schedule_url(self, schedule_id: int) -> str:
         return f"{self.schedule_base_url}/{schedule_id}"
 
     async def fetch_html(self, schedule_id: int) -> str:
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            response = await client.get(self.build_schedule_url(schedule_id))
-            response.raise_for_status()
+            response = await self._get_with_retry(client, self.build_schedule_url(schedule_id))
             response.encoding = "utf-8"
             return response.text
 
     async def fetch_html_from_url(self, url: str) -> str:
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+            response = await self._get_with_retry(client, url)
             response.encoding = "utf-8"
             return response.text
+
+    async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, self.request_retries + 1):
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt >= self.request_retries:
+                    break
+                logger.warning("Ошибка загрузки %s (попытка %s/%s): %s", url, attempt, self.request_retries, exc)
+                await asyncio.sleep(self.retry_backoff_seconds * attempt)
+        assert last_exc is not None
+        raise last_exc
 
     async def parse(self, schedule_id: int) -> tuple[ScheduleSnapshot, str]:
         html = await self.fetch_html(schedule_id)

@@ -5,6 +5,7 @@ from datetime import datetime
 from html import escape
 from traceback import format_exception
 
+import httpx
 from aiohttp import TCPConnector
 from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
@@ -459,7 +460,12 @@ def build_vk_bot(
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Ничего не найдено. Проверь запрос и попробуй еще раз."))
             return False
-        snapshot_obj, _ = await parser.parse_from_url(target.url)
+        try:
+            snapshot_obj, _ = await parser.parse_from_url(target.url)
+        except httpx.HTTPError:
+            peer_modes[peer_id] = "schedule_search"
+            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))
+            return False
         snapshot = {
             "title": target.title,
             "content": {
