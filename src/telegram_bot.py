@@ -982,7 +982,7 @@ def build_dispatcher(
                     format_welcome(user.group_name if user else None, is_editor=editor),
                     reply_markup=START_KEYBOARD,
                 )
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "menu:settings")
     async def handle_menu_settings(callback: CallbackQuery) -> None:
@@ -1007,19 +1007,19 @@ def build_dispatcher(
     async def handle_menu_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         await send_schedule_menu(callback.bot, callback.from_user.id)
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "start:homework")
     async def handle_start_homework(callback: CallbackQuery) -> None:
@@ -1068,9 +1068,9 @@ def build_dispatcher(
     async def handle_homework_subject(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not await user_has_homework_access(callback.from_user.id):
-            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
             return
-        await callback.answer()
+        await safe_callback_answer(callback)
         await send_homework_entries(
             callback.bot,
             callback.from_user.id,
@@ -1082,14 +1082,14 @@ def build_dispatcher(
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if not await user_has_homework_access(callback.from_user.id):
-            await callback.answer(f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
+            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
             return
         if not await user_is_editor(callback.from_user.id):
-            await callback.answer("Недостаточно прав.", show_alert=True)
+            await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
             return
         subject = get_subject(callback.data.split(":")[-1])
         if subject is None:
-            await callback.answer("Предмет не найден.", show_alert=True)
+            await safe_callback_answer(callback, "Предмет не найден.", show_alert=True)
             return
         homework_drafts[callback.from_user.id] = HomeworkDraft(
             subject_key=subject["key"],
@@ -1112,7 +1112,7 @@ def build_dispatcher(
         await register_callback_user(callback)
         draft = homework_drafts.get(callback.from_user.id)
         if draft is None:
-            await callback.answer("Черновик не найден.", show_alert=True)
+            await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
             return
         draft.awaiting_attachments = True
         if callback.message is not None:
@@ -1124,14 +1124,14 @@ def build_dispatcher(
                 "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nПосле каждого файла я обновлю предпросмотр. Когда закончишь, нажми «Опубликовать».",
                 reply_markup=build_homework_attachment_keyboard(),
             )
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "dz:save")
     async def handle_save_homework(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         draft = homework_drafts.get(callback.from_user.id)
         if draft is None or not draft.text.strip():
-            await callback.answer("Нет готового черновика для сохранения.", show_alert=True)
+            await safe_callback_answer(callback, "Нет готового черновика для сохранения.", show_alert=True)
             return
         author = callback.from_user.full_name or callback.from_user.username or str(callback.from_user.id)
         homework_id = await db.create_homework(
@@ -1177,7 +1177,7 @@ def build_dispatcher(
         context_messages[callback.from_user.id]["dz"] = sent_ids
         if broadcaster is not None:
             await broadcaster.broadcast_homework_update(format_homework_notification(entry), schedule_id=HOMEWORK_SCHEDULE_ID)
-        await callback.answer("Опубликовано")
+        await safe_callback_answer(callback, "Опубликовано")
 
     @dispatcher.callback_query(F.data == "dz:cancel")
     async def handle_cancel_homework(callback: CallbackQuery) -> None:
@@ -1193,7 +1193,7 @@ def build_dispatcher(
             reply_markup=START_KEYBOARD,
         )
         await clear_context_messages(callback.bot, callback.from_user.id, "dz")
-        await callback.answer("Отменено")
+        await safe_callback_answer(callback, "Отменено")
 
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
