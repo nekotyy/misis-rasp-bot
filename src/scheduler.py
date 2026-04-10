@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 class ScheduleJobs:
+    """Планировщик фоновых задач: ежедневно сохраняет эталонное расписание,
+    периодически сверяет текущую версию с эталоном и оповещает об изменениях."""
     def __init__(self, db: Database, parser: ScheduleParser, broadcaster: Broadcaster, timezone: str) -> None:
         self.db = db
         self.parser = parser
