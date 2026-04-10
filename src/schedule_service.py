@@ -48,6 +48,29 @@ class ScheduleFormatter:
             return f"{title}\n\n" + "\n\n".join(blocks)
         return "\n\n".join(blocks)
 
+    @staticmethod
+    def format_search_snapshot(title: str, content: dict) -> str:
+        lines = [f"Расписание для {title}", ""]
+        days = content.get("days", [])
+        added_any = False
+        for day in days:
+            lessons = sorted(day.get("lessons", []), key=lambda item: item["number"])
+            if not lessons:
+                continue
+            added_any = True
+            lines.append(day.get("date_iso") or day.get("date_label", ""))
+            for lesson in lessons:
+                lines.append(
+                    f"{lesson['number']} в {lesson['classroom']} "
+                    f"по {lesson['subject']} у {lesson['teacher']}"
+                )
+            lines.append("")
+        if not added_any:
+            lines.append("Пар нет.")
+        elif lines[-1] == "":
+            lines.pop()
+        return "\n".join(lines)
+
 
 class ScheduleComparator:
     @staticmethod

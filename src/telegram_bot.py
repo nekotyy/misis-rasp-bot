@@ -263,9 +263,6 @@ def build_dispatcher(
     def build_search_result_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Расписание на сегодня", callback_data="search:today")],
-                [InlineKeyboardButton(text="Расписание на завтра", callback_data="search:tomorrow")],
-                [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="search:day_after")],
                 [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
                 [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
             ]
@@ -501,16 +498,6 @@ def build_dispatcher(
         awaiting_schedule_search.add(user_id)
         await replace_context_message(bot, chat_id, "schedule", format_search_prompt(error_text))
 
-    async def get_search_text(action: str, snapshot: dict) -> str:
-        if action == "today":
-            day = get_day_by_offset_from_content(snapshot["content"], 0)
-            return ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
-        if action == "tomorrow":
-            day = get_day_by_offset_from_content(snapshot["content"], 1)
-            return ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
-        day = get_day_by_offset_from_content(snapshot["content"], 2)
-        return ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
-
     async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
         if search_catalog is None:
             await bot.send_message(chat_id, "Поиск временно недоступен.")
@@ -546,12 +533,11 @@ def build_dispatcher(
         }
         search_results[user_id] = snapshot
         awaiting_schedule_search.discard(user_id)
-        title = f"<b>Найдено расписание: {escape(target.title)}</b>\n\n"
         await replace_context_message(
             bot,
             chat_id,
             "schedule",
-            title + await get_search_text("today", snapshot),
+            ScheduleFormatter.format_search_snapshot(target.title, snapshot["content"]),
             reply_markup=build_search_result_keyboard(),
         )
         return True
@@ -1001,26 +987,6 @@ def build_dispatcher(
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
 
         await callback.message.edit_text(text, reply_markup=SCHEDULE_KEYBOARD)
-        context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
-        await callback.answer()
-
-    @dispatcher.callback_query(F.data.startswith("search:"))
-    async def handle_search_schedule_callback(callback: CallbackQuery) -> None:
-        await register_callback_user(callback)
-        if callback.message is None:
-            await callback.answer()
-            return
-        snapshot = search_results.get(callback.from_user.id)
-        if snapshot is None:
-            await prompt_schedule_search(callback.bot, callback.message.chat.id, callback.from_user.id, "Сначала найди расписание.")
-            await callback.answer()
-            return
-        action = callback.data.split(":", 1)[1]
-        title = f"<b>Найдено расписание: {escape(str(snapshot['title']))}</b>\n\n"
-        await callback.message.edit_text(
-            title + await get_search_text(action, snapshot),
-            reply_markup=build_search_result_keyboard(),
-        )
         context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
         await callback.answer()
 

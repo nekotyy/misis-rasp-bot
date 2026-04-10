@@ -22,7 +22,7 @@ from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
-from src.schedule_service import get_day_by_offset, get_day_by_offset_from_content
+from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
 
 PAGE_SIZE = 6
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
@@ -273,6 +273,14 @@ def build_vk_bot(
             ]
         )
 
+    def search_result_keyboard() -> str:
+        return make_keyboard(
+            [
+                ["Найти расписание"],
+                ["Назад в меню"],
+            ]
+        )
+
     def homework_view_keyboard() -> str:
         return make_keyboard([["Вернуться к списку ДЗ"], ["Назад в меню"]])
 
@@ -479,8 +487,8 @@ def build_vk_bot(
         peer_modes[peer_id] = "schedule_search_result"
         await show_screen(
             peer_id,
-            f"Найдено расписание: {target.title}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"),
-            keyboard=schedule_keyboard(),
+            ScheduleFormatter.format_search_snapshot(target.title, snapshot["content"]),
+            keyboard=search_result_keyboard(),
         )
         return True
 
@@ -731,14 +739,12 @@ def build_vk_bot(
                 peer_modes[peer_id] = "schedule_search"
                 await show_screen(peer_id, schedule_search_prompt_text("Сначала найди расписание."))
                 return
-            if text == "Расписание на сегодня":
-                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"), keyboard=schedule_keyboard())
-                return
-            if text == "Расписание на завтра":
-                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 1), "завтра"), keyboard=schedule_keyboard())
-                return
-            if text == "Расписание на 2 дня":
-                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 2), "2 дня"), keyboard=schedule_keyboard())
+            if text not in {"Найти расписание", "Назад в меню"}:
+                await show_screen(
+                    peer_id,
+                    "Поиск отдает расписание сразу по всем дням. Нажми «Найти расписание», чтобы ввести новый запрос.",
+                    keyboard=search_result_keyboard(),
+                )
                 return
 
         if text in {"/homework", "Домашние задания"}:
@@ -999,3 +1005,4 @@ def build_vk_bot(
         await show_main_menu(peer_id, user_id)
 
     return bot
+
