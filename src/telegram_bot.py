@@ -362,6 +362,42 @@ def build_dispatcher(
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
         )
 
+    async def refresh_all_active_groups() -> tuple[int, str | None]:
+        groups = await db.get_active_groups()
+        if not groups:
+            return 0, None
+
+        first_preview: str | None = None
+        for index, group in enumerate(groups):
+            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
+            await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
+            if index == 0:
+                day = get_day_by_offset(snapshot, 0)
+                first_preview = (
+                    ScheduleFormatter.format_day_card(day, "сегодня")
+                    if day
+                    else empty_day_text("сегодня")
+                )
+        return len(groups), first_preview
+
+    async def save_baseline_for_all_active_groups() -> tuple[int, str | None]:
+        groups = await db.get_active_groups()
+        if not groups:
+            return 0, None
+
+        first_preview: str | None = None
+        for index, group in enumerate(groups):
+            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
+            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
+            if index == 0:
+                day = get_day_by_offset(snapshot, 0)
+                first_preview = (
+                    ScheduleFormatter.format_day_card(day, "сегодня")
+                    if day
+                    else empty_day_text("сегодня")
+                )
+        return len(groups), first_preview
+
     async def replace_context_message(
         bot: Bot,
         chat_id: int,
@@ -1244,20 +1280,17 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         if action == "baseline":
-            if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                await safe_callback_answer(callback, "Сначала выбери свою группу через /start.", show_alert=True)
+            groups_count, preview = await save_baseline_for_all_active_groups()
+            if groups_count == 0:
+                await safe_callback_answer(callback, "Нет активных групп для сохранения эталона.", show_alert=True)
                 return
-            snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
-            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
-            day = get_day_by_offset(snapshot, 0)
-            preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
             await safe_edit_message_text(
                 callback.message,
-                "<b>Эталон для сравнения сохранен</b>\n\n" + preview,
+                f"<b>Эталоны сохранены для активных групп</b>\n\nГрупп обработано: <b>{groups_count}</b>\n\n{preview or 'Предпросмотр недоступен.'}",
                 reply_markup=ADMIN_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback, "Эталон сохранен")
+            await safe_callback_answer(callback, "Эталоны сохранены")
             return
         if action == "homework_delete":
             await safe_edit_message_text(
@@ -1402,14 +1435,11 @@ def build_dispatcher(
                 )
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
-            if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                await safe_callback_answer(callback, "Сначала выбери свою группу через /start.", show_alert=True)
+            groups_count, preview = await refresh_all_active_groups()
+            if groups_count == 0:
+                await safe_callback_answer(callback, "Нет активных групп для перепарсинга.", show_alert=True)
                 return
-            snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
-            await db.save_snapshot("current", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
-            day = get_day_by_offset(snapshot, 0)
-            preview = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
-            text = "<b>Расписание перепарсено</b>\n\n" + preview
+            text = f"<b>Расписание перепарсено для активных групп</b>\n\nГрупп обработано: <b>{groups_count}</b>\n\n{preview or 'Предпросмотр недоступен.'}"
             reply_markup = ADMIN_KEYBOARD
         else:
             if broadcaster is not None:

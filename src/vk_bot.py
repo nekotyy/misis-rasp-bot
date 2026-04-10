@@ -342,6 +342,32 @@ def build_vk_bot(
             lines.extend(["", extra])
         return "\n".join(lines)
 
+    async def refresh_all_active_groups() -> tuple[int, str | None]:
+        groups = await db.get_active_groups()
+        if not groups:
+            return 0, None
+
+        first_preview: str | None = None
+        for index, group in enumerate(groups):
+            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
+            await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
+            if index == 0:
+                first_preview = schedule_text(get_day_by_offset(snapshot, 0), "сегодня")
+        return len(groups), first_preview
+
+    async def save_baseline_for_all_active_groups() -> tuple[int, str | None]:
+        groups = await db.get_active_groups()
+        if not groups:
+            return 0, None
+
+        first_preview: str | None = None
+        for index, group in enumerate(groups):
+            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
+            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
+            if index == 0:
+                first_preview = schedule_text(get_day_by_offset(snapshot, 0), "сегодня")
+        return len(groups), first_preview
+
     def schedule_text(day, fallback: str) -> str:
         if day is None or not day.lessons:
             label = fallback if day is None else day.date_label
@@ -955,20 +981,26 @@ def build_vk_bot(
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return
             if text == "Перепарсить":
-                if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                    await show_screen(peer_id, "Сначала выбери свою группу через стартовое сообщение.", keyboard=admin_keyboard())
+                groups_count, preview = await refresh_all_active_groups()
+                if groups_count == 0:
+                    await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_keyboard())
                     return
-                snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
-                await db.save_snapshot("current", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
-                await show_screen(peer_id, "Расписание перепарсено\n\n" + schedule_text(get_day_by_offset(snapshot, 0), "сегодня"), keyboard=admin_keyboard())
+                await show_screen(
+                    peer_id,
+                    f"Расписание перепарсено для активных групп\n\nГрупп обработано: {groups_count}\n\n{preview or 'Предпросмотр недоступен.'}",
+                    keyboard=admin_keyboard(),
+                )
                 return
             if text == "Сохранить эталон":
-                if admin_user is None or admin_user.schedule_id is None or not admin_user.group_name:
-                    await show_screen(peer_id, "Сначала выбери свою группу через стартовое сообщение.", keyboard=admin_keyboard())
+                groups_count, preview = await save_baseline_for_all_active_groups()
+                if groups_count == 0:
+                    await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_keyboard())
                     return
-                snapshot, snapshot_hash = await parser.parse(admin_user.schedule_id)
-                await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, admin_user.schedule_id, admin_user.group_name)
-                await show_screen(peer_id, "Эталон для сравнения сохранен\n\n" + schedule_text(get_day_by_offset(snapshot, 0), "сегодня"), keyboard=admin_keyboard())
+                await show_screen(
+                    peer_id,
+                    f"Эталоны сохранены для активных групп\n\nГрупп обработано: {groups_count}\n\n{preview or 'Предпросмотр недоступен.'}",
+                    keyboard=admin_keyboard(),
+                )
                 return
             if text == "Последнее изменение":
                 last_change = await db.get_last_change()
