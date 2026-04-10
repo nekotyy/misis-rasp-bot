@@ -365,6 +365,17 @@ def build_vk_bot(
         await show_main_menu(peer_id, user_id)
         return True
 
+    async def get_or_fetch_snapshot(user_id: int) -> dict | None:
+        user = await db.get_user("vk", user_id)
+        if user is None or user.schedule_id is None:
+            return None
+        snapshot = await db.get_latest_snapshot("current", user.schedule_id)
+        if snapshot is not None:
+            return snapshot
+        snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+        await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
+        return await db.get_latest_snapshot("current", user.schedule_id)
+
     async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)
         peer_modes[peer_id] = "settings"
@@ -565,9 +576,9 @@ def build_vk_bot(
             return
 
         if mode == "schedule_menu":
-            snapshot = await db.get_latest_snapshot("current", user.schedule_id if user else None)
+            snapshot = await get_or_fetch_snapshot(user_id)
             if snapshot is None:
-                await show_screen(peer_id, "Сохраненное расписание пока отсутствует.", keyboard=schedule_keyboard())
+                await show_screen(peer_id, "Не удалось получить расписание для твоей группы.", keyboard=schedule_keyboard())
                 return
             if text == "Расписание на сегодня":
                 await show_screen(peer_id, schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"), keyboard=schedule_keyboard())

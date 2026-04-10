@@ -221,6 +221,11 @@ def build_dispatcher(
         user = await get_user_record(user_id)
         if user is None or user.schedule_id is None:
             return None
+        snapshot = await db.get_latest_snapshot("current", user.schedule_id)
+        if snapshot is not None:
+            return snapshot
+        snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+        await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
         return await db.get_latest_snapshot("current", user.schedule_id)
 
     def format_group_prompt(error_text: str | None = None) -> str:
@@ -826,10 +831,7 @@ def build_dispatcher(
             return
         snapshot_row = await get_saved_snapshot(callback.from_user.id)
         if snapshot_row is None:
-            await callback.message.edit_text(
-                "Сохраненное расписание пока отсутствует. Подожди первую автоматическую синхронизацию.",
-                reply_markup=SCHEDULE_KEYBOARD,
-            )
+            await callback.message.edit_text("Не удалось получить расписание для твоей группы.", reply_markup=SCHEDULE_KEYBOARD)
             await callback.answer()
             return
 
