@@ -524,7 +524,16 @@ def build_dispatcher(
         if search_catalog is None:
             await bot.send_message(chat_id, "Поиск временно недоступен.")
             return False
-        target = await search_catalog.find(query)
+        try:
+            target = await search_catalog.find(query)
+        except httpx.HTTPError:
+            await replace_context_message(
+                bot,
+                chat_id,
+                "schedule",
+                format_search_prompt("Сайт расписания временно недоступен. Попробуй еще раз через минуту."),
+            )
+            return False
         if target is None:
             await bot.send_message(chat_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
             return False

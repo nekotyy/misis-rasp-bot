@@ -18,11 +18,20 @@ class SearchTarget:
 
 
 class ScheduleSearchCatalog:
-    def __init__(self, schedule_url: str, group_catalog: GroupCatalog, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        schedule_url: str,
+        group_catalog: GroupCatalog,
+        timeout: float = 30.0,
+        request_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
+    ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
         self.group_catalog = group_catalog
         self.timeout = timeout
+        self.request_retries = max(1, request_retries)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._prep_lock = asyncio.Lock()
         self._aud_lock = asyncio.Lock()
         self._preps_loaded = False
@@ -59,8 +68,7 @@ class ScheduleSearchCatalog:
             if self._preps_loaded:
                 return
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                response = await client.get(f"{self.base_origin}/prep")
-                response.raise_for_status()
+                response = await self._get_with_retry(client, f"{self.base_origin}/prep")
                 response.encoding = "utf-8"
                 soup = BeautifulSoup(response.text, "html.parser")
                 for link in soup.select("a[href^='/raspprep/']"):
@@ -85,8 +93,7 @@ class ScheduleSearchCatalog:
             if self._auds_loaded:
                 return
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                response = await client.get(f"{self.base_origin}/aud")
-                response.raise_for_status()
+                response = await self._get_with_retry(client, f"{self.base_origin}/aud")
                 response.encoding = "utf-8"
                 soup = BeautifulSoup(response.text, "html.parser")
                 for link in soup.select("a[href^='/raspAud/']"):
@@ -103,6 +110,21 @@ class ScheduleSearchCatalog:
                     self._auds[normalized_title] = target
                     self._aud_items.append((normalized_title, target))
                 self._auds_loaded = True
+
+    async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(1, self.request_retries + 1):
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt >= self.request_retries:
+                    break
+                await asyncio.sleep(self.retry_backoff_seconds * attempt)
+        assert last_exc is not None
+        raise last_exc
 
     def _find_partial(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
         if not normalized:

@@ -455,7 +455,12 @@ def build_vk_bot(
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Поиск временно недоступен."))
             return False
-        target = await search_catalog.find(query)
+        try:
+            target = await search_catalog.find(query)
+        except httpx.HTTPError:
+            peer_modes[peer_id] = "schedule_search"
+            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))
+            return False
         if target is None:
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Ничего не найдено. Проверь запрос и попробуй еще раз."))
