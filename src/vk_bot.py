@@ -499,12 +499,25 @@ def build_vk_bot(
         return True
 
     @error_handler.register_undefined_error_handler
-    async def handle_vk_errors(error: Exception, message: Message | None = None, **_: object) -> None:
+    async def handle_vk_errors(*args: object, **kwargs: object) -> None:
+        error_obj = kwargs.get("error")
+        message_obj = kwargs.get("message")
+
+        for arg in args:
+            if isinstance(arg, Exception) and error_obj is None:
+                error_obj = arg
+            elif isinstance(arg, Message) and message_obj is None:
+                message_obj = arg
+
+        if not isinstance(error_obj, Exception):
+            return
+
+        message = message_obj if isinstance(message_obj, Message) else None
         peer_id = message.peer_id if message is not None else None
         user_id = message.from_id if message is not None else None
         if peer_id is not None:
-            await notify_user_about_error(peer_id, error)
-        await notify_admin_about_error(user_id, peer_id, error)
+            await notify_user_about_error(peer_id, error_obj)
+        await notify_admin_about_error(user_id, peer_id, error_obj)
 
     async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)
