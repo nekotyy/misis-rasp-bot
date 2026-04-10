@@ -317,6 +317,19 @@ def build_dispatcher(
             "Здесь можно перепарсить сайт, сохранить эталон для сравнения, посмотреть статистику и управлять домашними заданиями."
         )
 
+    def build_admin_users_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
+        nav_row: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="<", callback_data=f"admin:users:{page - 1}"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(text=">", callback_data=f"admin:users:{page + 1}"))
+
+        rows: list[list[InlineKeyboardButton]] = []
+        if nav_row:
+            rows.append(nav_row)
+        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     def empty_day_text(label: str) -> str:
         return f"Расписание на {escape(label)}\n\nПар нет."
 
@@ -1302,17 +1315,19 @@ def build_dispatcher(
                 f"Последнее изменение: <b>{last_change_at}</b>"
             )
             reply_markup = ADMIN_KEYBOARD
-        elif action == "users":
+        elif action == "users" or action.startswith("users:"):
             users = await db.list_users()
             if not users:
                 text = "<b>Пользователи</b>\n\nПока никто не зарегистрирован."
+                reply_markup = build_admin_users_keyboard(page=0, total_pages=1)
             else:
-                lines = [
-                    "<b>Пользователи</b>",
-                    "",
-                    "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
-                    "",
-                ]
+                page = 0
+                if action.startswith("users:"):
+                    _, page_raw = action.split(":", 1)
+                    if page_raw.isdigit():
+                        page = int(page_raw)
+
+                user_rows: list[str] = []
                 for user in users:
                     platform_label = "tg" if user.platform == "telegram" else user.platform
                     user_label = user.full_name or "Без имени"
@@ -1328,7 +1343,7 @@ def build_dispatcher(
                     if user.is_editor:
                         role_flags.append("редактор")
                     role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-                    lines.append(
+                    user_rows.append(
                         "- "
                         f"{escape(platform_label)} | "
                         f"{escape(user_label)} | "
@@ -1336,8 +1351,26 @@ def build_dispatcher(
                         f"<b>{user.user_id}</b> | "
                         f"{escape(group_label)}{escape(role_suffix)}"
                     )
+
+                page_size = 20
+                total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
+                page = max(0, min(page, total_pages - 1))
+                start = page * page_size
+                end = start + page_size
+                page_rows = user_rows[start:end]
+
+                lines = [
+                    "<b>Пользователи</b>",
+                    "",
+                    "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
+                    "",
+                    f"Страница {page + 1}/{total_pages}",
+                    "",
+                ]
+                lines.extend(page_rows)
+
                 text = "\n".join(lines)
-            reply_markup = ADMIN_KEYBOARD
+                reply_markup = build_admin_users_keyboard(page=page, total_pages=total_pages)
         elif action == "editors":
             users = [user for user in await db.list_users("telegram")]
             text = "<b>Управление редакторами</b>\n\nНажми на пользователя, чтобы выдать или снять роль редактора."
