@@ -1060,14 +1060,15 @@ def build_dispatcher(
             teacher_name=subject["teacher"],
         )
         if callback.message is not None:
-            await callback.message.edit_text(
+            await safe_edit_message_text(
+                callback.message,
                 f"Выбран предмет <b>{escape(subject['subject'])}</b>.\n\nТеперь отправь текст домашнего задания одним сообщением.",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[[InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")]]
                 ),
             )
             context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
-        await callback.answer()
+        await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "dz:add_attachments")
     async def handle_add_attachments(callback: CallbackQuery) -> None:
@@ -1161,28 +1162,30 @@ def build_dispatcher(
     async def handle_settings_callback(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
         if callback.message is None:
-            await callback.answer()
+            await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
         if action == "toggle_hw":
             user = await db.get_user("telegram", callback.from_user.id)
             enabled = not (user.homework_notifications_enabled if user else True)
             await db.set_homework_notifications("telegram", callback.from_user.id, enabled)
-            await callback.message.edit_text(
+            await safe_edit_message_text(
+                callback.message,
                 await format_settings_text(callback.from_user.id),
                 reply_markup=await build_settings_keyboard(callback.from_user.id),
             )
-            await callback.answer("Настройка обновлена")
+            await safe_callback_answer(callback, "Настройка обновлена")
             return
         if action == "clear_group":
             await db.clear_user_group("telegram", callback.from_user.id)
             homework_drafts.pop(callback.from_user.id, None)
-            await callback.message.edit_text(
+            await safe_edit_message_text(
+                callback.message,
                 format_group_prompt("Ты отписался от своей группы. Выбери новую, когда захочешь."),
             )
             context_messages[callback.message.chat.id]["group_select"] = [callback.message.message_id]
             context_messages[callback.message.chat.id]["settings"] = []
-            await callback.answer("Группа сброшена")
+            await safe_callback_answer(callback, "Группа сброшена")
             return
 
     @dispatcher.callback_query(F.data.startswith("admin:"))
@@ -1295,18 +1298,34 @@ def build_dispatcher(
             if not users:
                 text = "<b>Пользователи</b>\n\nПока никто не зарегистрирован."
             else:
-                lines = ["<b>Пользователи</b>", ""]
+                lines = [
+                    "<b>Пользователи</b>",
+                    "",
+                    "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
+                    "",
+                ]
                 for user in users:
-                    display = user.full_name or user.username or "Без имени"
-                    roles = []
+                    user_label = user.full_name or "Без имени"
+                    nick_or_name = (
+                        user.full_name
+                        if user.platform == "vk"
+                        else (f"@{user.username}" if user.username else (user.full_name or "-"))
+                    )
+                    group_label = user.group_name or "-"
+                    role_flags = []
                     if user.is_admin:
-                        roles.append("админ")
+                        role_flags.append("админ")
                     if user.is_editor:
-                        roles.append("редактор")
-                    if user.group_name:
-                        roles.append(user.group_name)
-                    role_text = f" ({', '.join(roles)})" if roles else ""
-                    lines.append(f"- {escape(user.platform)} | {escape(display)} | <b>{user.user_id}</b>{escape(role_text)}")
+                        role_flags.append("редактор")
+                    role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
+                    lines.append(
+                        "- "
+                        f"{escape(user.platform)} | "
+                        f"{escape(user_label)} | "
+                        f"{escape(nick_or_name)} | "
+                        f"<b>{user.user_id}</b> | "
+                        f"{escape(group_label)}{escape(role_suffix)}"
+                    )
                 text = "\n".join(lines)
             reply_markup = ADMIN_KEYBOARD
         elif action == "editors":
