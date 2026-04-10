@@ -21,6 +21,7 @@ from src.homework_service import SUBJECTS, format_homework_notification, get_sub
 from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
+from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import get_day_by_offset, get_day_by_offset_from_content
 
 PAGE_SIZE = 6
@@ -36,6 +37,7 @@ def build_vk_bot(
     broadcaster: Broadcaster | None = None,
     attachment_storage: AttachmentStorage | None = None,
     group_catalog: GroupCatalog | None = None,
+    search_catalog: ScheduleSearchCatalog | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
@@ -50,6 +52,7 @@ def build_vk_bot(
     error_handler = ErrorHandler(redirect_arguments=True)
     bot = Bot(token=settings.vk_bot_token, api=api, error_handler=error_handler)
     homework_drafts: dict[int, HomeworkDraft] = {}
+    search_results: dict[int, dict[str, object]] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
@@ -247,12 +250,25 @@ def build_vk_bot(
             lines.extend(["", error_text])
         return "\n".join(lines)
 
+    def schedule_search_prompt_text(error_text: str | None = None) -> str:
+        lines = [
+            "Поиск расписания",
+            "",
+            "Поиск осуществляется по группам, преподавателям, и аудиториям!",
+            "",
+            "Напиши группу, фамилию преподавателя или аудиторию.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
     def schedule_keyboard() -> str:
         return make_keyboard(
             [
                 ["Расписание на сегодня"],
                 ["Расписание на завтра"],
                 ["Расписание на 2 дня"],
+                ["Найти расписание"],
                 ["Назад в меню"],
             ]
         )
@@ -424,6 +440,49 @@ def build_vk_bot(
         snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
         await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
         return await db.get_latest_snapshot("current", user.schedule_id)
+
+    async def perform_schedule_search(peer_id: int, query: str) -> bool:
+        if search_catalog is None:
+            peer_modes[peer_id] = "schedule_search"
+            await show_screen(peer_id, schedule_search_prompt_text("Поиск временно недоступен."))
+            return False
+        target = await search_catalog.find(query)
+        if target is None:
+            peer_modes[peer_id] = "schedule_search"
+            await show_screen(peer_id, schedule_search_prompt_text("Ничего не найдено. Проверь запрос и попробуй еще раз."))
+            return False
+        snapshot_obj, _ = await parser.parse_from_url(target.url)
+        snapshot = {
+            "title": target.title,
+            "content": {
+                "group_name": snapshot_obj.group_name,
+                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
+                "days": [
+                    {
+                        "date_label": day.date_label,
+                        "date_iso": day.date_iso,
+                        "lessons": [
+                            {
+                                "number": lesson.number,
+                                "subject": lesson.subject,
+                                "teacher": lesson.teacher,
+                                "classroom": lesson.classroom,
+                            }
+                            for lesson in day.lessons
+                        ],
+                    }
+                    for day in snapshot_obj.days
+                ],
+            },
+        }
+        search_results[peer_id] = snapshot
+        peer_modes[peer_id] = "schedule_search_result"
+        await show_screen(
+            peer_id,
+            f"Найдено расписание: {target.title}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"),
+            keyboard=schedule_keyboard(),
+        )
+        return True
 
     @error_handler.register_undefined_error_handler
     async def handle_vk_errors(error: Exception, message: Message | None = None, **_: object) -> None:
@@ -611,6 +670,7 @@ def build_vk_bot(
 
         if text in {"Назад в меню", "Закрыть админку"}:
             homework_drafts.pop(user_id, None)
+            search_results.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
             return
 
@@ -641,6 +701,11 @@ def build_vk_bot(
             await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
             return
 
+        if text == "Найти расписание":
+            peer_modes[peer_id] = "schedule_search"
+            await show_screen(peer_id, schedule_search_prompt_text())
+            return
+
         if mode == "schedule_menu":
             snapshot = await get_or_fetch_snapshot(user_id)
             if snapshot is None:
@@ -654,6 +719,26 @@ def build_vk_bot(
                 return
             if text == "Расписание на 2 дня":
                 await show_screen(peer_id, schedule_text(get_day_by_offset_from_content(snapshot["content"], 2), "2 дня"), keyboard=schedule_keyboard())
+                return
+
+        if mode == "schedule_search":
+            await perform_schedule_search(peer_id, text)
+            return
+
+        if mode == "schedule_search_result":
+            snapshot = search_results.get(peer_id)
+            if snapshot is None:
+                peer_modes[peer_id] = "schedule_search"
+                await show_screen(peer_id, schedule_search_prompt_text("Сначала найди расписание."))
+                return
+            if text == "Расписание на сегодня":
+                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"), keyboard=schedule_keyboard())
+                return
+            if text == "Расписание на завтра":
+                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 1), "завтра"), keyboard=schedule_keyboard())
+                return
+            if text == "Расписание на 2 дня":
+                await show_screen(peer_id, f"Найдено расписание: {snapshot['title']}\n\n" + schedule_text(get_day_by_offset_from_content(snapshot["content"], 2), "2 дня"), keyboard=schedule_keyboard())
                 return
 
         if text in {"/homework", "Домашние задания"}:

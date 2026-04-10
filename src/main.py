@@ -14,6 +14,7 @@ from src.group_catalog import GroupCatalog
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
+from src.schedule_search import ScheduleSearchCatalog
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
 
@@ -31,6 +32,7 @@ async def run_telegram_polling(
     broadcaster: Broadcaster,
     attachment_storage: AttachmentStorage,
     group_catalog: GroupCatalog,
+    search_catalog: ScheduleSearchCatalog,
 ) -> Bot | None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
@@ -40,7 +42,7 @@ async def run_telegram_polling(
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     broadcaster.telegram_bot = bot
-    dispatcher = build_dispatcher(settings, db, parser, broadcaster, attachment_storage, group_catalog)
+    dispatcher = build_dispatcher(settings, db, parser, broadcaster, attachment_storage, group_catalog, search_catalog)
     asyncio.create_task(dispatcher.start_polling(bot))
     return bot
 
@@ -66,6 +68,7 @@ async def main() -> None:
 
     group_catalog = GroupCatalog(settings.schedule_url)
     await group_catalog.ensure_loaded()
+    search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog)
     parser = ScheduleParser(settings.schedule_url)
     attachment_storage = AttachmentStorage(settings.attachments_path)
     broadcaster = Broadcaster(
@@ -74,8 +77,8 @@ async def main() -> None:
         admin_telegram_id=settings.admin_telegram_id,
         admin_vk_id=settings.admin_vk_id,
     )
-    telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage, group_catalog)
-    vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage, group_catalog)
+    telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage, group_catalog, search_catalog)
+    vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage, group_catalog, search_catalog)
     await run_vk_polling(vk_bot)
 
     broadcaster.telegram_bot = telegram_bot

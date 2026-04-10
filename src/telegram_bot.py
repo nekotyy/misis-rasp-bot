@@ -18,6 +18,7 @@ from src.homework_service import SUBJECTS, format_homework_message, format_homew
 from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
+from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
 
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
@@ -30,6 +31,7 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Расписание на сегодня", callback_data="schedule:today")],
         [InlineKeyboardButton(text="Расписание на завтра", callback_data="schedule:tomorrow")],
         [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="schedule:day_after")],
+        [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
@@ -95,10 +97,13 @@ def build_dispatcher(
     broadcaster: Broadcaster | None = None,
     attachment_storage: AttachmentStorage | None = None,
     group_catalog: GroupCatalog | None = None,
+    search_catalog: ScheduleSearchCatalog | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     homework_drafts: dict[int, HomeworkDraft] = {}
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
+    search_results: dict[int, dict[str, object]] = {}
+    awaiting_schedule_search: set[int] = set()
 
     def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
@@ -242,6 +247,29 @@ def build_dispatcher(
         if error_text:
             lines.extend(["", error_text])
         return "\n".join(lines)
+
+    def format_search_prompt(error_text: str | None = None) -> str:
+        lines = [
+            "<b>Поиск расписания</b>",
+            "",
+            "Поиск осуществляется по группам, преподавателям и аудиториям!",
+            "",
+            "Напиши группу, фамилию преподавателя или аудиторию.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
+    def build_search_result_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Расписание на сегодня", callback_data="search:today")],
+                [InlineKeyboardButton(text="Расписание на завтра", callback_data="search:tomorrow")],
+                [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="search:day_after")],
+                [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
+                [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
+            ]
+        )
 
     def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
         lines = ["<b>Привет! Я бот расписания колледжа</b>"]
@@ -468,6 +496,65 @@ def build_dispatcher(
             return True
         await prompt_group_selection(bot, chat_id)
         return False
+
+    async def prompt_schedule_search(bot: Bot, chat_id: int, user_id: int, error_text: str | None = None) -> None:
+        awaiting_schedule_search.add(user_id)
+        await replace_context_message(bot, chat_id, "schedule", format_search_prompt(error_text))
+
+    async def get_search_text(action: str, snapshot: dict) -> str:
+        if action == "today":
+            day = get_day_by_offset_from_content(snapshot["content"], 0)
+            return ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
+        if action == "tomorrow":
+            day = get_day_by_offset_from_content(snapshot["content"], 1)
+            return ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
+        day = get_day_by_offset_from_content(snapshot["content"], 2)
+        return ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
+
+    async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
+        if search_catalog is None:
+            await prompt_schedule_search(bot, chat_id, user_id, "Поиск временно недоступен.")
+            return False
+        target = await search_catalog.find(query)
+        if target is None:
+            await prompt_schedule_search(bot, chat_id, user_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
+            return False
+        snapshot_obj, _ = await parser.parse_from_url(target.url)
+        snapshot = {
+            "title": target.title,
+            "kind": target.kind,
+            "content": {
+                "group_name": snapshot_obj.group_name,
+                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
+                "days": [
+                    {
+                        "date_label": day.date_label,
+                        "date_iso": day.date_iso,
+                        "lessons": [
+                            {
+                                "number": lesson.number,
+                                "subject": lesson.subject,
+                                "teacher": lesson.teacher,
+                                "classroom": lesson.classroom,
+                            }
+                            for lesson in day.lessons
+                        ],
+                    }
+                    for day in snapshot_obj.days
+                ],
+            },
+        }
+        search_results[user_id] = snapshot
+        awaiting_schedule_search.discard(user_id)
+        title = f"<b>Найдено расписание: {escape(target.title)}</b>\n\n"
+        await replace_context_message(
+            bot,
+            chat_id,
+            "schedule",
+            title + await get_search_text("today", snapshot),
+            reply_markup=build_search_result_keyboard(),
+        )
+        return True
 
     async def handle_group_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
         if group_catalog is None:
@@ -706,6 +793,9 @@ def build_dispatcher(
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
+        search_results.pop(message.from_user.id if message.from_user else 0, None)
+        if message.from_user:
+            awaiting_schedule_search.discard(message.from_user.id)
         user = await get_user_record(message.from_user.id if message.from_user else None)
         if user is None or user.schedule_id is None or not user.group_name:
             await prompt_group_selection(message.bot, message.chat.id)
@@ -796,6 +886,8 @@ def build_dispatcher(
         if message.from_user:
             homework_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "dz")
+        search_results.pop(message.from_user.id, None)
+        awaiting_schedule_search.discard(message.from_user.id)
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -820,6 +912,8 @@ def build_dispatcher(
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
         await register_callback_user(callback)
+        search_results.pop(callback.from_user.id, None)
+        awaiting_schedule_search.discard(callback.from_user.id)
         editor = await user_is_editor(callback.from_user.id)
         user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
@@ -885,13 +979,17 @@ def build_dispatcher(
         if callback.message is None:
             await callback.answer()
             return
+        action = callback.data.split(":", 1)[1]
+        if action == "find":
+            await prompt_schedule_search(callback.bot, callback.message.chat.id, callback.from_user.id)
+            await callback.answer()
+            return
         snapshot_row = await get_saved_snapshot(callback.from_user.id)
         if snapshot_row is None:
             await callback.message.edit_text("Не удалось получить расписание для твоей группы.", reply_markup=SCHEDULE_KEYBOARD)
             await callback.answer()
             return
 
-        action = callback.data.split(":", 1)[1]
         if action == "today":
             day = get_day_by_offset_from_content(snapshot_row["content"], 0)
             text = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
@@ -903,6 +1001,26 @@ def build_dispatcher(
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
 
         await callback.message.edit_text(text, reply_markup=SCHEDULE_KEYBOARD)
+        context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
+        await callback.answer()
+
+    @dispatcher.callback_query(F.data.startswith("search:"))
+    async def handle_search_schedule_callback(callback: CallbackQuery) -> None:
+        await register_callback_user(callback)
+        if callback.message is None:
+            await callback.answer()
+            return
+        snapshot = search_results.get(callback.from_user.id)
+        if snapshot is None:
+            await prompt_schedule_search(callback.bot, callback.message.chat.id, callback.from_user.id, "Сначала найди расписание.")
+            await callback.answer()
+            return
+        action = callback.data.split(":", 1)[1]
+        title = f"<b>Найдено расписание: {escape(str(snapshot['title']))}</b>\n\n"
+        await callback.message.edit_text(
+            title + await get_search_text(action, snapshot),
+            reply_markup=build_search_result_keyboard(),
+        )
         context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
         await callback.answer()
 
@@ -1357,6 +1475,10 @@ def build_dispatcher(
                 return
             await try_delete_message(message)
             await handle_group_input(message.bot, message.chat.id, message.from_user.id, message.text)
+            return
+        if message.from_user.id in awaiting_schedule_search:
+            await try_delete_message(message)
+            await perform_schedule_search(message.bot, message.chat.id, message.from_user.id, message.text)
             return
         draft = homework_drafts.get(message.from_user.id)
         if draft is not None and draft.awaiting_text:

@@ -41,8 +41,20 @@ class ScheduleParser:
             response.encoding = "utf-8"
             return response.text
 
+    async def fetch_html_from_url(self, url: str) -> str:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            response.encoding = "utf-8"
+            return response.text
+
     async def parse(self, schedule_id: int) -> tuple[ScheduleSnapshot, str]:
         html = await self.fetch_html(schedule_id)
+        snapshot = self.parse_html(html)
+        return snapshot, self.compute_hash(snapshot)
+
+    async def parse_from_url(self, url: str) -> tuple[ScheduleSnapshot, str]:
+        html = await self.fetch_html_from_url(url)
         snapshot = self.parse_html(html)
         return snapshot, self.compute_hash(snapshot)
 
