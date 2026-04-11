@@ -152,7 +152,6 @@ class ScheduleJobs:
     async def _sync_group(self, group: GroupRow, **_: Any) -> None:
         snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
         baseline = await self.db.get_latest_snapshot("daily_baseline", group["schedule_id"])
-        change_summary = ScheduleComparator.compare(baseline, snapshot)
         await self.db.save_snapshot(
             "current",
             snapshot_hash,
@@ -160,6 +159,22 @@ class ScheduleJobs:
             schedule_id=group["schedule_id"],
             group_name=group["group_name"],
         )
+
+        if baseline is None:
+            logger.info(
+                "Группа %s стала активной без baseline. Сохраняю первый эталон автоматически.",
+                group["group_name"],
+            )
+            await self.db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                schedule_id=group["schedule_id"],
+                group_name=group["group_name"],
+            )
+            return
+
+        change_summary = ScheduleComparator.compare(baseline, snapshot)
 
         if change_summary is None:
             return
