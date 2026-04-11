@@ -28,7 +28,9 @@
 - `vkbottle` — VK
 - `httpx` + `beautifulsoup4` — HTTP и HTML-парсинг
 - `aiosqlite` — асинхронная SQLite
+- `aio-pika` — работа с RabbitMQ
 - `APScheduler` — фоновые Cron-задачи
+- `RabbitMQ` — очередь уведомлений между producer и consumer
 - `python-dotenv` — переменные окружения
 
 ---
@@ -44,7 +46,8 @@
 - `src/schedule_search.py` — поиск по группам/преподавателям/аудиториям
 - `src/schedule_service.py` — форматирование расписания и сравнение слепков
 - `src/scheduler.py` — регулярные фоновые задачи
-- `src/notifier.py` — рассылка в Telegram/VK
+- `src/notifier.py` — producer/dispatcher уведомлений в Telegram/VK
+- `src/message_broker.py` — RabbitMQ broker, очередь и consumer доставки
 - `src/homework_service.py` — справочник предметов и форматирование ДЗ
 - `src/attachment_storage.py` — хранение вложений ДЗ
 - `src/telegram_bot.py` — вся Telegram-логика
@@ -74,17 +77,60 @@ python -m src.main
 
 Проект запускается через `docker-compose.yml`.
 
+- В compose поднимаются два сервиса:
+  - `bot` — основное приложение
+  - `rabbitmq` — брокер очередей для уведомлений
 - База и вложения сохраняются в `./runtime` на хосте.
 - В контейнер пробрасываются:
   - `DATABASE_PATH=/app/runtime/bot.db`
   - `ATTACHMENTS_PATH=/app/runtime/attachments`
   - `TZ=${APP_TIMEZONE}`
+- RabbitMQ поднимается в отдельном контейнере:
+  - AMQP: `5672`
+  - management UI: `15672`
+- Внутри сети Docker бот подключается к RabbitMQ по имени сервиса `rabbitmq`.
 
 Запуск:
 
 ```bash
 docker compose up -d --build
 ```
+
+Практический порядок действий на VPS:
+
+1. Обновить код:
+
+```bash
+git pull
+```
+
+2. Проверить `.env` и убедиться, что там есть блок RabbitMQ:
+
+```env
+RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+RABBITMQ_QUEUE=misis_notifications
+RABBITMQ_PREFETCH_COUNT=20
+```
+
+3. Пересобрать и перезапустить сервисы:
+
+```bash
+docker compose up -d --build
+```
+
+Проверка контейнеров:
+
+```bash
+docker compose ps
+docker compose logs -f bot
+docker compose logs -f rabbitmq
+```
+
+Что важно:
+
+- если `RABBITMQ_URL` задан, уведомления идут через очередь
+- если `RABBITMQ_URL` пустой, `Broadcaster` автоматически откатывается на прямую отправку без брокера
+- для VPS в Docker рекомендован именно режим с RabbitMQ, потому что он мягче обрабатывает всплески уведомлений и не бьет сразу по API Telegram/VK
 
 ---
 
@@ -100,6 +146,42 @@ docker compose up -d --build
 - `TELEGRAM_BOT_TOKEN` — токен Telegram
 - `VK_BOT_TOKEN` — токен VK
 - `VK_DISABLE_SSL_VERIFY` — отключение SSL-валидации для VK HTTP-клиента
+- `RABBITMQ_URL` — адрес подключения к RabbitMQ
+- `RABBITMQ_QUEUE` — имя очереди уведомлений
+- `RABBITMQ_PREFETCH_COUNT` — сколько сообщений consumer берет в работу одновременно
+
+Рекомендуемый блок для Docker/VPS:
+
+```env
+APP_TIMEZONE=Europe/Moscow
+SCHEDULE_REQUEST_DELAY_SECONDS=10
+SCHEDULE_REQUEST_JITTER_SECONDS=8
+SCHEDULE_URL=http://asu.sf-misis.ru/rasp/600
+GROUP_NAME=ИСП-25-1
+DATABASE_PATH=/app/runtime/bot.db
+ATTACHMENTS_PATH=/app/runtime/attachments
+ADMIN_TELEGRAM_ID=...
+ADMIN_VK_ID=...
+TELEGRAM_BOT_TOKEN=...
+VK_BOT_TOKEN=...
+VK_DISABLE_SSL_VERIFY=false
+RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+RABBITMQ_QUEUE=misis_notifications
+RABBITMQ_PREFETCH_COUNT=20
+```
+
+Пояснение по RabbitMQ-переменным:
+
+- `RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/`
+  - `guest:guest` — логин и пароль
+  - `rabbitmq` — имя сервиса в `docker-compose`
+  - `5672` — стандартный AMQP-порт
+- `RABBITMQ_QUEUE=misis_notifications`
+  - имя очереди, куда producer складывает уведомления и откуда consumer их читает
+- `RABBITMQ_PREFETCH_COUNT=20`
+  - ограничение на число сообщений, одновременно взятых consumer в обработку
+  - меньше — мягче и медленнее
+  - больше — быстрее, но агрессивнее
 
 ---
 
@@ -219,10 +301,50 @@ docker compose up -d --build
 
 ### 9.3. `Broadcaster`
 
-- Шлет в Telegram и VK
+- Работает как единая точка отправки уведомлений
+- Умеет публиковать уведомления в RabbitMQ
+- При включенном RabbitMQ становится producer
+- При выключенном RabbitMQ делает прямую отправку в Telegram и VK
 - Умеет выборочную рассылку по `schedule_id`
 - Для ДЗ использует флаг `homework_notifications_enabled`
 - Умеет отдельно уведомлять админов
+
+### 9.4. RabbitMQ в проекте
+
+RabbitMQ используется только для исходящих уведомлений.
+
+Схема такая:
+
+1. scheduler или админка формируют уведомление
+2. `Broadcaster` получает текст уведомления
+3. `Broadcaster` публикует задачу в очередь `misis_notifications`
+4. consumer из `src/message_broker.py` читает сообщения из очереди
+5. consumer вызывает отправку в нужную платформу:
+   - Telegram
+   - VK
+
+Что хранится в очереди:
+
+- `platform`
+- `user_id`
+- `text`
+
+Пример payload:
+
+```json
+{
+  "platform": "telegram",
+  "user_id": 123456789,
+  "text": "Обнаружены изменения в расписании!"
+}
+```
+
+Преимущества такой схемы:
+
+- уведомления не улетают всем сразу одним пакетом
+- проще переживаются всплески нагрузки
+- producer и delivery-логика разделены
+- бот меньше зависит от мгновенной доступности API Telegram/VK
 
 ---
 
@@ -624,9 +746,14 @@ docker compose up -d --build
 4. Планировщик регулярно синхронизирует расписание
 5. При изменениях:
    - запись в `change_events`
-   - рассылка пользователям выбранной группы
+   - `Broadcaster` создает задачи на рассылку
+   - задачи уходят в RabbitMQ
+   - consumer читает очередь и доставляет сообщения пользователям выбранной группы
 6. Редакторы создают ДЗ, запись уходит в `homework_entries`
-7. Подписчики на ДЗ получают уведомление
+7. Подписчики на ДЗ получают уведомление по той же схеме:
+   - запись в БД
+   - публикация задачи в очередь
+   - доставка в Telegram/VK consumer-ом
 
 ---
 
