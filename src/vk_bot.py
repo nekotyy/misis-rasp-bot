@@ -342,31 +342,38 @@ def build_vk_bot(
             lines.extend(["", extra])
         return "\n".join(lines)
 
-    async def refresh_all_active_groups() -> tuple[int, str | None]:
+    def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
+        lines = [title, ""]
+        if not rows:
+            lines.append("Нет записей.")
+            return "\n".join(lines)
+        for group_name, action_time, action_name in rows:
+            lines.append(f"{group_name} | {action_time} | {action_name}")
+        return "\n".join(lines)
+
+    async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
         groups = await db.get_active_groups()
         if not groups:
-            return 0, None
+            return []
 
-        first_preview: str | None = None
-        for index, group in enumerate(groups):
+        rows: list[tuple[str, str, str]] = []
+        for group in groups:
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            if index == 0:
-                first_preview = schedule_text(get_day_by_offset(snapshot, 0), "сегодня")
-        return len(groups), first_preview
+            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+        return rows
 
-    async def save_baseline_for_all_active_groups() -> tuple[int, str | None]:
+    async def save_baseline_for_all_active_groups() -> list[tuple[str, str, str]]:
         groups = await db.get_active_groups()
         if not groups:
-            return 0, None
+            return []
 
-        first_preview: str | None = None
-        for index, group in enumerate(groups):
+        rows: list[tuple[str, str, str]] = []
+        for group in groups:
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            if index == 0:
-                first_preview = schedule_text(get_day_by_offset(snapshot, 0), "сегодня")
-        return len(groups), first_preview
+            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
+        return rows
 
     def schedule_text(day, fallback: str) -> str:
         if day is None or not day.lessons:
@@ -972,39 +979,38 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
-            admin_user = await db.get_user("vk", user_id)
-            if text == "Назад в админку":
-                peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
-                return
-            if text == "Статус":
-                await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
-                return
             if text == "Перепарсить":
-                groups_count, preview = await refresh_all_active_groups()
-                if groups_count == 0:
+                report_rows = await refresh_all_active_groups()
+                if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_keyboard())
                     return
                 await show_screen(
                     peer_id,
-                    f"Расписание перепарсено для активных групп\n\nГрупп обработано: {groups_count}\n\n{preview or 'Предпросмотр недоступен.'}",
+                    format_group_action_report("Перепарсинг активных групп", report_rows),
                     keyboard=admin_keyboard(),
                 )
                 return
             if text == "Сохранить эталон":
-                groups_count, preview = await save_baseline_for_all_active_groups()
-                if groups_count == 0:
+                report_rows = await save_baseline_for_all_active_groups()
+                if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_keyboard())
                     return
                 await show_screen(
                     peer_id,
-                    f"Эталоны сохранены для активных групп\n\nГрупп обработано: {groups_count}\n\n{preview or 'Предпросмотр недоступен.'}",
+                    format_group_action_report("Эталоны для активных групп", report_rows),
                     keyboard=admin_keyboard(),
                 )
                 return
             if text == "Последнее изменение":
                 last_change = await db.get_last_change()
-                response = "Последнее изменение\n\nИзменений пока не было." if not last_change else f"Последнее изменение\n\n{last_change['created_at']}\n\n{last_change['message']}"
+                response = (
+                    "Последнее изменение\n\nИзменений пока не было."
+                    if not last_change
+                    else format_group_action_report(
+                        "Последнее изменение расписания",
+                        [(last_change["group_name"], last_change["created_at"], "изменение расписания")],
+                    )
+                )
                 await show_screen(peer_id, response, keyboard=admin_keyboard())
                 return
             if text == "Пользователи":

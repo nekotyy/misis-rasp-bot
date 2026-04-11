@@ -362,41 +362,40 @@ def build_dispatcher(
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
         )
 
-    async def refresh_all_active_groups() -> tuple[int, str | None]:
+    def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
+        lines = [f"<b>{title}</b>", ""]
+        if not rows:
+            lines.append("Нет записей.")
+            return "\n".join(lines)
+        for group_name, action_time, action_name in rows:
+            lines.append(
+                f"{escape(group_name)} | <b>{escape(action_time)}</b> | {escape(action_name)}"
+            )
+        return "\n".join(lines)
+
+    async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
         groups = await db.get_active_groups()
         if not groups:
-            return 0, None
+            return []
 
-        first_preview: str | None = None
+        rows: list[tuple[str, str, str]] = []
         for index, group in enumerate(groups):
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            if index == 0:
-                day = get_day_by_offset(snapshot, 0)
-                first_preview = (
-                    ScheduleFormatter.format_day_card(day, "сегодня")
-                    if day
-                    else empty_day_text("сегодня")
-                )
-        return len(groups), first_preview
+            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+        return rows
 
-    async def save_baseline_for_all_active_groups() -> tuple[int, str | None]:
+    async def save_baseline_for_all_active_groups() -> list[tuple[str, str, str]]:
         groups = await db.get_active_groups()
         if not groups:
-            return 0, None
+            return []
 
-        first_preview: str | None = None
-        for index, group in enumerate(groups):
+        rows: list[tuple[str, str, str]] = []
+        for group in groups:
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            if index == 0:
-                day = get_day_by_offset(snapshot, 0)
-                first_preview = (
-                    ScheduleFormatter.format_day_card(day, "сегодня")
-                    if day
-                    else empty_day_text("сегодня")
-                )
-        return len(groups), first_preview
+            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
+        return rows
 
     async def replace_context_message(
         bot: Bot,
