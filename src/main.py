@@ -11,6 +11,7 @@ from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
+from src.message_broker import RabbitMQBroker
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
@@ -71,11 +72,17 @@ async def main() -> None:
     search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog)
     parser = ScheduleParser(settings.schedule_url)
     attachment_storage = AttachmentStorage(settings.attachments_path)
+    broker = RabbitMQBroker(
+        url=settings.rabbitmq_url,
+        queue_name=settings.rabbitmq_queue,
+        prefetch_count=settings.rabbitmq_prefetch_count,
+    )
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
         admin_telegram_id=settings.admin_telegram_id,
         admin_vk_id=settings.admin_vk_id,
+        broker=broker,
     )
     telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, attachment_storage, group_catalog, search_catalog)
     vk_bot = build_vk_bot(settings, db, parser, broadcaster, attachment_storage, group_catalog, search_catalog)
@@ -83,6 +90,7 @@ async def main() -> None:
 
     broadcaster.telegram_bot = telegram_bot
     broadcaster.vk_bot = vk_bot
+    await broadcaster.start()
     jobs = ScheduleJobs(
         db=db,
         parser=parser,

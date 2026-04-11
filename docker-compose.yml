@@ -3,6 +3,8 @@ services:
     build: .
     container_name: misis-rasp-bot
     restart: unless-stopped
+    depends_on:
+      - rabbitmq
     env_file:
       - .env
     environment:
@@ -11,3 +13,16 @@ services:
       ATTACHMENTS_PATH: /app/runtime/attachments
     volumes:
       - ./runtime:/app/runtime
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: misis-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+volumes:
+  rabbitmq-data:
