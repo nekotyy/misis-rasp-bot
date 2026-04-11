@@ -368,8 +368,8 @@ def build_dispatcher(
         return (
             "<b>Статус бота</b>\n\n"
             f"Пользователей: <b>{len(users)}</b>\n"
-            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: <b>{vk_users}</b>\n"
-            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: <b>{tg_users}</b>\n"
+            f"Пользователей с VK: <b>{vk_users}</b>\n"
+            f"Пользователей с TG: <b>{tg_users}</b>\n"
             f"Активных групп: <b>{len(active_groups)}</b>\n"
             f"Редакторов: <b>{editor_count}</b>\n"
             f"Записей ДЗ: <b>{homework_count}</b>\n"
@@ -1334,15 +1334,15 @@ def build_dispatcher(
         if action == "baseline":
             report_rows = await save_baseline_for_all_active_groups()
             if not report_rows:
-                await safe_callback_answer(callback, "?????? ???????????????? ?????????? ?????? ???????????????????? ??????????????.", show_alert=True)
+                await safe_callback_answer(callback, "Нет активных групп для сохранения эталона.", show_alert=True)
                 return
             await safe_edit_message_text(
                 callback.message,
-                format_group_action_report("?????????????? ?????? ???????????????? ??????????", report_rows),
+                format_group_action_report("Эталоны для активных групп", report_rows),
                 reply_markup=ADMIN_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback, "?????????????? ??????????????????")
+            await safe_callback_answer(callback, "Эталоны сохранены")
             return
         if action == "homework_delete":
             await safe_edit_message_text(
@@ -1489,9 +1489,9 @@ def build_dispatcher(
         elif action == "refresh":
             report_rows = await refresh_all_active_groups()
             if not report_rows:
-                await safe_callback_answer(callback, "?????? ???????????????? ?????????? ?????? ????????????????????????.", show_alert=True)
+                await safe_callback_answer(callback, "Нет активных групп для перепарсинга.", show_alert=True)
                 return
-            text = format_group_action_report("?????????????????????? ???????????????? ??????????", report_rows)
+            text = format_group_action_report("Перепарсинг активных групп", report_rows)
             reply_markup = ADMIN_KEYBOARD
         else:
             if broadcaster is not None:
