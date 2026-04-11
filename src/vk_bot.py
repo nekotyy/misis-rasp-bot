@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from html import escape
+from time import monotonic
 from traceback import format_exception
 
 import httpx
@@ -58,6 +59,8 @@ def build_vk_bot(
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     delete_option_map: dict[int, dict[str, tuple[int, str]]] = defaultdict(dict)
+    message_rate_limit: dict[int, float] = {}
+    message_notice_rate_limit: dict[int, float] = {}
 
     def make_keyboard(rows: list[list[str]]) -> str:
         keyboard = Keyboard(one_time=False, inline=False)
@@ -93,6 +96,14 @@ def build_vk_bot(
         if len(text) > 350:
             text = f"{text[:347]}..."
         return text
+
+    def is_rate_limited(bucket: dict[int, float], key: int, cooldown: float) -> bool:
+        now = monotonic()
+        last_hit = bucket.get(key)
+        if last_hit is not None and now - last_hit < cooldown:
+            return True
+        bucket[key] = now
+        return False
 
     async def notify_user_about_error(peer_id: int, error: Exception) -> None:
         try:
@@ -426,10 +437,14 @@ def build_vk_bot(
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
         editor_count = sum(1 for user in users if user.is_editor)
+        vk_users = sum(1 for user in users if user.platform == "vk")
+        tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = last_change["created_at"] if last_change else "еще не было"
         return (
             "Статус бота\n\n"
             f"Пользователей: {len(users)}\n"
+            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: {vk_users}\n"
+            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: {tg_users}\n"
             f"Активных групп: {len(active_groups)}\n"
             f"Редакторов: {editor_count}\n"
             f"Записей ДЗ: {homework_count}\n"
@@ -766,6 +781,12 @@ def build_vk_bot(
         normalized = text.casefold()
         mode = peer_modes.get(peer_id, "main_menu")
         draft = homework_drafts.get(user_id)
+
+        has_attachments = bool(getattr(message, "attachments", None))
+        if text and not has_attachments and is_rate_limited(message_rate_limit, user_id, 0.8):
+            if not is_rate_limited(message_notice_rate_limit, user_id, 2.5):
+                await show_screen(peer_id, "Слишком часто. Попробуй через секунду.")
+            return
 
         if normalized in {"/start", "start", "начать"}:
             homework_drafts.pop(user_id, None)

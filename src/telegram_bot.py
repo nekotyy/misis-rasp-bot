@@ -4,6 +4,7 @@ from collections import defaultdict
 import asyncio
 from datetime import datetime
 from html import escape
+from time import monotonic
 from traceback import format_exception
 
 import httpx
@@ -106,6 +107,17 @@ def build_dispatcher(
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
+    message_rate_limit: dict[int, float] = {}
+    callback_rate_limit: dict[int, float] = {}
+    callback_notice_rate_limit: dict[int, float] = {}
+
+    def is_rate_limited(bucket: dict[int, float], key: int, cooldown: float) -> bool:
+        now = monotonic()
+        last_hit = bucket.get(key)
+        if last_hit is not None and now - last_hit < cooldown:
+            return True
+        bucket[key] = now
+        return False
 
     def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
@@ -350,10 +362,14 @@ def build_dispatcher(
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         editor_count = sum(1 for user in users if user.is_editor)
+        vk_users = sum(1 for user in users if user.platform == "vk")
+        tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
         return (
             "<b>Статус бота</b>\n\n"
             f"Пользователей: <b>{len(users)}</b>\n"
+            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: <b>{vk_users}</b>\n"
+            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: <b>{tg_users}</b>\n"
             f"Активных групп: <b>{len(active_groups)}</b>\n"
             f"Редакторов: <b>{editor_count}</b>\n"
             f"Записей ДЗ: <b>{homework_count}</b>\n"
@@ -491,6 +507,17 @@ def build_dispatcher(
                 if attempt >= retries:
                     return
                 await asyncio.sleep(0.5 * attempt)
+
+    async def callback_is_rate_limited(callback: CallbackQuery, cooldown: float = 0.8) -> bool:
+        user_id = callback.from_user.id
+        if not is_rate_limited(callback_rate_limit, user_id, cooldown):
+            return False
+        if not is_rate_limited(callback_notice_rate_limit, user_id, 2.5):
+            await safe_callback_answer(callback, "Слишком часто. Попробуй через секунду.")
+        return True
+
+    def message_is_rate_limited(user_id: int, cooldown: float = 0.8) -> bool:
+        return is_rate_limited(message_rate_limit, user_id, cooldown)
 
     async def safe_edit_message_text(
         message: Message | None,
@@ -1000,6 +1027,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         search_results.pop(callback.from_user.id, None)
         awaiting_schedule_search.discard(callback.from_user.id)
@@ -1021,6 +1050,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:settings")
     async def handle_menu_settings(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -1040,6 +1071,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:homework")
     async def handle_menu_homework(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
             await safe_callback_answer(callback)
@@ -1049,6 +1082,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
             await safe_callback_answer(callback)
@@ -1058,6 +1093,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "start:homework")
     async def handle_start_homework(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
             await safe_callback_answer(callback)
@@ -1070,6 +1107,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("schedule:"))
     async def handle_schedule_callback(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -1101,6 +1140,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("homework:view:"))
     async def handle_homework_subject(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if not await user_has_homework_access(callback.from_user.id):
             await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
@@ -1115,6 +1156,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("dz:subject:"))
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if not await user_has_homework_access(callback.from_user.id):
             await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
@@ -1144,6 +1187,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "dz:add_attachments")
     async def handle_add_attachments(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         draft = homework_drafts.get(callback.from_user.id)
         if draft is None:
@@ -1163,6 +1208,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "dz:save")
     async def handle_save_homework(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         draft = homework_drafts.get(callback.from_user.id)
         if draft is None or not draft.text.strip():
@@ -1216,6 +1263,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "dz:cancel")
     async def handle_cancel_homework(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         homework_drafts.pop(callback.from_user.id, None)
         editor = await user_is_editor(callback.from_user.id)
@@ -1232,6 +1281,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -1262,6 +1313,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("admin:"))
     async def handle_admin_callback(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback, cooldown=1.2):
+            return
         await register_callback_user(callback)
         if not user_is_admin(callback.from_user.id):
             await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
@@ -1452,6 +1505,8 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("editor:toggle:"))
     async def handle_editor_toggle(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback, cooldown=1.2):
+            return
         await register_callback_user(callback)
         if not user_is_admin(callback.from_user.id):
             await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
@@ -1563,6 +1618,8 @@ def build_dispatcher(
     @dispatcher.message(F.text == "Домашние задания")
     async def handle_homework_text_shortcut(message: Message) -> None:
         await register_message_user(message)
+        if message.from_user is not None and message_is_rate_limited(message.from_user.id):
+            return
         if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
             return
         if not await user_has_homework_access(message.from_user.id if message.from_user else None):
@@ -1579,6 +1636,8 @@ def build_dispatcher(
     async def handle_text_message(message: Message) -> None:
         await register_message_user(message)
         if message.from_user is None or message.text is None:
+            return
+        if message_is_rate_limited(message.from_user.id):
             return
         user = await get_user_record(message.from_user.id)
         if user is None or user.schedule_id is None or not user.group_name:
