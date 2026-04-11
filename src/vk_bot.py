@@ -358,8 +358,21 @@ def build_vk_bot(
         if not rows:
             lines.append("Нет записей.")
             return "\n".join(lines)
+        lines.append(f"Затронуто групп: {len(rows)}")
+        lines.append("")
         for group_name, action_time, action_name in rows:
             lines.append(f"{group_name} | {action_time} | {action_name}")
+        return "\n".join(lines)
+
+    def format_daily_change_report(title: str, rows: list[dict]) -> str:
+        lines = [title, ""]
+        if not rows:
+            lines.append("За сегодня изменений пока не было.")
+            return "\n".join(lines)
+        lines.append(f"Затронуто групп: {len(rows)}")
+        lines.append("")
+        for row in rows:
+            lines.append(f"{row['group_name']} | {row['created_at']}")
         return "\n".join(lines)
 
     async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
@@ -1000,7 +1013,7 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
-            if text == "??????":
+            if text == "Статус":
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return
             if text == "Перепарсить":
@@ -1026,15 +1039,9 @@ def build_vk_bot(
                 )
                 return
             if text == "Последнее изменение":
-                last_change = await db.get_last_change()
-                response = (
-                    "Последнее изменение\n\nИзменений пока не было."
-                    if not last_change
-                    else format_group_action_report(
-                        "Последнее изменение расписания",
-                        [(last_change["group_name"], last_change["created_at"], "изменение расписания")],
-                    )
-                )
+                today_prefix = datetime.now().date().isoformat()
+                daily_changes = await db.get_daily_change_groups(today_prefix)
+                response = format_daily_change_report("Последние изменения за сегодня", daily_changes)
                 await show_screen(peer_id, response, keyboard=admin_keyboard())
                 return
             if text == "Пользователи":

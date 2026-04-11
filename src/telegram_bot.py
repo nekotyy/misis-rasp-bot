@@ -391,6 +391,17 @@ def build_dispatcher(
             )
         return "\n".join(lines)
 
+    def format_daily_change_report(title: str, rows: list[dict]) -> str:
+        lines = [f"<b>{title}</b>", ""]
+        if not rows:
+            lines.append("За сегодня изменений пока не было.")
+            return "\n".join(lines)
+        lines.append(f"Затронуто групп: <b>{len(rows)}</b>")
+        lines.append("")
+        for row in rows:
+            lines.append(f"{escape(row['group_name'])} | <b>{escape(row['created_at'])}</b>")
+        return "\n".join(lines)
+
     async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
         groups = await db.get_active_groups()
         if not groups:
@@ -1478,15 +1489,9 @@ def build_dispatcher(
             text = "<b>Управление редакторами</b>\n\nНажми на пользователя, чтобы выдать или снять роль редактора."
             reply_markup = build_editors_keyboard(users)
         elif action == "last_change":
-            last_change = await db.get_last_change()
-            if not last_change:
-                text = "<b>Последнее изменение</b>\n\nИзменений пока не было."
-            else:
-                text = (
-                    "<b>Последнее изменение</b>\n\n"
-                    f"<b>{escape(last_change['created_at'])}</b>\n\n"
-                    f"{escape(last_change['message'])}"
-                )
+            today_prefix = datetime.now().date().isoformat()
+            daily_changes = await db.get_daily_change_groups(today_prefix)
+            text = format_daily_change_report("Последние изменения за сегодня", daily_changes)
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
             report_rows = await refresh_all_active_groups()

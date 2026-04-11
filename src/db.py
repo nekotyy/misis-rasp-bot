@@ -413,6 +413,29 @@ class Database:
             "created_at": row[5],
         }
 
+    async def get_daily_change_groups(self, day_prefix: str) -> list[dict]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT group_name, MAX(created_at) AS created_at
+                FROM change_events
+                WHERE created_at LIKE ?
+                GROUP BY schedule_id, group_name
+                ORDER BY group_name
+                """,
+                (f"{day_prefix}%",),
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "group_name": row[0],
+                "created_at": row[1],
+            }
+            for row in rows
+            if row[0] and row[1]
+        ]
+
     async def count_homework_entries(self) -> int:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute("SELECT COUNT(*) FROM homework_entries")
