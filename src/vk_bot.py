@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import datetime
 from html import escape
@@ -60,7 +61,7 @@ def build_vk_bot(
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     delete_option_map: dict[int, dict[str, tuple[int, str]]] = defaultdict(dict)
     message_rate_limit: dict[int, float] = {}
-    message_notice_rate_limit: dict[int, float] = {}
+    message_rate_locks: dict[int, asyncio.Lock] = {}
 
     def make_keyboard(rows: list[list[str]]) -> str:
         keyboard = Keyboard(one_time=False, inline=False)
@@ -104,6 +105,18 @@ def build_vk_bot(
             return True
         bucket[key] = now
         return False
+
+    async def wait_rate_limit_queue(user_id: int, cooldown: float = 0.8) -> None:
+        if user_is_admin(user_id):
+            return
+        lock = message_rate_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            now = monotonic()
+            next_at = message_rate_limit.get(user_id, now)
+            delay = next_at - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+            message_rate_limit[user_id] = monotonic() + cooldown
 
     async def notify_user_about_error(peer_id: int, error: Exception) -> None:
         try:
@@ -796,10 +809,8 @@ def build_vk_bot(
         draft = homework_drafts.get(user_id)
 
         has_attachments = bool(getattr(message, "attachments", None))
-        if text and not has_attachments and is_rate_limited(message_rate_limit, user_id, 0.8):
-            if not is_rate_limited(message_notice_rate_limit, user_id, 2.5):
-                await show_screen(peer_id, "Слишком часто. Попробуй через секунду.")
-            return
+        if text and not has_attachments:
+            await wait_rate_limit_queue(user_id, 0.8)
 
         if normalized in {"/start", "start", "начать"}:
             homework_drafts.pop(user_id, None)

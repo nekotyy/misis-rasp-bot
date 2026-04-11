@@ -109,7 +109,8 @@ def build_dispatcher(
     awaiting_schedule_search: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
-    callback_notice_rate_limit: dict[int, float] = {}
+    message_rate_locks: dict[int, asyncio.Lock] = {}
+    callback_rate_locks: dict[int, asyncio.Lock] = {}
 
     def is_rate_limited(bucket: dict[int, float], key: int, cooldown: float) -> bool:
         now = monotonic()
@@ -118,6 +119,21 @@ def build_dispatcher(
             return True
         bucket[key] = now
         return False
+
+    async def wait_rate_limit_queue(
+        bucket: dict[int, float],
+        lock_bucket: dict[int, asyncio.Lock],
+        user_id: int,
+        cooldown: float,
+    ) -> None:
+        lock = lock_bucket.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            now = monotonic()
+            next_at = bucket.get(user_id, now)
+            delay = next_at - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+            bucket[user_id] = monotonic() + cooldown
 
     def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
         rows: list[list[InlineKeyboardButton]] = []
@@ -523,14 +539,15 @@ def build_dispatcher(
 
     async def callback_is_rate_limited(callback: CallbackQuery, cooldown: float = 0.8) -> bool:
         user_id = callback.from_user.id
-        if not is_rate_limited(callback_rate_limit, user_id, cooldown):
+        if user_is_admin(user_id):
             return False
-        if not is_rate_limited(callback_notice_rate_limit, user_id, 2.5):
-            await safe_callback_answer(callback, "Слишком часто. Попробуй через секунду.")
-        return True
+        await wait_rate_limit_queue(callback_rate_limit, callback_rate_locks, user_id, cooldown)
+        return False
 
-    def message_is_rate_limited(user_id: int, cooldown: float = 0.8) -> bool:
-        return is_rate_limited(message_rate_limit, user_id, cooldown)
+    async def wait_message_rate_limit(user_id: int, cooldown: float = 0.8) -> None:
+        if user_is_admin(user_id):
+            return
+        await wait_rate_limit_queue(message_rate_limit, message_rate_locks, user_id, cooldown)
 
     async def safe_edit_message_text(
         message: Message | None,
@@ -1625,8 +1642,8 @@ def build_dispatcher(
     @dispatcher.message(F.text == "Домашние задания")
     async def handle_homework_text_shortcut(message: Message) -> None:
         await register_message_user(message)
-        if message.from_user is not None and message_is_rate_limited(message.from_user.id):
-            return
+        if message.from_user is not None:
+            await wait_message_rate_limit(message.from_user.id)
         if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
             return
         if not await user_has_homework_access(message.from_user.id if message.from_user else None):
@@ -1644,8 +1661,7 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is None or message.text is None:
             return
-        if message_is_rate_limited(message.from_user.id):
-            return
+        await wait_message_rate_limit(message.from_user.id)
         user = await get_user_record(message.from_user.id)
         if user is None or user.schedule_id is None or not user.group_name:
             if message.text.startswith("/"):
