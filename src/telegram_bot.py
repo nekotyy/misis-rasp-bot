@@ -383,6 +383,8 @@ def build_dispatcher(
         if not rows:
             lines.append("Нет записей.")
             return "\n".join(lines)
+        lines.append(f"Затронуто групп: <b>{len(rows)}</b>")
+        lines.append("")
         for group_name, action_time, action_name in rows:
             lines.append(
                 f"{escape(group_name)} | <b>{escape(action_time)}</b> | {escape(action_name)}"

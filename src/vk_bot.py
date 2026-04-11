@@ -1000,6 +1000,9 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
+            if text == "??????":
+                await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
+                return
             if text == "Перепарсить":
                 report_rows = await refresh_all_active_groups()
                 if not report_rows:
