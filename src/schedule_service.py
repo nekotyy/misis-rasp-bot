@@ -81,9 +81,10 @@ class ScheduleComparator:
         prev_days = {day["date_iso"]: day for day in previous["content"]["days"]}
         current_days = {day.date_iso: day for day in current.days}
         today = datetime.now().date()
+        days_to_check = 3 if today.weekday() == 5 else 2
         allowed_dates = {
             (today + timedelta(days=offset)).isoformat()
-            for offset in range(2)
+            for offset in range(days_to_check)
         }
 
         changed_dates: list[str] = []
