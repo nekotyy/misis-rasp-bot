@@ -487,6 +487,8 @@ def build_vk_bot(
     async def admin_status_text() -> str:
         users = await db.list_users()
         active_groups = await db.get_active_sources()
+        active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
+        active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
@@ -498,7 +500,8 @@ def build_vk_bot(
             f"Пользователей: {len(users)}\n"
             f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: {vk_users}\n"
             f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: {tg_users}\n"
-            f"Активных групп: {len(active_groups)}\n"
+            f"Активных групп: {active_group_count}\n"
+            f"Активных преподавателей: {active_teacher_count}\n"
             f"Последнее изменение: {last_change_at}\n\n"
             f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
             f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"

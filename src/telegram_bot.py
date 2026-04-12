@@ -363,6 +363,8 @@ def build_dispatcher(
     async def format_admin_status() -> str:
         users = await db.list_users()
         active_groups = await db.get_active_sources()
+        active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
+        active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
         last_change = await db.get_last_change()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
@@ -374,7 +376,8 @@ def build_dispatcher(
             f"Пользователей: <b>{len(users)}</b>\n"
             f"Пользователей с VK: <b>{vk_users}</b>\n"
             f"Пользователей с TG: <b>{tg_users}</b>\n"
-            f"Активных групп: <b>{len(active_groups)}</b>\n"
+            f"Активных групп: <b>{active_group_count}</b>\n"
+            f"Активных преподавателей: <b>{active_teacher_count}</b>\n"
             f"Последнее изменение: <b>{last_change_at}</b>\n\n"
             f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
