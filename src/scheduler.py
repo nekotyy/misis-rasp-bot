@@ -16,13 +16,11 @@ from src.schedule_service import ScheduleComparator
 
 logger = logging.getLogger(__name__)
 
-GroupRow = dict[str, Any]
-GroupWorker = Callable[..., Awaitable[None]]
+SourceRow = dict[str, Any]
+SourceWorker = Callable[..., Awaitable[None]]
 
 
 class ScheduleJobs:
-    """Фоновые задачи для baseline и постепенной синхронизации расписания."""
-
     def __init__(
         self,
         db: Database,
@@ -42,24 +40,14 @@ class ScheduleJobs:
         self._baseline_lock = asyncio.Lock()
 
     def configure(self) -> None:
-        self.scheduler.add_job(
-            self.save_daily_baseline,
-            CronTrigger(hour=0, minute=0),
-            max_instances=1,
-            coalesce=True,
-        )
+        self.scheduler.add_job(self.save_daily_baseline, CronTrigger(hour=0, minute=0), max_instances=1, coalesce=True)
         self.scheduler.add_job(
             self.save_daily_baseline_fallback,
             CronTrigger(hour=5, minute=0),
             max_instances=1,
             coalesce=True,
         )
-        self.scheduler.add_job(
-            self.sync_current_snapshot,
-            CronTrigger(minute=10),
-            max_instances=1,
-            coalesce=True,
-        )
+        self.scheduler.add_job(self.sync_current_snapshot, CronTrigger(minute=10), max_instances=1, coalesce=True)
         self.scheduler.add_job(
             self.sync_current_snapshot,
             CronTrigger(hour="9-13", minute=40),
@@ -73,109 +61,120 @@ class ScheduleJobs:
 
     async def save_daily_baseline(self) -> None:
         if self._baseline_lock.locked():
-            logger.info("Сохранение baseline пропущено: предыдущая задача еще выполняется.")
+            logger.info("Baseline task skipped because previous run is still active.")
             return
         async with self._baseline_lock:
-            await self._run_for_active_groups("baseline", self._save_baseline_for_group)
+            await self._run_for_active_sources("baseline", self._save_baseline_for_source)
 
     async def save_daily_baseline_fallback(self) -> None:
         if self._baseline_lock.locked():
-            logger.info("Fallback baseline пропущен: предыдущая задача еще выполняется.")
+            logger.info("Baseline fallback skipped because previous run is still active.")
             return
         async with self._baseline_lock:
             today_prefix = datetime.now().date().isoformat()
-            await self._run_for_active_groups(
+            await self._run_for_active_sources(
                 "baseline-fallback",
-                self._save_baseline_fallback_for_group,
+                self._save_baseline_fallback_for_source,
                 today_prefix=today_prefix,
             )
 
     async def sync_current_snapshot(self) -> None:
         if self._sync_lock.locked():
-            logger.info("Синхронизация пропущена: предыдущая задача еще выполняется.")
+            logger.info("Sync task skipped because previous run is still active.")
             return
         async with self._sync_lock:
-            await self._run_for_active_groups("sync", self._sync_group)
+            await self._run_for_active_sources("sync", self._sync_source)
 
-    async def _run_for_active_groups(self, job_name: str, worker: GroupWorker, **kwargs: Any) -> None:
-        groups = await self.db.get_active_groups()
-        if not groups:
-            logger.info("Задача %s: активных групп нет, парсинг не требуется.", job_name)
+    async def _run_for_active_sources(self, job_name: str, worker: SourceWorker, **kwargs: Any) -> None:
+        sources = await self.db.get_active_sources()
+        if not sources:
+            logger.info("Task %s skipped because there are no active sources.", job_name)
             return
 
-        for index, group in enumerate(groups):
+        for index, source in enumerate(sources):
             if index:
-                await self._sleep_between_groups(job_name, group["group_name"])
+                await self._sleep_between_sources(job_name, str(source["source_title"]))
             try:
-                await worker(group, **kwargs)
+                await worker(source, **kwargs)
             except Exception as exc:
-                logger.warning(
-                    "Задача %s: не удалось обработать группу %s: %s",
-                    job_name,
-                    group["group_name"],
-                    exc,
-                )
+                logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
 
-    async def _sleep_between_groups(self, job_name: str, group_name: str) -> None:
+    async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:
         delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)
         if delay <= 0:
             return
-        logger.info(
-            "Задача %s: жду %.1f с перед следующим запросом (%s).",
-            job_name,
-            delay,
-            group_name,
-        )
+        logger.info("Task %s waits %.1f seconds before next source (%s).", job_name, delay, source_title)
         await asyncio.sleep(delay)
 
-    async def _save_baseline_for_group(self, group: GroupRow, **_: Any) -> None:
-        snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
+    async def _parse_source(self, source: SourceRow):
+        if source["source_type"] == "teacher":
+            return await self.parser.parse_from_url(source["source_url"])
+        return await self.parser.parse(source["schedule_id"])
+
+    async def _save_baseline_for_source(self, source: SourceRow, **_: Any) -> None:
+        snapshot, snapshot_hash = await self._parse_source(source)
         await self.db.save_snapshot(
             "daily_baseline",
             snapshot_hash,
             snapshot,
-            schedule_id=group["schedule_id"],
-            group_name=group["group_name"],
+            schedule_id=source["schedule_id"],
+            group_name=source.get("group_name"),
+            source_type=source["source_type"],
+            source_key=source["source_key"],
+            source_title=source["source_title"],
+            source_url=source["source_url"],
         )
 
-    async def _save_baseline_fallback_for_group(
+    async def _save_baseline_fallback_for_source(
         self,
-        group: GroupRow,
+        source: SourceRow,
         *,
         today_prefix: str,
         **_: Any,
     ) -> None:
-        if await self.db.has_baseline_for_date(today_prefix, group["schedule_id"]):
+        if await self.db.has_baseline_for_date(
+            today_prefix,
+            schedule_id=source["schedule_id"],
+            source_key=source["source_key"],
+        ):
             return
-        await self._save_baseline_for_group(group)
+        await self._save_baseline_for_source(source)
 
-    async def _sync_group(self, group: GroupRow, **_: Any) -> None:
-        snapshot, snapshot_hash = await self.parser.parse(group["schedule_id"])
-        baseline = await self.db.get_latest_snapshot("daily_baseline", group["schedule_id"])
+    async def _sync_source(self, source: SourceRow, **_: Any) -> None:
+        snapshot, snapshot_hash = await self._parse_source(source)
+        baseline = await self.db.get_latest_snapshot(
+            "daily_baseline",
+            schedule_id=source["schedule_id"],
+            source_key=source["source_key"],
+        )
         await self.db.save_snapshot(
             "current",
             snapshot_hash,
             snapshot,
-            schedule_id=group["schedule_id"],
-            group_name=group["group_name"],
+            schedule_id=source["schedule_id"],
+            group_name=source.get("group_name"),
+            source_type=source["source_type"],
+            source_key=source["source_key"],
+            source_title=source["source_title"],
+            source_url=source["source_url"],
         )
 
         if baseline is None:
-            logger.info(
-                "Группа %s стала активной без baseline. Сохраняю первый эталон автоматически.",
-                group["group_name"],
-            )
+            logger.info("Source %s has no baseline yet. Saving first baseline automatically.", source["source_title"])
             await self.db.save_snapshot(
                 "daily_baseline",
                 snapshot_hash,
                 snapshot,
-                schedule_id=group["schedule_id"],
-                group_name=group["group_name"],
+                schedule_id=source["schedule_id"],
+                group_name=source.get("group_name"),
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
             )
             return
 
         change_summary = ScheduleComparator.compare(baseline, snapshot)
-
         if change_summary is None:
             return
 
@@ -184,19 +183,28 @@ class ScheduleJobs:
             message=change_summary.message,
             changed_dates=change_summary.changed_dates,
             payload=change_summary.payload,
-            schedule_id=group["schedule_id"],
-            group_name=group["group_name"],
+            schedule_id=source["schedule_id"],
+            group_name=source.get("group_name"),
+            source_type=source["source_type"],
+            source_key=source["source_key"],
+            source_title=source["source_title"],
+            source_url=source["source_url"],
         )
         await self.broadcaster.broadcast(
             change_summary.message,
             telegram_message=change_summary.telegram_message,
             vk_message=change_summary.vk_message,
-            schedule_id=group["schedule_id"],
+            schedule_id=source["schedule_id"],
+            subscription_key=source["source_key"],
         )
         await self.db.save_snapshot(
             "daily_baseline",
             snapshot_hash,
             snapshot,
-            schedule_id=group["schedule_id"],
-            group_name=group["group_name"],
+            schedule_id=source["schedule_id"],
+            group_name=source.get("group_name"),
+            source_type=source["source_type"],
+            source_key=source["source_key"],
+            source_title=source["source_title"],
+            source_url=source["source_url"],
         )

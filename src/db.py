@@ -25,6 +25,10 @@ class Database:
                     user_id INTEGER NOT NULL,
                     username TEXT,
                     full_name TEXT,
+                    subscription_type TEXT,
+                    subscription_key TEXT,
+                    subscription_title TEXT,
+                    subscription_url TEXT,
                     group_name TEXT,
                     schedule_id INTEGER,
                     is_admin INTEGER NOT NULL DEFAULT 0,
@@ -38,6 +42,10 @@ class Database:
                 CREATE TABLE IF NOT EXISTS schedule_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     snapshot_type TEXT NOT NULL,
+                    source_type TEXT,
+                    source_key TEXT,
+                    source_title TEXT,
+                    source_url TEXT,
                     group_name TEXT,
                     schedule_id INTEGER,
                     snapshot_hash TEXT NOT NULL,
@@ -48,6 +56,10 @@ class Database:
 
                 CREATE TABLE IF NOT EXISTS change_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT,
+                    source_key TEXT,
+                    source_title TEXT,
+                    source_url TEXT,
                     group_name TEXT,
                     schedule_id INTEGER,
                     snapshot_hash TEXT NOT NULL,
@@ -101,14 +113,56 @@ class Database:
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
             await self._ensure_column(db, "users", "schedule_id", "INTEGER")
+            await self._ensure_column(db, "users", "subscription_type", "TEXT")
+            await self._ensure_column(db, "users", "subscription_key", "TEXT")
+            await self._ensure_column(db, "users", "subscription_title", "TEXT")
+            await self._ensure_column(db, "users", "subscription_url", "TEXT")
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
+            await self._ensure_column(db, "schedule_snapshots", "source_type", "TEXT")
+            await self._ensure_column(db, "schedule_snapshots", "source_key", "TEXT")
+            await self._ensure_column(db, "schedule_snapshots", "source_title", "TEXT")
+            await self._ensure_column(db, "schedule_snapshots", "source_url", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "group_name", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "schedule_id", "INTEGER")
+            await self._ensure_column(db, "change_events", "source_type", "TEXT")
+            await self._ensure_column(db, "change_events", "source_key", "TEXT")
+            await self._ensure_column(db, "change_events", "source_title", "TEXT")
+            await self._ensure_column(db, "change_events", "source_url", "TEXT")
             await self._ensure_column(db, "change_events", "group_name", "TEXT")
             await self._ensure_column(db, "change_events", "schedule_id", "INTEGER")
             await self._ensure_column(db, "homework_attachments", "storage_path", "TEXT")
             await self._ensure_column(db, "homework_attachments", "source_platform", "TEXT")
+            await db.execute(
+                """
+                UPDATE users
+                SET
+                    subscription_type = COALESCE(subscription_type, CASE WHEN schedule_id IS NOT NULL THEN 'group' END),
+                    subscription_key = COALESCE(subscription_key, CASE WHEN schedule_id IS NOT NULL THEN 'group:' || schedule_id END),
+                    subscription_title = COALESCE(subscription_title, group_name),
+                    subscription_url = COALESCE(subscription_url, CASE WHEN schedule_id IS NOT NULL THEN 'rasp:' || schedule_id END)
+                """
+            )
+            await db.execute(
+                """
+                UPDATE schedule_snapshots
+                SET
+                    source_type = COALESCE(source_type, CASE WHEN schedule_id IS NOT NULL THEN 'group' END),
+                    source_key = COALESCE(source_key, CASE WHEN schedule_id IS NOT NULL THEN 'group:' || schedule_id END),
+                    source_title = COALESCE(source_title, group_name),
+                    source_url = COALESCE(source_url, CASE WHEN schedule_id IS NOT NULL THEN 'rasp:' || schedule_id END)
+                """
+            )
+            await db.execute(
+                """
+                UPDATE change_events
+                SET
+                    source_type = COALESCE(source_type, CASE WHEN schedule_id IS NOT NULL THEN 'group' END),
+                    source_key = COALESCE(source_key, CASE WHEN schedule_id IS NOT NULL THEN 'group:' || schedule_id END),
+                    source_title = COALESCE(source_title, group_name),
+                    source_url = COALESCE(source_url, CASE WHEN schedule_id IS NOT NULL THEN 'rasp:' || schedule_id END)
+                """
+            )
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -124,6 +178,10 @@ class Database:
         user_id: int,
         username: str | None,
         full_name: str | None,
+        subscription_type: str | None = None,
+        subscription_key: str | None = None,
+        subscription_title: str | None = None,
+        subscription_url: str | None = None,
         group_name: str | None = None,
         schedule_id: int | None = None,
         is_admin: bool = False,
@@ -134,25 +192,65 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO users (
-                    platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                    platform, user_id, username, full_name, subscription_type, subscription_key, subscription_title, subscription_url, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name,
+                    subscription_type = COALESCE(excluded.subscription_type, users.subscription_type),
+                    subscription_key = COALESCE(excluded.subscription_key, users.subscription_key),
+                    subscription_title = COALESCE(excluded.subscription_title, users.subscription_title),
+                    subscription_url = COALESCE(excluded.subscription_url, users.subscription_url),
                     group_name = COALESCE(excluded.group_name, users.group_name),
                     schedule_id = COALESCE(excluded.schedule_id, users.schedule_id),
                     is_admin = excluded.is_admin,
                     is_editor = COALESCE(users.is_editor, excluded.is_editor),
                     last_seen_at = excluded.last_seen_at
                 """,
-                (platform, user_id, username, full_name, group_name, schedule_id, int(is_admin), int(is_editor), 1, now, now),
+                (
+                    platform,
+                    user_id,
+                    username,
+                    full_name,
+                    subscription_type,
+                    subscription_key,
+                    subscription_title,
+                    subscription_url,
+                    group_name,
+                    schedule_id,
+                    int(is_admin),
+                    int(is_editor),
+                    1,
+                    now,
+                    now,
+                ),
             )
             await db.commit()
 
-    async def list_users(self, platform: str | None = None, schedule_id: int | None = None) -> list[UserRecord]:
+    async def list_users(
+        self,
+        platform: str | None = None,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> list[UserRecord]:
         query = """
-            SELECT platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+            SELECT
+                platform,
+                user_id,
+                username,
+                full_name,
+                subscription_type,
+                subscription_key,
+                subscription_title,
+                subscription_url,
+                group_name,
+                schedule_id,
+                is_admin,
+                is_editor,
+                homework_notifications_enabled,
+                created_at,
+                last_seen_at
             FROM users
         """
         clauses: list[str] = []
@@ -163,6 +261,9 @@ class Database:
         if schedule_id is not None:
             clauses.append("schedule_id = ?")
             params.append(schedule_id)
+        if subscription_key is not None:
+            clauses.append("subscription_key = ?")
+            params.append(subscription_key)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY platform, created_at"
@@ -177,25 +278,49 @@ class Database:
                 user_id=row[1],
                 username=row[2],
                 full_name=row[3],
-                group_name=row[4],
-                schedule_id=row[5],
-                is_admin=bool(row[6]),
-                is_editor=bool(row[7]),
-                homework_notifications_enabled=bool(row[8]),
-                created_at=row[9],
-                last_seen_at=row[10],
+                subscription_type=row[4],
+                subscription_key=row[5],
+                subscription_title=row[6],
+                subscription_url=row[7],
+                group_name=row[8],
+                schedule_id=row[9],
+                is_admin=bool(row[10]),
+                is_editor=bool(row[11]),
+                homework_notifications_enabled=bool(row[12]),
+                created_at=row[13],
+                last_seen_at=row[14],
             )
             for row in rows
         ]
 
-    async def get_users_for_platform(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
-        return await self.list_users(platform=platform, schedule_id=schedule_id)
+    async def get_users_for_platform(
+        self,
+        platform: str,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> list[UserRecord]:
+        return await self.list_users(platform=platform, schedule_id=schedule_id, subscription_key=subscription_key)
 
     async def get_user(self, platform: str, user_id: int) -> UserRecord | None:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT platform, user_id, username, full_name, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                SELECT
+                    platform,
+                    user_id,
+                    username,
+                    full_name,
+                    subscription_type,
+                    subscription_key,
+                    subscription_title,
+                    subscription_url,
+                    group_name,
+                    schedule_id,
+                    is_admin,
+                    is_editor,
+                    homework_notifications_enabled,
+                    created_at,
+                    last_seen_at
                 FROM users
                 WHERE platform = ? AND user_id = ?
                 LIMIT 1
@@ -210,33 +335,83 @@ class Database:
             user_id=row[1],
             username=row[2],
             full_name=row[3],
-            group_name=row[4],
-            schedule_id=row[5],
-            is_admin=bool(row[6]),
-            is_editor=bool(row[7]),
-            homework_notifications_enabled=bool(row[8]),
-            created_at=row[9],
-            last_seen_at=row[10],
+            subscription_type=row[4],
+            subscription_key=row[5],
+            subscription_title=row[6],
+            subscription_url=row[7],
+            group_name=row[8],
+            schedule_id=row[9],
+            is_admin=bool(row[10]),
+            is_editor=bool(row[11]),
+            homework_notifications_enabled=bool(row[12]),
+            created_at=row[13],
+            last_seen_at=row[14],
         )
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
+        await self.set_user_subscription(
+            platform=platform,
+            user_id=user_id,
+            subscription_type="group",
+            subscription_key=f"group:{schedule_id}",
+            subscription_title=group_name,
+            subscription_url=f"rasp:{schedule_id}",
+            group_name=group_name,
+            schedule_id=schedule_id,
+        )
+
+    async def set_user_subscription(
+        self,
+        platform: str,
+        user_id: int,
+        subscription_type: str,
+        subscription_key: str,
+        subscription_title: str,
+        subscription_url: str,
+        group_name: str | None = None,
+        schedule_id: int | None = None,
+    ) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
                 UPDATE users
-                SET group_name = ?, schedule_id = ?
+                SET
+                    subscription_type = ?,
+                    subscription_key = ?,
+                    subscription_title = ?,
+                    subscription_url = ?,
+                    group_name = ?,
+                    schedule_id = ?
                 WHERE platform = ? AND user_id = ?
                 """,
-                (group_name, schedule_id, platform, user_id),
+                (
+                    subscription_type,
+                    subscription_key,
+                    subscription_title,
+                    subscription_url,
+                    group_name,
+                    schedule_id,
+                    platform,
+                    user_id,
+                ),
             )
             await db.commit()
 
     async def clear_user_group(self, platform: str, user_id: int) -> None:
+        await self.clear_user_subscription(platform, user_id)
+
+    async def clear_user_subscription(self, platform: str, user_id: int) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
                 UPDATE users
-                SET group_name = NULL, schedule_id = NULL
+                SET
+                    subscription_type = NULL,
+                    subscription_key = NULL,
+                    subscription_title = NULL,
+                    subscription_url = NULL,
+                    group_name = NULL,
+                    schedule_id = NULL
                 WHERE platform = ? AND user_id = ?
                 """,
                 (platform, user_id),
@@ -267,33 +442,55 @@ class Database:
             )
             await db.commit()
 
-    async def get_users_for_homework_notifications(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
-        users = await self.get_users_for_platform(platform, schedule_id=schedule_id)
+    async def get_users_for_homework_notifications(
+        self,
+        platform: str,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> list[UserRecord]:
+        users = await self.get_users_for_platform(platform, schedule_id=schedule_id, subscription_key=subscription_key)
         return [user for user in users if user.homework_notifications_enabled]
 
-    async def get_users_for_notifications(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
-        return await self.get_users_for_homework_notifications(platform, schedule_id=schedule_id)
+    async def get_users_for_notifications(
+        self,
+        platform: str,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> list[UserRecord]:
+        return await self.get_users_for_homework_notifications(
+            platform,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+        )
 
     async def get_active_groups(self) -> list[dict]:
+        groups = await self.get_active_sources()
+        return [group for group in groups if group["source_type"] == "group"]
+
+    async def get_active_sources(self) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT schedule_id, group_name, COUNT(*)
+                SELECT subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name, COUNT(*)
                 FROM users
-                WHERE schedule_id IS NOT NULL
-                GROUP BY schedule_id, group_name
-                ORDER BY group_name
+                WHERE subscription_key IS NOT NULL
+                GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
+                ORDER BY subscription_title
                 """
             )
             rows = await cursor.fetchall()
         return [
             {
-                "schedule_id": row[0],
-                "group_name": row[1],
-                "users_count": row[2],
+                "source_type": row[0],
+                "source_key": row[1],
+                "source_title": row[2],
+                "source_url": row[3],
+                "schedule_id": row[4],
+                "group_name": row[5],
+                "users_count": row[6],
             }
             for row in rows
-            if row[0] is not None and row[1]
+            if row[1] is not None and row[2]
         ]
 
     async def save_snapshot(
@@ -301,27 +498,61 @@ class Database:
         snapshot_type: str,
         snapshot_hash: str,
         snapshot: ScheduleSnapshot,
-        schedule_id: int,
-        group_name: str,
+        schedule_id: int | None,
+        group_name: str | None,
+        source_type: str | None = None,
+        source_key: str | None = None,
+        source_title: str | None = None,
+        source_url: str | None = None,
     ) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
         now = datetime.now().isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO schedule_snapshots (snapshot_type, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO schedule_snapshots (
+                    snapshot_type, source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (snapshot_type, group_name, schedule_id, snapshot_hash, content_json, snapshot.fetched_at.isoformat(timespec="seconds"), now),
+                (
+                    snapshot_type,
+                    source_type,
+                    source_key,
+                    source_title or group_name or snapshot.group_name,
+                    source_url,
+                    group_name or source_title or snapshot.group_name,
+                    schedule_id,
+                    snapshot_hash,
+                    content_json,
+                    snapshot.fetched_at.isoformat(timespec="seconds"),
+                    now,
+                ),
             )
             await db.commit()
 
-    async def get_latest_snapshot(self, snapshot_type: str, schedule_id: int | None = None) -> dict | None:
+    async def get_latest_snapshot(
+        self,
+        snapshot_type: str,
+        schedule_id: int | None = None,
+        source_key: str | None = None,
+    ) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
-            if schedule_id is None:
+            if source_key is not None:
                 cursor = await db.execute(
                     """
-                    SELECT group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = ? AND source_key = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (snapshot_type, source_key),
+                )
+            elif schedule_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
                     FROM schedule_snapshots
                     WHERE snapshot_type = ?
                     ORDER BY id DESC
@@ -332,7 +563,7 @@ class Database:
             else:
                 cursor = await db.execute(
                     """
-                    SELECT group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
                     FROM schedule_snapshots
                     WHERE snapshot_type = ? AND schedule_id = ?
                     ORDER BY id DESC
@@ -345,12 +576,16 @@ class Database:
         if not row:
             return None
         return {
-            "group_name": row[0],
-            "schedule_id": row[1],
-            "snapshot_hash": row[2],
-            "content": json.loads(row[3]),
-            "fetched_at": row[4],
-            "created_at": row[5],
+            "source_type": row[0],
+            "source_key": row[1],
+            "source_title": row[2],
+            "source_url": row[3],
+            "group_name": row[4],
+            "schedule_id": row[5],
+            "snapshot_hash": row[6],
+            "content": json.loads(row[7]),
+            "fetched_at": row[8],
+            "created_at": row[9],
         }
 
     async def record_change(
@@ -359,17 +594,27 @@ class Database:
         message: str,
         changed_dates: list[str],
         payload: dict,
-        schedule_id: int,
-        group_name: str,
+        schedule_id: int | None,
+        group_name: str | None,
+        source_type: str | None = None,
+        source_key: str | None = None,
+        source_title: str | None = None,
+        source_url: str | None = None,
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 """
-                INSERT INTO change_events (group_name, schedule_id, snapshot_hash, message, changed_dates_json, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO change_events (
+                    source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, message, changed_dates_json, payload_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    source_type,
+                    source_key,
+                    source_title or group_name,
+                    source_url,
                     group_name,
                     schedule_id,
                     snapshot_hash,
@@ -381,12 +626,27 @@ class Database:
             )
             await db.commit()
 
-    async def get_last_change(self, schedule_id: int | None = None) -> dict | None:
+    async def get_last_change(
+        self,
+        schedule_id: int | None = None,
+        source_key: str | None = None,
+    ) -> dict | None:
         async with aiosqlite.connect(self.path) as db:
-            if schedule_id is None:
+            if source_key is not None:
                 cursor = await db.execute(
                     """
-                    SELECT group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                    FROM change_events
+                    WHERE source_key = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (source_key,),
+                )
+            elif schedule_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
                     FROM change_events
                     ORDER BY id DESC
                     LIMIT 1
@@ -395,7 +655,7 @@ class Database:
             else:
                 cursor = await db.execute(
                     """
-                    SELECT group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
                     FROM change_events
                     WHERE schedule_id = ?
                     ORDER BY id DESC
@@ -408,23 +668,27 @@ class Database:
         if not row:
             return None
         return {
-            "group_name": row[0],
-            "schedule_id": row[1],
-            "message": row[2],
-            "changed_dates": json.loads(row[3]),
-            "payload": json.loads(row[4]),
-            "created_at": row[5],
+            "source_type": row[0],
+            "source_key": row[1],
+            "source_title": row[2],
+            "source_url": row[3],
+            "group_name": row[4],
+            "schedule_id": row[5],
+            "message": row[6],
+            "changed_dates": json.loads(row[7]),
+            "payload": json.loads(row[8]),
+            "created_at": row[9],
         }
 
     async def get_daily_change_groups(self, day_prefix: str) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT group_name, MAX(created_at) AS created_at
+                SELECT source_title, MAX(created_at) AS created_at
                 FROM change_events
                 WHERE created_at LIKE ?
-                GROUP BY schedule_id, group_name
-                ORDER BY group_name
+                GROUP BY source_key, source_title
+                ORDER BY source_title
                 """,
                 (f"{day_prefix}%",),
             )
@@ -681,19 +945,37 @@ class Database:
             for row in rows
         ]
 
-    async def has_baseline_for_date(self, day_prefix: str, schedule_id: int) -> bool:
+    async def has_baseline_for_date(
+        self,
+        day_prefix: str,
+        schedule_id: int | None = None,
+        source_key: str | None = None,
+    ) -> bool:
         async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(
-                """
-                SELECT 1
-                FROM schedule_snapshots
-                WHERE snapshot_type = 'daily_baseline'
-                  AND schedule_id = ?
-                  AND created_at LIKE ?
-                LIMIT 1
-                """,
-                (schedule_id, f"{day_prefix}%"),
-            )
+            if source_key is not None:
+                cursor = await db.execute(
+                    """
+                    SELECT 1
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = 'daily_baseline'
+                      AND source_key = ?
+                      AND created_at LIKE ?
+                    LIMIT 1
+                    """,
+                    (source_key, f"{day_prefix}%"),
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT 1
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = 'daily_baseline'
+                      AND schedule_id = ?
+                      AND created_at LIKE ?
+                    LIMIT 1
+                    """,
+                    (schedule_id, f"{day_prefix}%"),
+                )
             row = await cursor.fetchone()
         return row is not None
 

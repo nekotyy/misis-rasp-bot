@@ -32,6 +32,10 @@ class UserRecord:
     user_id: int
     username: str | None
     full_name: str | None
+    subscription_type: str | None
+    subscription_key: str | None
+    subscription_title: str | None
+    subscription_url: str | None
     group_name: str | None
     schedule_id: int | None
     is_admin: bool

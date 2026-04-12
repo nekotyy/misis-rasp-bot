@@ -23,6 +23,7 @@ from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
+from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
 
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
@@ -210,6 +211,10 @@ def build_dispatcher(
             user_id=user.id,
             username=user.username,
             full_name=full_name,
+            subscription_type=existing.subscription_type if existing else None,
+            subscription_key=existing.subscription_key if existing else None,
+            subscription_title=existing.subscription_title if existing else None,
+            subscription_url=existing.subscription_url if existing else None,
             group_name=existing.group_name if existing else None,
             schedule_id=existing.schedule_id if existing else None,
             is_admin=is_admin,
@@ -225,6 +230,10 @@ def build_dispatcher(
             user_id=user.id,
             username=user.username,
             full_name=full_name,
+            subscription_type=existing.subscription_type if existing else None,
+            subscription_key=existing.subscription_key if existing else None,
+            subscription_title=existing.subscription_title if existing else None,
+            subscription_url=existing.subscription_url if existing else None,
             group_name=existing.group_name if existing else None,
             schedule_id=existing.schedule_id if existing else None,
             is_admin=user_is_admin(user.id),
@@ -251,14 +260,29 @@ def build_dispatcher(
 
     async def get_saved_snapshot(user_id: int | None) -> dict | None:
         user = await get_user_record(user_id)
-        if user is None or user.schedule_id is None:
+        if user is None or not user.subscription_key or not user.subscription_title:
             return None
-        snapshot = await db.get_latest_snapshot("current", user.schedule_id)
+        snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
         if snapshot is not None:
             return snapshot
-        snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-        await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
-        return await db.get_latest_snapshot("current", user.schedule_id)
+        if user.subscription_type == "teacher" and user.subscription_url:
+            snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+        elif user.schedule_id is not None:
+            snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+        else:
+            return None
+        await db.save_snapshot(
+            "current",
+            snapshot_hash,
+            snapshot_obj,
+            user.schedule_id,
+            user.group_name,
+            source_type=user.subscription_type,
+            source_key=user.subscription_key,
+            source_title=user.subscription_title,
+            source_url=user.subscription_url,
+        )
+        return await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
 
     def format_group_prompt(error_text: str | None = None) -> str:
         lines = [
@@ -294,44 +318,17 @@ def build_dispatcher(
         )
 
     def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
-        lines = ["<b>Привет! Я бот расписания колледжа</b>"]
-        if group_name:
-            lines.extend(["", f"Твоя группа: <b>{escape(group_name)}</b>"])
-        lines.extend(
-            [
-                "",
-                "/rasp — посмотреть расписание",
-                "/settings — настройки",
-            ]
-        )
-        return "\n".join(lines)
+        class _WelcomeUser:
+            subscription_type = "group" if group_name else None
+            subscription_title = group_name
+
+        return build_welcome_text(_WelcomeUser if group_name else None, is_editor=is_editor)
 
     async def format_settings_text(user_id: int) -> str:
-        user = await db.get_user("telegram", user_id)
-        notifications_enabled = user.homework_notifications_enabled if user else True
-        lines = [
-            "<b>Настройки</b>",
-            "",
-            f"Группа: <b>{escape(user.group_name) if user and user.group_name else 'не выбрана'}</b>",
-            f"Уведомления: <b>{'включены' if notifications_enabled else 'выключены'}</b>",
-        ]
-        return "\n".join(lines)
+        return await format_subscription_settings_text(user_id)
 
     async def build_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
-        user = await db.get_user("telegram", user_id)
-        notifications_enabled = user.homework_notifications_enabled if user else True
-        rows: list[list[InlineKeyboardButton]] = [
-            [
-                InlineKeyboardButton(
-                    text="Отключить уведомления" if notifications_enabled else "Включить уведомления",
-                    callback_data="settings:toggle_notifications",
-                )
-            ]
-        ]
-        if user and user.group_name:
-            rows.append([InlineKeyboardButton(text="Отписаться от группы", callback_data="settings:clear_group")])
-        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
+        return await build_subscription_settings_keyboard(user_id)
 
     def format_admin_panel() -> str:
         return (
@@ -365,7 +362,7 @@ def build_dispatcher(
 
     async def format_admin_status() -> str:
         users = await db.list_users()
-        active_groups = await db.get_active_groups()
+        active_groups = await db.get_active_sources()
         last_change = await db.get_last_change()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
@@ -388,7 +385,7 @@ def build_dispatcher(
         if not rows:
             lines.append("Нет записей.")
             return "\n".join(lines)
-        lines.append(f"Затронуто групп: <b>{len(rows)}</b>")
+        lines.append(f"Затронуто источников: <b>{len(rows)}</b>")
         lines.append("")
         for group_name, action_time, action_name in rows:
             lines.append(
@@ -401,7 +398,7 @@ def build_dispatcher(
         if not rows:
             lines.append("За сегодня изменений пока не было.")
             return "\n".join(lines)
-        lines.append(f"Затронуто групп: <b>{len(rows)}</b>")
+        lines.append(f"Затронуто источников: <b>{len(rows)}</b>")
         lines.append("")
         for row in rows:
             lines.append(f"{escape(row['group_name'])} | <b>{escape(row['created_at'])}</b>")
@@ -429,6 +426,56 @@ def build_dispatcher(
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
             rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
+        return rows
+
+    async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+        sources = await db.get_active_sources()
+        if not sources:
+            return []
+
+        rows: list[tuple[str, str, str]] = []
+        for source in sources:
+            if source["source_type"] == "teacher":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+            else:
+                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            await db.save_snapshot(
+                "current",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+        return rows
+
+    async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
+        sources = await db.get_active_sources()
+        if not sources:
+            return []
+
+        rows: list[tuple[str, str, str]] = []
+        for source in sources:
+            if source["source_type"] == "teacher":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+            else:
+                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            await db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
         return rows
 
     async def replace_context_message(
@@ -615,12 +662,22 @@ def build_dispatcher(
             bot,
             chat_id,
             "group_select",
-            format_group_prompt(error_text),
+            "\n".join(
+                [
+                    "<b>Укажи свою группу или фамилию преподавателя</b>",
+                    "",
+                    "Напиши группу в формате сайта или введи фамилию преподавателя.",
+                    "Например: <b>ИСП-25-1</b> или <b>Набережных</b>",
+                    "",
+                    "Регистр не важен.",
+                    *([ "", error_text ] if error_text else []),
+                ]
+            ),
         )
 
     async def ensure_group_selected(bot: Bot, chat_id: int, user_id: int | None) -> bool:
         user = await get_user_record(user_id)
-        if user is not None and user.schedule_id is not None and user.group_name:
+        if user is not None and user.subscription_key and user.subscription_title:
             return True
         await prompt_group_selection(bot, chat_id)
         return False
@@ -692,21 +749,73 @@ def build_dispatcher(
         return True
 
     async def handle_group_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
-        if group_catalog is None:
-            await prompt_group_selection(bot, chat_id, "Справочник групп пока недоступен. Попробуй позже.")
-            return False
-        group = await group_catalog.find_group(raw_text)
-        if group is None:
-            await prompt_group_selection(bot, chat_id, "Группа не найдена. Проверь написание и попробуй еще раз.")
-            return False
-        await db.set_user_group("telegram", user_id, group.group_name, group.schedule_id)
+        return await handle_subscription_input(bot, chat_id, user_id, raw_text)
+
+    def build_welcome_text(user, is_editor: bool = False) -> str:
+        lines = ["<b>Привет! Я бот расписания колледжа</b>"]
+        subscription_line = subscription_caption(
+            user.subscription_type if user else None,
+            user.subscription_title if user else None,
+        )
+        if subscription_line:
+            label, value = subscription_line.split(":", 1)
+            lines.extend(["", f"{escape(label)}: <b>{escape(value.strip())}</b>"])
+        lines.extend(["", "/rasp — посмотреть расписание", "/settings — настройки"])
+        return "\n".join(lines)
+
+    async def format_subscription_settings_text(user_id: int) -> str:
+        user = await db.get_user("telegram", user_id)
+        notifications_enabled = user.homework_notifications_enabled if user else True
+        lines = ["<b>Настройки</b>", ""]
+        subscription_line = subscription_caption(
+            user.subscription_type if user else None,
+            user.subscription_title if user else None,
+        )
+        if subscription_line:
+            label, value = subscription_line.split(":", 1)
+            lines.append(f"{escape(label)}: <b>{escape(value.strip())}</b>")
+        else:
+            lines.append("Подписка: <b>не выбрана</b>")
+        lines.append(f"Уведомления: <b>{'включены' if notifications_enabled else 'выключены'}</b>")
+        return "\n".join(lines)
+
+    async def build_subscription_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
+        user = await db.get_user("telegram", user_id)
+        notifications_enabled = user.homework_notifications_enabled if user else True
+        rows: list[list[InlineKeyboardButton]] = [
+            [
+                InlineKeyboardButton(
+                    text="Отключить уведомления" if notifications_enabled else "Включить уведомления",
+                    callback_data="settings:toggle_notifications",
+                )
+            ]
+        ]
+        if user and user.subscription_key:
+            rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    async def handle_subscription_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
+        group = await group_catalog.find_group(raw_text) if group_catalog is not None else None
+        if group is not None:
+            await db.set_user_subscription("telegram", user_id, **make_group_subscription(group.group_name, group.schedule_id))
+        else:
+            if search_catalog is None:
+                await prompt_group_selection(bot, chat_id, "Справочник сейчас недоступен. Попробуй позже.")
+                return False
+            target = await search_catalog.find(raw_text)
+            if target is None or target.kind != "teacher":
+                await prompt_group_selection(bot, chat_id, "Ничего не найдено. Проверь написание и попробуй еще раз.")
+                return False
+            await db.set_user_subscription("telegram", user_id, **make_teacher_subscription(target))
         editor = await user_is_editor(user_id)
+        user = await get_user_record(user_id)
         await clear_context_messages(bot, chat_id, "group_select")
         await send_new_context_message(
             bot,
             chat_id,
             "menu",
-            format_welcome(group.group_name, is_editor=editor),
+            build_welcome_text(user, is_editor=editor),
             reply_markup=START_KEYBOARD,
         )
         return True
@@ -932,7 +1041,7 @@ def build_dispatcher(
         if message.from_user:
             awaiting_schedule_search.discard(message.from_user.id)
         user = await get_user_record(message.from_user.id if message.from_user else None)
-        if user is None or user.schedule_id is None or not user.group_name:
+        if user is None or not user.subscription_key or not user.subscription_title:
             await prompt_group_selection(message.bot, message.chat.id)
             return
         editor = await user_is_editor(message.from_user.id if message.from_user else None)
@@ -940,7 +1049,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            format_welcome(user.group_name, is_editor=editor),
+            build_welcome_text(user, is_editor=editor),
             reply_markup=START_KEYBOARD,
         )
 
@@ -953,8 +1062,8 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "settings",
-            await format_settings_text(message.from_user.id),
-            reply_markup=await build_settings_keyboard(message.from_user.id),
+            await format_subscription_settings_text(message.from_user.id),
+            reply_markup=await build_subscription_settings_keyboard(message.from_user.id),
         )
 
     @dispatcher.message(Command("rasp"))
@@ -992,10 +1101,8 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            format_welcome(
-                (await get_user_record(message.from_user.id if message.from_user else None)).group_name
-                if await get_user_record(message.from_user.id if message.from_user else None)
-                else None,
+            build_welcome_text(
+                await get_user_record(message.from_user.id if message.from_user else None),
                 is_editor=await user_is_editor(message.from_user.id if message.from_user else None),
             ),
             reply_markup=START_KEYBOARD,
@@ -1020,14 +1127,14 @@ def build_dispatcher(
         user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
             try:
-                await callback.message.edit_text(format_welcome(user.group_name if user else None, is_editor=editor), reply_markup=START_KEYBOARD)
+                await callback.message.edit_text(build_welcome_text(user, is_editor=editor), reply_markup=START_KEYBOARD)
                 context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             except TelegramBadRequest:
                 await replace_context_message(
                     callback.bot,
                     callback.message.chat.id,
                     "menu",
-                    format_welcome(user.group_name if user else None, is_editor=editor),
+                    build_welcome_text(user, is_editor=editor),
                     reply_markup=START_KEYBOARD,
                 )
         await safe_callback_answer(callback)
@@ -1040,8 +1147,8 @@ def build_dispatcher(
         if callback.message is None:
             await safe_callback_answer(callback)
             return
-        settings_text = await format_settings_text(callback.from_user.id)
-        settings_keyboard = await build_settings_keyboard(callback.from_user.id)
+        settings_text = await format_subscription_settings_text(callback.from_user.id)
+        settings_keyboard = await build_subscription_settings_keyboard(callback.from_user.id)
         if not await safe_edit_message_text(callback.message, settings_text, reply_markup=settings_keyboard):
             await replace_context_message(
                 callback.bot,
@@ -1162,8 +1269,8 @@ def build_dispatcher(
             await db.set_homework_notifications("telegram", callback.from_user.id, enabled)
             await safe_edit_message_text(
                 callback.message,
-                await format_settings_text(callback.from_user.id),
-                reply_markup=await build_settings_keyboard(callback.from_user.id),
+                await format_subscription_settings_text(callback.from_user.id),
+                reply_markup=await build_subscription_settings_keyboard(callback.from_user.id),
             )
             await safe_callback_answer(callback, "Уведомления обновлены")
             return
@@ -1171,7 +1278,7 @@ def build_dispatcher(
             await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
             return
         if action == "clear_group":
-            await db.clear_user_group("telegram", callback.from_user.id)
+            await db.clear_user_subscription("telegram", callback.from_user.id)
             homework_drafts.pop(callback.from_user.id, None)
             await safe_edit_message_text(
                 callback.message,
@@ -1203,7 +1310,7 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         if action == "baseline":
-            report_rows = await save_baseline_for_all_active_groups()
+            report_rows = await save_baseline_for_all_active_sources()
             if not report_rows:
                 await safe_callback_answer(callback, "Нет активных групп для сохранения эталона.", show_alert=True)
                 return
@@ -1267,7 +1374,7 @@ def build_dispatcher(
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
-            await safe_edit_message_text(callback.message, format_welcome(admin_user.group_name if admin_user else None, is_editor=editor))
+            await safe_edit_message_text(callback.message, build_welcome_text(admin_user, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await safe_callback_answer(callback)
             return
@@ -1307,7 +1414,7 @@ def build_dispatcher(
                         if user.platform == "vk"
                         else (f"@{user.username}" if user.username else (user.full_name or "-"))
                     )
-                    group_label = user.group_name or "-"
+                    group_label = user.subscription_title or user.group_name or "-"
                     role_flags = []
                     if user.is_admin:
                         role_flags.append("админ")
@@ -1352,7 +1459,7 @@ def build_dispatcher(
             text = format_daily_change_report("Последние изменения за сегодня", daily_changes)
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
-            report_rows = await refresh_all_active_groups()
+            report_rows = await refresh_all_active_sources()
             if not report_rows:
                 await safe_callback_answer(callback, "Нет активных групп для перепарсинга.", show_alert=True)
                 return
@@ -1494,12 +1601,12 @@ def build_dispatcher(
             return
         await wait_message_rate_limit(message.from_user.id)
         user = await get_user_record(message.from_user.id)
-        if user is None or user.schedule_id is None or not user.group_name:
+        if user is None or not user.subscription_key or not user.subscription_title:
             if message.text.startswith("/"):
                 await prompt_group_selection(message.bot, message.chat.id)
                 return
             await try_delete_message(message)
-            await handle_group_input(message.bot, message.chat.id, message.from_user.id, message.text)
+            await handle_subscription_input(message.bot, message.chat.id, message.from_user.id, message.text)
             return
         if message.from_user.id in awaiting_schedule_search:
             await try_delete_message(message)
@@ -1530,7 +1637,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            format_welcome(user.group_name, is_editor=await user_is_editor(message.from_user.id)),
+            build_welcome_text(user, is_editor=await user_is_editor(message.from_user.id)),
             reply_markup=START_KEYBOARD,
         )
 

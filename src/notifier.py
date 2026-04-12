@@ -45,16 +45,40 @@ class Broadcaster:
         telegram_message: str | None = None,
         vk_message: str | None = None,
         schedule_id: int | None = None,
+        subscription_key: str | None = None,
     ) -> None:
-        await self._broadcast_telegram(telegram_message or message, schedule_id=schedule_id)
-        await self._broadcast_vk(vk_message or message, schedule_id=schedule_id)
+        await self._broadcast_telegram(
+            telegram_message or message,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+        )
+        await self._broadcast_vk(
+            vk_message or message,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+        )
 
     async def broadcast_test_message(self) -> None:
         await self.broadcast("Тестовое уведомление: бот активен и рассылка работает.")
 
-    async def broadcast_homework_update(self, message: str, schedule_id: int | None = None) -> None:
-        await self._broadcast_telegram(message, homework_only=True, schedule_id=schedule_id)
-        await self._broadcast_vk(message, homework_only=True, schedule_id=schedule_id)
+    async def broadcast_homework_update(
+        self,
+        message: str,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> None:
+        await self._broadcast_telegram(
+            message,
+            homework_only=True,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+        )
+        await self._broadcast_vk(
+            message,
+            homework_only=True,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+        )
 
     async def notify_admins(self, telegram_message: str, vk_message: str | None = None) -> None:
         if self.telegram_bot is not None and self.admin_telegram_id is not None:
@@ -88,26 +112,54 @@ class Broadcaster:
             return
         logger.warning("Unknown outbound platform: %s", payload.platform)
 
-    async def _broadcast_telegram(self, message: str, homework_only: bool = False, schedule_id: int | None = None) -> None:
+    async def _broadcast_telegram(
+        self,
+        message: str,
+        homework_only: bool = False,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> None:
         if self.telegram_bot is None:
             return
         users = (
-            await self.db.get_users_for_homework_notifications("telegram", schedule_id=schedule_id)
+            await self.db.get_users_for_homework_notifications(
+                "telegram",
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+            )
             if homework_only
-            else await self.db.get_users_for_notifications("telegram", schedule_id=schedule_id)
+            else await self.db.get_users_for_notifications(
+                "telegram",
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+            )
         )
         for user in users:
             payload = OutboundMessage(platform="telegram", user_id=user.user_id, text=message)
             if not await self._enqueue_or_send(payload):
                 await self._send_telegram(user.user_id, message)
 
-    async def _broadcast_vk(self, message: str, homework_only: bool = False, schedule_id: int | None = None) -> None:
+    async def _broadcast_vk(
+        self,
+        message: str,
+        homework_only: bool = False,
+        schedule_id: int | None = None,
+        subscription_key: str | None = None,
+    ) -> None:
         if self.vk_bot is None:
             return
         users = (
-            await self.db.get_users_for_homework_notifications("vk", schedule_id=schedule_id)
+            await self.db.get_users_for_homework_notifications(
+                "vk",
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+            )
             if homework_only
-            else await self.db.get_users_for_notifications("vk", schedule_id=schedule_id)
+            else await self.db.get_users_for_notifications(
+                "vk",
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+            )
         )
         for user in users:
             payload = OutboundMessage(platform="vk", user_id=user.user_id, text=message)

@@ -26,6 +26,7 @@ from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
+from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
 
 PAGE_SIZE = 6
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
@@ -208,6 +209,10 @@ def build_vk_bot(
             user_id=message.from_id,
             username=None,
             full_name=full_name,
+            subscription_type=existing.subscription_type if existing else None,
+            subscription_key=existing.subscription_key if existing else None,
+            subscription_title=existing.subscription_title if existing else None,
+            subscription_url=existing.subscription_url if existing else None,
             group_name=existing.group_name if existing else None,
             schedule_id=existing.schedule_id if existing else None,
             is_admin=user_is_admin(message.from_id),
@@ -357,6 +362,39 @@ def build_vk_bot(
             lines.extend(["", extra])
         return "\n".join(lines)
 
+    def build_welcome_text(user, is_admin: bool) -> str:
+        lines = ["Бот расписания колледжа", ""]
+        subscription_line = subscription_caption(
+            user.subscription_type if user else None,
+            user.subscription_title if user else None,
+        )
+        lines.append(subscription_line if subscription_line else "Подписка пока не выбрана.")
+        lines.extend(["", "Используй кнопки ниже для расписания."])
+        if is_admin:
+            lines.append("Кнопка «Админка» доступна тебе как администратору.")
+        return "\n".join(lines)
+
+    async def build_settings_text(user_id: int, extra: str | None = None) -> str:
+        user = await db.get_user("vk", user_id)
+        notifications_enabled = user.homework_notifications_enabled if user else True
+        lines = ["Настройки", ""]
+        subscription_line = subscription_caption(
+            user.subscription_type if user else None,
+            user.subscription_title if user else None,
+        )
+        lines.append(subscription_line if subscription_line else "Подписка: не выбрана")
+        lines.append(f"Уведомления: {'включены' if notifications_enabled else 'выключены'}")
+        if extra:
+            lines.extend(["", extra])
+        return "\n".join(lines)
+
+    def build_subscription_settings_keyboard(notifications_enabled: bool, has_subscription: bool) -> str:
+        rows: list[list[str]] = [["Отключить уведомления" if notifications_enabled else "Включить уведомления"]]
+        if has_subscription:
+            rows.append(["Отписаться от группы"])
+        rows.append(["Назад в меню"])
+        return make_keyboard(rows)
+
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [title, ""]
         if not rows:
@@ -448,7 +486,7 @@ def build_vk_bot(
 
     async def admin_status_text() -> str:
         users = await db.list_users()
-        active_groups = await db.get_active_groups()
+        active_groups = await db.get_active_sources()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
@@ -473,13 +511,23 @@ def build_vk_bot(
         is_admin = user_is_admin(user_id)
         await show_screen(
             peer_id,
-            welcome_text(user.group_name if user else None, is_editor, is_admin),
+            build_welcome_text(user, is_admin),
             keyboard=menu_keyboard(is_editor, is_admin),
         )
 
     async def prompt_group_selection(peer_id: int, error_text: str | None = None) -> None:
         peer_modes[peer_id] = "group_select"
-        await show_screen(peer_id, group_prompt_text(error_text))
+        lines = [
+            "Укажи свою группу или фамилию преподавателя",
+            "",
+            "Напиши группу в формате сайта или введи фамилию преподавателя.",
+            "Например: ИСП-25-1 или Набережных",
+            "",
+            "Регистр не важен.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        await show_screen(peer_id, "\n".join(lines))
 
     async def ensure_group_selected(peer_id: int, user_id: int) -> bool:
         user = await db.get_user("vk", user_id)
@@ -510,6 +558,55 @@ def build_vk_bot(
         snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
         await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
         return await db.get_latest_snapshot("current", user.schedule_id)
+
+    async def ensure_subscription_selected(peer_id: int, user_id: int) -> bool:
+        user = await db.get_user("vk", user_id)
+        if user is not None and user.subscription_key and user.subscription_title:
+            return True
+        await prompt_group_selection(peer_id)
+        return False
+
+    async def handle_subscription_input(peer_id: int, user_id: int, text: str) -> bool:
+        group = await group_catalog.find_group(text) if group_catalog is not None else None
+        if group is not None:
+            await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
+        else:
+            if search_catalog is None:
+                await prompt_group_selection(peer_id, "Справочник сейчас недоступен. Попробуй позже.")
+                return False
+            target = await search_catalog.find(text)
+            if target is None or target.kind != "teacher":
+                await prompt_group_selection(peer_id, "Ничего не найдено. Проверь написание и попробуй еще раз.")
+                return False
+            await db.set_user_subscription("vk", user_id, **make_teacher_subscription(target))
+        await show_main_menu(peer_id, user_id)
+        return True
+
+    async def get_or_fetch_subscription_snapshot(user_id: int) -> dict | None:
+        user = await db.get_user("vk", user_id)
+        if user is None or not user.subscription_key or not user.subscription_title:
+            return None
+        snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
+        if snapshot is not None:
+            return snapshot
+        if user.subscription_type == "teacher" and user.subscription_url:
+            snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+        elif user.schedule_id is not None:
+            snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+        else:
+            return None
+        await db.save_snapshot(
+            "current",
+            snapshot_hash,
+            snapshot_obj,
+            user.schedule_id,
+            user.group_name,
+            source_type=user.subscription_type,
+            source_key=user.subscription_key,
+            source_title=user.subscription_title,
+            source_url=user.subscription_url,
+        )
+        return await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
 
     async def perform_schedule_search(peer_id: int, query: str) -> bool:
         if search_catalog is None:
@@ -590,10 +687,10 @@ def build_vk_bot(
         peer_modes[peer_id] = "settings"
         await show_screen(
             peer_id,
-            await settings_text(user_id, extra=extra),
-            keyboard=settings_keyboard(
+            await build_settings_text(user_id, extra=extra),
+            keyboard=build_subscription_settings_keyboard(
                 user.homework_notifications_enabled if user else True,
-                has_group=bool(user and user.group_name),
+                has_subscription=bool(user and user.subscription_key),
             ),
         )
 
@@ -620,6 +717,56 @@ def build_vk_bot(
         rows.append(["Назад в админку"])
         peer_modes[peer_id] = "admin_delete_subjects"
         await show_screen(peer_id, "Удаление домашнего задания\n\nВыбери предмет, чтобы увидеть последние записи.", keyboard=make_keyboard(rows))
+
+    async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+        sources = await db.get_active_sources()
+        if not sources:
+            return []
+
+        rows: list[tuple[str, str, str]] = []
+        for source in sources:
+            if source["source_type"] == "teacher":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+            else:
+                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            await db.save_snapshot(
+                "current",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+        return rows
+
+    async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
+        sources = await db.get_active_sources()
+        if not sources:
+            return []
+
+        rows: list[tuple[str, str, str]] = []
+        for source in sources:
+            if source["source_type"] == "teacher":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+            else:
+                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            await db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
+        return rows
 
     async def show_admin_users(peer_id: int, page: int = 0) -> None:
         users = await db.list_users()
@@ -802,21 +949,21 @@ def build_vk_bot(
         if normalized in {"/start", "start", "начать"}:
             homework_drafts.pop(user_id, None)
             user = await db.get_user("vk", user_id)
-            if user is None or user.schedule_id is None or not user.group_name:
+            if user is None or not user.subscription_key or not user.subscription_title:
                 await prompt_group_selection(peer_id)
             else:
                 await show_main_menu(peer_id, user_id)
             return
 
         user = await db.get_user("vk", user_id)
-        if user is None or user.schedule_id is None or not user.group_name:
+        if user is None or not user.subscription_key or not user.subscription_title:
             if text in {"/admin", "Админка"}:
                 pass
             elif text.startswith("/") or text in {"Настройки", "Расписание"}:
                 await prompt_group_selection(peer_id)
                 return
             else:
-                await handle_group_input(peer_id, user_id, text)
+                await handle_subscription_input(peer_id, user_id, text)
                 return
 
         if text in {"Назад в меню", "Закрыть админку"}:
@@ -844,13 +991,13 @@ def build_vk_bot(
             return
 
         if text == "Отписаться от группы":
-            await db.clear_user_group("vk", user_id)
+            await db.clear_user_subscription("vk", user_id)
             homework_drafts.pop(user_id, None)
             await prompt_group_selection(peer_id, "Ты отписался от своей группы. Выбери новую, когда захочешь.")
             return
 
         if text in {"/rasp", "Расписание"}:
-            if not await ensure_group_selected(peer_id, user_id):
+            if not await ensure_subscription_selected(peer_id, user_id):
                 return
             peer_modes[peer_id] = "schedule_menu"
             await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
@@ -862,7 +1009,7 @@ def build_vk_bot(
             return
 
         if mode == "schedule_menu":
-            snapshot = await get_or_fetch_snapshot(user_id)
+            snapshot = await get_or_fetch_subscription_snapshot(user_id)
             if snapshot is None:
                 await show_screen(peer_id, "Не удалось получить расписание для твоей группы.", keyboard=schedule_keyboard())
                 return
@@ -990,7 +1137,7 @@ def build_vk_bot(
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return
             if text == "Перепарсить":
-                report_rows = await refresh_all_active_groups()
+                report_rows = await refresh_all_active_sources()
                 if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_keyboard())
                     return
@@ -1001,7 +1148,7 @@ def build_vk_bot(
                 )
                 return
             if text == "Сохранить эталон":
-                report_rows = await save_baseline_for_all_active_groups()
+                report_rows = await save_baseline_for_all_active_sources()
                 if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_keyboard())
                     return
