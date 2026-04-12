@@ -41,6 +41,6 @@ def subscription_caption(subscription_type: str | None, subscription_title: str 
     if not subscription_type or not subscription_title:
         return None
     if subscription_type == "teacher":
-        return f"Выбран преподаватель: {subscription_title}"
+        return f"Выбран преподаватель: {subscription_title} /n Сайт может поздно загружать изменения в расписании, так что, если пары у вас в одном кабинете, сверяйте расписание по кабинету (они адекватно обновляютстя)"
     return f"Твоя группа: {subscription_title}"
 
