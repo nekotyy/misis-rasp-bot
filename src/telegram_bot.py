@@ -762,7 +762,12 @@ def build_dispatcher(
         )
         if subscription_line:
             label, value = subscription_line.split(":", 1)
-            lines.extend(["", f"{escape(label)}: <b>{escape(value.strip())}</b>"])
+            value_lines = [part.strip() for part in value.strip().splitlines() if part.strip()]
+            if value_lines:
+                lines.extend(["", f"{escape(label)}: <b>{escape(value_lines[0])}</b>"])
+                lines.extend(escape(part) for part in value_lines[1:])
+            else:
+                lines.extend(["", f"{escape(label)}: <b>-</b>"])
         lines.extend(["", "/rasp — посмотреть расписание", "/settings — настройки"])
         return "\n".join(lines)
 
@@ -776,7 +781,12 @@ def build_dispatcher(
         )
         if subscription_line:
             label, value = subscription_line.split(":", 1)
-            lines.append(f"{escape(label)}: <b>{escape(value.strip())}</b>")
+            value_lines = [part.strip() for part in value.strip().splitlines() if part.strip()]
+            if value_lines:
+                lines.append(f"{escape(label)}: <b>{escape(value_lines[0])}</b>")
+                lines.extend(escape(part) for part in value_lines[1:])
+            else:
+                lines.append(f"{escape(label)}: <b>-</b>")
         else:
             lines.append("Подписка: <b>не выбрана</b>")
         lines.append(f"Уведомления: <b>{'включены' if notifications_enabled else 'выключены'}</b>")
