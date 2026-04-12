@@ -271,6 +271,9 @@ class Database:
         users = await self.get_users_for_platform(platform, schedule_id=schedule_id)
         return [user for user in users if user.homework_notifications_enabled]
 
+    async def get_users_for_notifications(self, platform: str, schedule_id: int | None = None) -> list[UserRecord]:
+        return await self.get_users_for_homework_notifications(platform, schedule_id=schedule_id)
+
     async def get_active_groups(self) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(

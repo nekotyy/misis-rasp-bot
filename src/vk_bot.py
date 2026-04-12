@@ -314,7 +314,9 @@ def build_vk_bot(
         return make_keyboard([["Опубликовать"], ["Отменить"]])
 
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
-        rows: list[list[str]] = []
+        rows: list[list[str]] = [
+            ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
+        ]
         if has_group:
             rows.append(["Отписаться от группы"])
         rows.append(["Назад в меню"])
@@ -344,10 +346,12 @@ def build_vk_bot(
 
     async def settings_text(user_id: int, extra: str | None = None) -> str:
         user = await db.get_user("vk", user_id)
+        notifications_enabled = user.homework_notifications_enabled if user else True
         lines = [
             "Настройки",
             "",
             f"Группа: {user.group_name if user and user.group_name else 'не выбрана'}",
+            f"Уведомления: {'включены' if notifications_enabled else 'выключены'}",
         ]
         if extra:
             lines.extend(["", extra])
@@ -823,6 +827,16 @@ def build_vk_bot(
 
         if text == "Настройки":
             await show_settings(peer_id, user_id)
+            return
+
+        if text == "Отключить уведомления":
+            await db.set_homework_notifications("vk", user_id, False)
+            await show_settings(peer_id, user_id, extra="Уведомления отключены.")
+            return
+
+        if text == "Включить уведомления":
+            await db.set_homework_notifications("vk", user_id, True)
+            await show_settings(peer_id, user_id, extra="Уведомления включены.")
             return
 
         if text in {"Выключить уведомления о ДЗ", "Включить уведомления о ДЗ"}:

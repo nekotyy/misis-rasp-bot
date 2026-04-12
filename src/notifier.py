@@ -94,7 +94,7 @@ class Broadcaster:
         users = (
             await self.db.get_users_for_homework_notifications("telegram", schedule_id=schedule_id)
             if homework_only
-            else await self.db.get_users_for_platform("telegram", schedule_id=schedule_id)
+            else await self.db.get_users_for_notifications("telegram", schedule_id=schedule_id)
         )
         for user in users:
             payload = OutboundMessage(platform="telegram", user_id=user.user_id, text=message)
@@ -107,7 +107,7 @@ class Broadcaster:
         users = (
             await self.db.get_users_for_homework_notifications("vk", schedule_id=schedule_id)
             if homework_only
-            else await self.db.get_users_for_platform("vk", schedule_id=schedule_id)
+            else await self.db.get_users_for_notifications("vk", schedule_id=schedule_id)
         )
         for user in users:
             payload = OutboundMessage(platform="vk", user_id=user.user_id, text=message)

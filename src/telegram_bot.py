@@ -308,16 +308,26 @@ def build_dispatcher(
 
     async def format_settings_text(user_id: int) -> str:
         user = await db.get_user("telegram", user_id)
+        notifications_enabled = user.homework_notifications_enabled if user else True
         lines = [
             "<b>Настройки</b>",
             "",
             f"Группа: <b>{escape(user.group_name) if user and user.group_name else 'не выбрана'}</b>",
+            f"Уведомления: <b>{'включены' if notifications_enabled else 'выключены'}</b>",
         ]
         return "\n".join(lines)
 
     async def build_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
         user = await db.get_user("telegram", user_id)
-        rows: list[list[InlineKeyboardButton]] = []
+        notifications_enabled = user.homework_notifications_enabled if user else True
+        rows: list[list[InlineKeyboardButton]] = [
+            [
+                InlineKeyboardButton(
+                    text="Отключить уведомления" if notifications_enabled else "Включить уведомления",
+                    callback_data="settings:toggle_notifications",
+                )
+            ]
+        ]
         if user and user.group_name:
             rows.append([InlineKeyboardButton(text="Отписаться от группы", callback_data="settings:clear_group")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
@@ -1146,6 +1156,17 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
+        if action == "toggle_notifications":
+            user = await db.get_user("telegram", callback.from_user.id)
+            enabled = not (user.homework_notifications_enabled if user else True)
+            await db.set_homework_notifications("telegram", callback.from_user.id, enabled)
+            await safe_edit_message_text(
+                callback.message,
+                await format_settings_text(callback.from_user.id),
+                reply_markup=await build_settings_keyboard(callback.from_user.id),
+            )
+            await safe_callback_answer(callback, "Уведомления обновлены")
+            return
         if action == "toggle_hw":
             await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
             return
