@@ -48,7 +48,6 @@ HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
 START_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
-        [InlineKeyboardButton(text="Узнать ДЗ", callback_data="start:homework")],
         [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
     ]
 )
@@ -83,10 +82,6 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Редакторы", callback_data="admin:editors"),
-        ],
-        [
-            InlineKeyboardButton(text="Удалить ДЗ", callback_data="admin:homework_delete"),
             InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
         ],
         [InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close")],
@@ -306,7 +301,6 @@ def build_dispatcher(
             [
                 "",
                 "/rasp — посмотреть расписание",
-                "/homework — посмотреть домашние задания",
                 "/settings — настройки",
             ]
         )
@@ -314,36 +308,25 @@ def build_dispatcher(
 
     async def format_settings_text(user_id: int) -> str:
         user = await db.get_user("telegram", user_id)
-        notifications = "включены" if (user.homework_notifications_enabled if user else True) else "выключены"
         lines = [
             "<b>Настройки</b>",
             "",
             f"Группа: <b>{escape(user.group_name) if user and user.group_name else 'не выбрана'}</b>",
-            f"Уведомления о новом ДЗ: <b>{notifications}</b>",
         ]
         return "\n".join(lines)
 
     async def build_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
         user = await db.get_user("telegram", user_id)
-        toggle_label = (
-            "Выключить уведомления о ДЗ"
-            if (user.homework_notifications_enabled if user else True)
-            else "Включить уведомления о ДЗ"
-        )
-        rows: list[list[InlineKeyboardButton]] = [
-            [InlineKeyboardButton(text=toggle_label, callback_data="settings:toggle_hw")],
-        ]
+        rows: list[list[InlineKeyboardButton]] = []
         if user and user.group_name:
             rows.append([InlineKeyboardButton(text="Отписаться от группы", callback_data="settings:clear_group")])
-        rows.extend([
-            [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
-        ])
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def format_admin_panel() -> str:
         return (
             "<b>Админ-панель</b>\n\n"
-            "Здесь можно перепарсить сайт, сохранить эталон для сравнения, посмотреть статистику и управлять домашними заданиями."
+            "Здесь можно перепарсить сайт, сохранить эталон для сравнения и посмотреть статистику."
         )
 
     def build_admin_users_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
@@ -373,11 +356,9 @@ def build_dispatcher(
     async def format_admin_status() -> str:
         users = await db.list_users()
         active_groups = await db.get_active_groups()
-        homework_count = await db.count_homework_entries()
         last_change = await db.get_last_change()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
-        editor_count = sum(1 for user in users if user.is_editor)
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
@@ -387,8 +368,6 @@ def build_dispatcher(
             f"Пользователей с VK: <b>{vk_users}</b>\n"
             f"Пользователей с TG: <b>{tg_users}</b>\n"
             f"Активных групп: <b>{len(active_groups)}</b>\n"
-            f"Редакторов: <b>{editor_count}</b>\n"
-            f"Записей ДЗ: <b>{homework_count}</b>\n"
             f"Последнее изменение: <b>{last_change_at}</b>\n\n"
             f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
@@ -984,47 +963,12 @@ def build_dispatcher(
     @dispatcher.message(Command("homework"))
     async def handle_homework_command(message: Message) -> None:
         await register_message_user(message)
-        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
-            return
-        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
-            await send_new_context_message(
-                message.bot,
-                message.chat.id,
-                "homework",
-                f"Просмотр ДЗ сейчас доступен только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
-            )
-            return
-        await send_new_context_message(
-            message.bot,
-            message.chat.id,
-            "homework",
-            "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания.",
-            reply_markup=build_homework_subjects_keyboard("homework"),
-        )
+        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
 
     @dispatcher.message(Command("dz"))
     async def handle_dz_command(message: Message) -> None:
         await register_message_user(message)
-        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
-            return
-        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
-            await send_new_context_message(
-                message.bot,
-                message.chat.id,
-                "dz",
-                f"Добавление ДЗ сейчас доступно только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
-            )
-            return
-        if not await user_is_editor(message.from_user.id if message.from_user else None):
-            await send_new_context_message(message.bot, message.chat.id, "dz", "Команда доступна только редакторам домашнего задания.")
-            return
-        await send_new_context_message(
-            message.bot,
-            message.chat.id,
-            "dz",
-            "<b>Выбери предмет для нового домашнего задания</b>",
-            reply_markup=build_homework_subjects_keyboard("dz"),
-        )
+        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
 
     @dispatcher.message(Command("cancel"))
     async def handle_cancel_command(message: Message) -> None:
@@ -1104,11 +1048,7 @@ def build_dispatcher(
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
-            await safe_callback_answer(callback)
-            return
-        await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
-        await safe_callback_answer(callback)
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
@@ -1126,14 +1066,7 @@ def build_dispatcher(
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
-            await safe_callback_answer(callback)
-            return
-        if not await user_has_homework_access(callback.from_user.id):
-            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
-            return
-        await send_homework_subject_picker(callback.bot, callback.from_user.id, "homework")
-        await safe_callback_answer(callback)
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data.startswith("schedule:"))
     async def handle_schedule_callback(callback: CallbackQuery) -> None:
@@ -1173,123 +1106,28 @@ def build_dispatcher(
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        if not await user_has_homework_access(callback.from_user.id):
-            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
-            return
-        await safe_callback_answer(callback)
-        await send_homework_entries(
-            callback.bot,
-            callback.from_user.id,
-            callback.data.split(":")[-1],
-            source_message=callback.message,
-        )
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data.startswith("dz:subject:"))
     async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        if not await user_has_homework_access(callback.from_user.id):
-            await safe_callback_answer(callback, f"ДЗ доступно только для {HOMEWORK_GROUP_NAME}.", show_alert=True)
-            return
-        if not await user_is_editor(callback.from_user.id):
-            await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
-            return
-        subject = get_subject(callback.data.split(":")[-1])
-        if subject is None:
-            await safe_callback_answer(callback, "Предмет не найден.", show_alert=True)
-            return
-        homework_drafts[callback.from_user.id] = HomeworkDraft(
-            subject_key=subject["key"],
-            subject_name=subject["subject"],
-            teacher_name=subject["teacher"],
-        )
-        if callback.message is not None:
-            await safe_edit_message_text(
-                callback.message,
-                f"Выбран предмет <b>{escape(subject['subject'])}</b>.\n\nТеперь отправь текст домашнего задания одним сообщением.",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")]]
-                ),
-            )
-            context_messages[callback.message.chat.id]["dz"] = [callback.message.message_id]
-        await safe_callback_answer(callback)
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data == "dz:add_attachments")
     async def handle_add_attachments(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        draft = homework_drafts.get(callback.from_user.id)
-        if draft is None:
-            await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
-            return
-        draft.awaiting_attachments = True
-        if callback.message is not None:
-            await clear_context_messages(callback.bot, callback.message.chat.id, "dz")
-            await replace_context_message(
-                callback.bot,
-                callback.message.chat.id,
-                "dz",
-                "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nПосле каждого файла я обновлю предпросмотр. Когда закончишь, нажми «Опубликовать».",
-                reply_markup=build_homework_attachment_keyboard(),
-            )
-        await safe_callback_answer(callback)
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data == "dz:save")
     async def handle_save_homework(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
             return
         await register_callback_user(callback)
-        draft = homework_drafts.get(callback.from_user.id)
-        if draft is None or not draft.text.strip():
-            await safe_callback_answer(callback, "Нет готового черновика для сохранения.", show_alert=True)
-            return
-        author = callback.from_user.full_name or callback.from_user.username or str(callback.from_user.id)
-        homework_id = await db.create_homework(
-            subject_key=draft.subject_key,
-            subject=draft.subject_name,
-            teacher=draft.teacher_name,
-            text=draft.text,
-            created_by_platform="telegram",
-            created_by_user_id=callback.from_user.id,
-            created_by_name=author,
-            attachments=draft.attachments or [],
-        )
-        homework_drafts.pop(callback.from_user.id, None)
-        entry = {
-            "id": homework_id,
-            "subject_key": draft.subject_key,
-            "subject": draft.subject_name,
-            "teacher": draft.teacher_name,
-            "text": draft.text,
-            "created_by_platform": "telegram",
-            "created_by_user_id": callback.from_user.id,
-            "created_by_name": author,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "attachments": [
-                {
-                    "file_id": attachment.file_id,
-                    "file_type": attachment.file_type,
-                    "file_name": attachment.file_name,
-                    "mime_type": attachment.mime_type,
-                    "storage_path": attachment.storage_path,
-                    "source_platform": attachment.source_platform,
-                }
-                for attachment in (draft.attachments or [])
-            ],
-        }
-        await clear_context_messages(callback.bot, callback.from_user.id, "dz")
-        sent_ids = await send_homework_entry_with_attachments(
-            callback.bot,
-            callback.from_user.id,
-            entry,
-            title="<b>Домашнее задание успешно создано</b>",
-        )
-        context_messages[callback.from_user.id]["dz"] = sent_ids
-        if broadcaster is not None:
-            await broadcaster.broadcast_homework_update(format_homework_notification(entry), schedule_id=HOMEWORK_SCHEDULE_ID)
-        await safe_callback_answer(callback, "Опубликовано")
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data == "dz:cancel")
     async def handle_cancel_homework(callback: CallbackQuery) -> None:
@@ -1297,17 +1135,7 @@ def build_dispatcher(
             return
         await register_callback_user(callback)
         homework_drafts.pop(callback.from_user.id, None)
-        editor = await user_is_editor(callback.from_user.id)
-        user = await get_user_record(callback.from_user.id)
-        await replace_context_message(
-            callback.bot,
-            callback.from_user.id,
-            "menu",
-            format_welcome(user.group_name if user else None, is_editor=editor),
-            reply_markup=START_KEYBOARD,
-        )
-        await clear_context_messages(callback.bot, callback.from_user.id, "dz")
-        await safe_callback_answer(callback, "Отменено")
+        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
 
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
@@ -1319,15 +1147,7 @@ def build_dispatcher(
             return
         action = callback.data.split(":", 1)[1]
         if action == "toggle_hw":
-            user = await db.get_user("telegram", callback.from_user.id)
-            enabled = not (user.homework_notifications_enabled if user else True)
-            await db.set_homework_notifications("telegram", callback.from_user.id, enabled)
-            await safe_edit_message_text(
-                callback.message,
-                await format_settings_text(callback.from_user.id),
-                reply_markup=await build_settings_keyboard(callback.from_user.id),
-            )
-            await safe_callback_answer(callback, "Настройка обновлена")
+            await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
             return
         if action == "clear_group":
             await db.clear_user_group("telegram", callback.from_user.id)
@@ -1644,17 +1464,7 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is not None:
             await wait_message_rate_limit(message.from_user.id)
-        if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
-            return
-        if not await user_has_homework_access(message.from_user.id if message.from_user else None):
-            await send_new_context_message(
-                message.bot,
-                message.chat.id,
-                "homework",
-                f"Просмотр ДЗ сейчас доступен только для группы <b>{HOMEWORK_GROUP_NAME}</b>.",
-            )
-            return
-        await send_homework_subject_picker(message.bot, message.chat.id, "homework")
+        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
 
     @dispatcher.message(F.text)
     async def handle_text_message(message: Message) -> None:

@@ -255,9 +255,7 @@ def build_vk_bot(
         return ",".join(uploaded) if uploaded else None
 
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
-        rows = [["Расписание"], ["Домашние задания"], ["Настройки"]]
-        if is_editor:
-            rows.append(["Добавить ДЗ"])
+        rows = [["Расписание"], ["Настройки"]]
         if is_admin:
             rows.append(["Админка"])
         return make_keyboard(rows)
@@ -316,13 +314,7 @@ def build_vk_bot(
         return make_keyboard([["Опубликовать"], ["Отменить"]])
 
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
-        rows = [
-            [
-                "Выключить уведомления о ДЗ"
-                if notifications_enabled
-                else "Включить уведомления о ДЗ"
-            ]
-        ]
+        rows: list[list[str]] = []
         if has_group:
             rows.append(["Отписаться от группы"])
         rows.append(["Назад в меню"])
@@ -333,8 +325,7 @@ def build_vk_bot(
             [
                 ["Статус", "Перепарсить"],
                 ["Сохранить эталон", "Последнее изменение"],
-                ["Пользователи", "Редакторы"],
-                ["Удалить ДЗ", "Тестовая рассылка"],
+                ["Пользователи", "Тестовая рассылка"],
                 ["Закрыть админку"],
             ]
         )
@@ -345,22 +336,18 @@ def build_vk_bot(
             "",
             f"Твоя группа: {group_name}" if group_name else "Группа пока не выбрана.",
             "",
-            "Используй кнопки ниже для расписания и домашних заданий.",
+            "Используй кнопки ниже для расписания.",
         ]
-        if is_editor:
-            lines.append("Кнопка «Добавить ДЗ» доступна тебе как редактору.")
         if is_admin:
             lines.append("Кнопка «Админка» доступна тебе как администратору.")
         return "\n".join(lines)
 
     async def settings_text(user_id: int, extra: str | None = None) -> str:
         user = await db.get_user("vk", user_id)
-        notifications = "включены" if (user.homework_notifications_enabled if user else True) else "выключены"
         lines = [
             "Настройки",
             "",
             f"Группа: {user.group_name if user and user.group_name else 'не выбрана'}",
-            f"Уведомления о новом ДЗ: {notifications}",
         ]
         if extra:
             lines.extend(["", extra])
@@ -458,11 +445,9 @@ def build_vk_bot(
     async def admin_status_text() -> str:
         users = await db.list_users()
         active_groups = await db.get_active_groups()
-        homework_count = await db.count_homework_entries()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
-        editor_count = sum(1 for user in users if user.is_editor)
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = last_change["created_at"] if last_change else "еще не было"
@@ -472,8 +457,6 @@ def build_vk_bot(
             f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: {vk_users}\n"
             f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: {tg_users}\n"
             f"Активных групп: {len(active_groups)}\n"
-            f"Редакторов: {editor_count}\n"
-            f"Записей ДЗ: {homework_count}\n"
             f"Последнее изменение: {last_change_at}\n\n"
             f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
             f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"
@@ -825,7 +808,7 @@ def build_vk_bot(
         if user is None or user.schedule_id is None or not user.group_name:
             if text in {"/admin", "Админка"}:
                 pass
-            elif text.startswith("/") or text in {"Настройки", "Расписание", "Домашние задания", "Добавить ДЗ"}:
+            elif text.startswith("/") or text in {"Настройки", "Расписание"}:
                 await prompt_group_selection(peer_id)
                 return
             else:
@@ -842,14 +825,8 @@ def build_vk_bot(
             await show_settings(peer_id, user_id)
             return
 
-        if text == "Выключить уведомления о ДЗ":
-            await db.set_homework_notifications("vk", user_id, False)
-            await show_settings(peer_id, user_id, extra="Уведомления о ДЗ выключены.")
-            return
-
-        if text == "Включить уведомления о ДЗ":
-            await db.set_homework_notifications("vk", user_id, True)
-            await show_settings(peer_id, user_id, extra="Уведомления о ДЗ включены.")
+        if text in {"Выключить уведомления о ДЗ", "Включить уведомления о ДЗ"}:
+            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
             return
 
         if text == "Отписаться от группы":
@@ -903,41 +880,12 @@ def build_vk_bot(
                 )
                 return
 
-        if text in {"/homework", "Домашние задания"}:
-            if not await ensure_group_selected(peer_id, user_id):
-                return
-            if not await user_has_homework_access(user_id):
-                await show_screen(peer_id, f"Просмотр ДЗ сейчас доступен только для группы {HOMEWORK_GROUP_NAME}.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-                return
-            await show_homework_subjects(peer_id)
+        if text in {"/homework", "Домашние задания", "/dz", "Добавить ДЗ", "Вернуться к списку ДЗ"}:
+            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
             return
 
-        if text == "Вернуться к списку ДЗ":
-            await show_homework_subjects(peer_id, peer_pages[peer_id].get("homework_subjects", 0))
-            return
-
-        if mode == "homework_subjects":
-            if text == "Следующая страница":
-                await show_homework_subjects(peer_id, peer_pages[peer_id].get("homework_subjects", 0) + 1)
-                return
-            if text == "Предыдущая страница":
-                await show_homework_subjects(peer_id, peer_pages[peer_id].get("homework_subjects", 0) - 1)
-                return
-            subject = subject_by_title(text)
-            if subject is not None:
-                await show_latest_homework(peer_id, subject["key"])
-                return
-
-        if text in {"/dz", "Добавить ДЗ"}:
-            if not await ensure_group_selected(peer_id, user_id):
-                return
-            if not await user_has_homework_access(user_id):
-                await show_screen(peer_id, f"Добавление ДЗ сейчас доступно только для группы {HOMEWORK_GROUP_NAME}.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-                return
-            if not await user_is_editor(user_id):
-                await show_screen(peer_id, "Эта кнопка доступна только редакторам домашнего задания.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-                return
-            await show_dz_subjects(peer_id)
+        if mode in {"homework_subjects", "dz_subjects", "dz_text", "dz_attachments", "homework_entry"}:
+            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
             return
 
         if text == "Отменить":
