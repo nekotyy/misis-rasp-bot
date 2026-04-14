@@ -897,6 +897,40 @@ def build_dispatcher(
             reply_markup=SCHEDULE_KEYBOARD,
         )
 
+    async def send_schedule_response(bot: Bot, chat_id: int, user_id: int, action: str) -> None:
+        if action == "find":
+            await prompt_schedule_search(bot, chat_id, user_id)
+            return
+
+        snapshot_row = await get_saved_snapshot(user_id)
+        if snapshot_row is None:
+            await send_new_context_message(
+                bot,
+                chat_id,
+                "schedule",
+                "Не удалось получить расписание для твоей группы.",
+                reply_markup=SCHEDULE_KEYBOARD,
+            )
+            return
+
+        if action == "today":
+            day = get_day_by_offset_from_content(snapshot_row["content"], 0)
+            text = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
+        elif action == "tomorrow":
+            day = get_day_by_offset_from_content(snapshot_row["content"], 1)
+            text = ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
+        else:
+            day = get_day_by_offset_from_content(snapshot_row["content"], 2)
+            text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
+
+        await send_new_context_message(
+            bot,
+            chat_id,
+            "schedule",
+            text,
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
+
     async def send_homework_subject_picker(bot: Bot, chat_id: int, mode: str) -> None:
         text = (
             "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания."
@@ -1268,38 +1302,11 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
-        if action == "find":
-            await prompt_schedule_search(callback.bot, callback.message.chat.id, callback.from_user.id)
-            await safe_callback_answer(callback)
-            return
-        snapshot_row = await get_saved_snapshot(callback.from_user.id)
-        if snapshot_row is None:
-            await send_new_context_message(
-                callback.bot,
-                callback.message.chat.id,
-                "schedule",
-                "Не удалось получить расписание для твоей группы.",
-                reply_markup=SCHEDULE_KEYBOARD,
-            )
-            await safe_callback_answer(callback)
-            return
-
-        if action == "today":
-            day = get_day_by_offset_from_content(snapshot_row["content"], 0)
-            text = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
-        elif action == "tomorrow":
-            day = get_day_by_offset_from_content(snapshot_row["content"], 1)
-            text = ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
-        else:
-            day = get_day_by_offset_from_content(snapshot_row["content"], 2)
-            text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
-
-        await send_new_context_message(
+        await send_schedule_response(
             callback.bot,
             callback.message.chat.id,
-            "schedule",
-            text,
-            reply_markup=SCHEDULE_KEYBOARD,
+            callback.from_user.id,
+            action,
         )
         await safe_callback_answer(callback)
 
@@ -1741,6 +1748,36 @@ def build_dispatcher(
         if message.from_user is None or message.text is None:
             return
         await wait_message_rate_limit(message.from_user.id)
+        text_normalized = message.text.strip().casefold()
+
+        if text_normalized in {"узнать расписание", "расписание"}:
+            if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id):
+                return
+            await send_schedule_menu(message.bot, message.chat.id)
+            return
+
+        if text_normalized in {
+            "расписание на сегодня",
+            "расписание на завтра",
+            "расписание на 2 дня",
+            "найти расписание",
+        }:
+            if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id):
+                return
+            action_map = {
+                "расписание на сегодня": "today",
+                "расписание на завтра": "tomorrow",
+                "расписание на 2 дня": "day_after",
+                "найти расписание": "find",
+            }
+            await send_schedule_response(
+                message.bot,
+                message.chat.id,
+                message.from_user.id,
+                action_map[text_normalized],
+            )
+            return
+
         if (
             user_is_admin(message.from_user.id)
             and message.from_user.id in awaiting_admin_broadcast_text
