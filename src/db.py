@@ -163,6 +163,26 @@ class Database:
                     source_url = COALESCE(source_url, CASE WHEN schedule_id IS NOT NULL THEN 'rasp:' || schedule_id END)
                 """
             )
+            await db.execute(
+                """
+                DELETE FROM change_events
+                WHERE id IN (
+                    SELECT newer.id
+                    FROM change_events AS newer
+                    JOIN change_events AS older
+                        ON newer.source_key = older.source_key
+                        AND newer.snapshot_hash = older.snapshot_hash
+                        AND newer.source_key IS NOT NULL
+                        AND newer.id > older.id
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_change_events_source_key_snapshot_hash
+                ON change_events(source_key, snapshot_hash)
+                """
+            )
             await db.commit()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -600,12 +620,12 @@ class Database:
         source_key: str | None = None,
         source_title: str | None = None,
         source_url: str | None = None,
-    ) -> None:
+    ) -> bool:
         now = datetime.now().isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
-            await db.execute(
+            cursor = await db.execute(
                 """
-                INSERT INTO change_events (
+                INSERT OR IGNORE INTO change_events (
                     source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, message, changed_dates_json, payload_json, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -625,6 +645,7 @@ class Database:
                 ),
             )
             await db.commit()
+        return cursor.rowcount > 0
 
     async def get_last_change(
         self,

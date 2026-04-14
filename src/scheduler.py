@@ -178,7 +178,7 @@ class ScheduleJobs:
         if change_summary is None:
             return
 
-        await self.db.record_change(
+        change_recorded = await self.db.record_change(
             snapshot_hash=snapshot_hash,
             message=change_summary.message,
             changed_dates=change_summary.changed_dates,
@@ -190,6 +190,24 @@ class ScheduleJobs:
             source_title=source["source_title"],
             source_url=source["source_url"],
         )
+        if not change_recorded:
+            logger.info(
+                "Duplicate change for source %s and snapshot %s skipped.",
+                source["source_title"],
+                snapshot_hash,
+            )
+            await self.db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                schedule_id=source["schedule_id"],
+                group_name=source.get("group_name"),
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            return
         await self.broadcaster.broadcast(
             change_summary.message,
             telegram_message=change_summary.telegram_message,
