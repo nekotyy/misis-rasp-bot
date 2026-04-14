@@ -132,6 +132,52 @@ docker compose logs -f rabbitmq
 - если `RABBITMQ_URL` пустой, `Broadcaster` автоматически откатывается на прямую отправку без брокера
 - для VPS в Docker рекомендован именно режим с RabbitMQ, потому что он мягче обрабатывает всплески уведомлений и не бьет сразу по API Telegram/VK
 
+### 5.1. CI/CD: автодеплой из `main` на VPS
+
+В репозиторий добавлен workflow:
+
+- `.github/workflows/ci-cd.yml`
+
+Логика работы:
+
+1. На `pull_request` в `main` и на `push` в `main` запускается CI:
+CI включает установку зависимостей, проверку синтаксиса Python (`compileall`) и `pip check`.
+1. На `push` в `main` после успешного CI запускается деплой по SSH на VPS.
+1. На VPS выполняется `git pull --ff-only origin main`, затем `docker compose up -d --build --remove-orphans`.
+
+#### Какие GitHub Secrets нужны
+
+В настройках репозитория (`Settings` -> `Secrets and variables` -> `Actions`) добавь:
+
+- `VPS_HOST` — IP или домен VPS
+- `VPS_PORT` — SSH-порт (обычно `22`)
+- `VPS_USER` — SSH-пользователь на VPS
+- `VPS_SSH_KEY` — приватный SSH-ключ (полный текст)
+- `VPS_PROJECT_PATH` — абсолютный путь к проекту на VPS (например `/opt/misis-rasp-bot`)
+
+#### Что подготовить на VPS один раз
+
+1. Клонировать репозиторий в `VPS_PROJECT_PATH`.
+2. Создать и заполнить `.env` в папке проекта.
+3. Убедиться, что работает ручной запуск:
+
+```bash
+docker compose up -d --build
+```
+
+1. Настроить доступ VPS к GitHub для `git pull`: через SSH deploy key или через HTTPS + токен.
+
+#### Как проверить, что деплой сработал
+
+1. Сделать коммит и пуш в `main`.
+2. Вкладка `Actions` должна показать успешный workflow `CI/CD`.
+3. На VPS проверить:
+
+```bash
+docker compose ps
+docker compose logs -f bot
+```
+
 ---
 
 ## 6. Конфигурация (`.env`)
