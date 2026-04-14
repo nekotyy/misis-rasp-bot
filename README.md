@@ -132,7 +132,7 @@ docker compose logs -f rabbitmq
 - если `RABBITMQ_URL` пустой, `Broadcaster` автоматически откатывается на прямую отправку без брокера
 - для VPS в Docker рекомендован именно режим с RabbitMQ, потому что он мягче обрабатывает всплески уведомлений и не бьет сразу по API Telegram/VK
 
-### 5.1. CI/CD: автодеплой из `main` на VPS
+### 5.1. CI/CD: автодеплой из `main` через self-hosted runner
 
 В репозиторий добавлен workflow:
 
@@ -142,22 +142,23 @@ docker compose logs -f rabbitmq
 
 1. На `pull_request` в `main` и на `push` в `main` запускается CI:
 CI включает установку зависимостей, проверку синтаксиса Python (`compileall`) и `pip check`.
-1. На `push` в `main` после успешного CI запускается деплой по SSH на VPS.
-1. На VPS выполняется `git pull --ff-only origin main`, затем `docker compose up -d --build --remove-orphans`.
+1. На `push` в `main` после успешного CI запускается деплой на self-hosted runner.
+1. Runner выполняет на сервере `git pull --ff-only origin main`, затем `docker compose up -d --build --remove-orphans`.
 
-#### Какие GitHub Secrets нужны
+#### Что указать в GitHub
 
-В настройках репозитория (`Settings` -> `Secrets and variables` -> `Actions`) добавь:
+1. В репозитории открой `Settings` -> `Actions` -> `Runners`.
+1. Нажми `New self-hosted runner` и выполни команды установки на своем локальном сервере.
+1. В репозитории открой `Settings` -> `Secrets and variables` -> `Actions` -> `Variables`.
+1. Добавь переменную `DEPLOY_PROJECT_PATH`.
 
-- `VPS_HOST` — IP или домен VPS
-- `VPS_PORT` — SSH-порт (обычно `22`)
-- `VPS_USER` — SSH-пользователь на VPS
-- `VPS_SSH_KEY` — приватный SSH-ключ (полный текст)
-- `VPS_PROJECT_PATH` — абсолютный путь к проекту на VPS (например `/opt/misis-rasp-bot`)
+Значение `DEPLOY_PROJECT_PATH`:
 
-#### Что подготовить на VPS один раз
+- абсолютный путь к проекту на сервере (например `/opt/misis-rasp-bot`)
 
-1. Клонировать репозиторий в `VPS_PROJECT_PATH`.
+#### Что подготовить на сервере один раз
+
+1. Клонировать репозиторий в путь, указанный в `DEPLOY_PROJECT_PATH`.
 2. Создать и заполнить `.env` в папке проекта.
 3. Убедиться, что работает ручной запуск:
 
@@ -165,13 +166,14 @@ CI включает установку зависимостей, проверк�
 docker compose up -d --build
 ```
 
-1. Настроить доступ VPS к GitHub для `git pull`: через SSH deploy key или через HTTPS + токен.
+1. Настроить доступ сервера к GitHub для `git pull`: через SSH deploy key или через HTTPS + токен.
+1. Убедиться, что runner-процесс запущен и online в разделе `Actions` -> `Runners`.
 
 #### Как проверить, что деплой сработал
 
 1. Сделать коммит и пуш в `main`.
 2. Вкладка `Actions` должна показать успешный workflow `CI/CD`.
-3. На VPS проверить:
+3. На сервере проверить:
 
 ```bash
 docker compose ps

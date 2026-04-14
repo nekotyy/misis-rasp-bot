@@ -40,69 +40,59 @@ jobs:
         run: python -m pip check
 
   deploy:
-    name: Deploy to VPS
-    runs-on: ubuntu-latest
+    name: Deploy on self-hosted runner
+    runs-on: self-hosted
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 20
 
     steps:
-      - name: Validate deploy secrets
+      - name: Validate deploy path variable
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_PROJECT_PATH: ${{ secrets.VPS_PROJECT_PATH }}
+          DEPLOY_PROJECT_PATH: ${{ vars.DEPLOY_PROJECT_PATH }}
         run: |
-          for secret_name in VPS_HOST VPS_USER VPS_SSH_KEY VPS_PROJECT_PATH; do
-            secret_value="${!secret_name}"
-            if [ -z "$secret_value" ]; then
-              echo "::error::Missing required secret: $secret_name"
-              exit 1
-            fi
-          done
+          if [ -z "$DEPLOY_PROJECT_PATH" ]; then
+            echo "::error::Missing repository variable DEPLOY_PROJECT_PATH"
+            exit 1
+          fi
 
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || '22' }}
-          script_stop: true
-          script: |
-            set -eu
+      - name: Update code and restart containers
+        env:
+          DEPLOY_PROJECT_PATH: ${{ vars.DEPLOY_PROJECT_PATH }}
+        run: |
+          set -eu
 
-            PROJECT_PATH="${{ secrets.VPS_PROJECT_PATH }}"
+          PROJECT_PATH="$DEPLOY_PROJECT_PATH"
 
-            if [ ! -d "$PROJECT_PATH" ]; then
-              echo "Project path does not exist: $PROJECT_PATH"
-              exit 1
-            fi
+          if [ ! -d "$PROJECT_PATH" ]; then
+            echo "::error::Project path does not exist: $PROJECT_PATH"
+            exit 1
+          fi
 
-            cd "$PROJECT_PATH"
+          cd "$PROJECT_PATH"
 
-            if [ ! -d ".git" ]; then
-              echo "Directory is not a git repository: $PROJECT_PATH"
-              exit 1
-            fi
+          if [ ! -d ".git" ]; then
+            echo "::error::Directory is not a git repository: $PROJECT_PATH"
+            exit 1
+          fi
 
-            if [ ! -f ".env" ]; then
-              echo "Missing .env file in $PROJECT_PATH"
-              exit 1
-            fi
+          if [ ! -f ".env" ]; then
+            echo "::error::Missing .env file in $PROJECT_PATH"
+            exit 1
+          fi
 
-            git fetch origin main
-            git pull --ff-only origin main
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
 
-            if docker compose version >/dev/null 2>&1; then
-              COMPOSE_CMD="docker compose"
-            elif docker-compose version >/dev/null 2>&1; then
-              COMPOSE_CMD="docker-compose"
-            else
-              echo "Docker Compose is not installed"
-              exit 1
-            fi
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker compose"
+          elif docker-compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="docker-compose"
+          else
+            echo "::error::Docker Compose is not installed"
+            exit 1
+          fi
 
-            $COMPOSE_CMD up -d --build --remove-orphans
-            $COMPOSE_CMD ps
+          $COMPOSE_CMD up -d --build --remove-orphans
+          $COMPOSE_CMD ps
