@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import asyncio
+import logging
 from datetime import datetime
 from html import escape
 from time import monotonic
@@ -24,6 +25,9 @@ from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
 from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
+
+
+logger = logging.getLogger(__name__)
 
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
@@ -623,17 +627,14 @@ def build_dispatcher(
                     reply_markup=reply_markup,
                 )
                 for extra_id in message_ids[1:]:
-                    try:
-                        await bot.delete_message(chat_id=chat_id, message_id=extra_id)
-                    except TelegramBadRequest:
-                        pass
+                    await safe_delete_message(bot, chat_id, extra_id)
                 context_messages[chat_id][context] = [message_ids[0]]
                 return
-            except TelegramBadRequest:
+            except (TelegramBadRequest, TelegramNetworkError):
                 pass
         await clear_context_messages(bot, chat_id, context)
-        sent = await bot.send_message(chat_id, text, reply_markup=reply_markup)
-        context_messages[chat_id][context] = [sent.message_id]
+        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
+        context_messages[chat_id][context] = [sent.message_id] if sent is not None else []
 
     async def send_new_context_message(
         bot: Bot,
@@ -643,24 +644,67 @@ def build_dispatcher(
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> None:
         await clear_context_messages(bot, chat_id, context)
-        sent = await bot.send_message(chat_id, text, reply_markup=reply_markup)
-        context_messages[chat_id][context] = [sent.message_id]
+        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
+        context_messages[chat_id][context] = [sent.message_id] if sent is not None else []
+
+    async def safe_send_message(
+        bot: Bot,
+        chat_id: int,
+        text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> Message | None:
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                return await bot.send_message(chat_id, text, reply_markup=reply_markup)
+            except TelegramBadRequest:
+                return None
+            except TelegramNetworkError as exc:
+                if attempt >= retries:
+                    logger.warning("Telegram send_message failed for chat %s: %s", chat_id, exc)
+                    return None
+                await asyncio.sleep(0.5 * attempt)
+        return None
+
+    async def safe_delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+                return True
+            except TelegramBadRequest:
+                return False
+            except TelegramNetworkError as exc:
+                if attempt >= retries:
+                    logger.warning(
+                        "Telegram delete_message failed for chat %s message %s: %s",
+                        chat_id,
+                        message_id,
+                        exc,
+                    )
+                    return False
+                await asyncio.sleep(0.5 * attempt)
+        return False
 
     async def clear_context_messages(bot: Bot, chat_id: int, context: str) -> None:
         for message_id in context_messages[chat_id].get(context, []):
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except TelegramBadRequest:
-                pass
+            await safe_delete_message(bot, chat_id, message_id)
         context_messages[chat_id][context] = []
 
     async def try_delete_message(message: Message | None) -> None:
         if message is None:
             return
-        try:
-            await message.delete()
-        except TelegramBadRequest:
-            pass
+        retries = 3
+        for attempt in range(1, retries + 1):
+            try:
+                await message.delete()
+                return
+            except TelegramBadRequest:
+                return
+            except TelegramNetworkError:
+                if attempt >= retries:
+                    return
+                await asyncio.sleep(0.5 * attempt)
 
     async def clear_context_messages_except(bot: Bot, chat_id: int, context: str, keep_message_id: int) -> None:
         kept_ids: list[int] = []
@@ -668,10 +712,7 @@ def build_dispatcher(
             if message_id == keep_message_id:
                 kept_ids.append(message_id)
                 continue
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=message_id)
-            except TelegramBadRequest:
-                pass
+            await safe_delete_message(bot, chat_id, message_id)
         context_messages[chat_id][context] = kept_ids
 
     async def try_edit_source_message(
