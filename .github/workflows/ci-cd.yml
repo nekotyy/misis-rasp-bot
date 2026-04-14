@@ -89,10 +89,17 @@ jobs:
             COMPOSE_CMD="docker compose"
           elif docker-compose version >/dev/null 2>&1; then
             COMPOSE_CMD="docker-compose"
+          elif sudo -n docker compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="sudo docker compose"
+          elif sudo -n docker-compose version >/dev/null 2>&1; then
+            COMPOSE_CMD="sudo docker-compose"
           else
-            echo "::error::Docker Compose is not installed"
+            echo "::error::Docker Compose is not available for the runner user."
+            echo "::error::Add the runner user to the docker group or configure passwordless sudo for docker."
             exit 1
           fi
+
+          echo "Using compose command: $COMPOSE_CMD"
 
           $COMPOSE_CMD up -d --build --remove-orphans
           $COMPOSE_CMD ps

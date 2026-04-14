@@ -168,6 +168,7 @@ docker compose up -d --build
 
 1. Настроить доступ сервера к GitHub для `git pull`: через SSH deploy key или через HTTPS + токен.
 1. Убедиться, что runner-процесс запущен и online в разделе `Actions` -> `Runners`.
+1. Если runner-пользователь не в группе `docker`, workflow автоматически попробует `sudo docker compose` (нужен passwordless sudo).
 
 #### Как проверить, что деплой сработал
 
