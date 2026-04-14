@@ -28,6 +28,7 @@ from src.subscription_utils import make_group_subscription, make_teacher_subscri
 HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
 SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
+GROUP_CHAT_TYPES = {"group", "supergroup"}
 
 
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
@@ -119,6 +120,7 @@ def build_dispatcher(
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
+    awaiting_group_subscription_input: set[int] = set()
     awaiting_admin_broadcast_text: set[int] = set()
     admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
@@ -257,6 +259,74 @@ def build_dispatcher(
             is_admin=user_is_admin(user.id),
             is_editor=existing.is_editor if existing else False,
         )
+
+    async def register_group_chat(message: Message) -> None:
+        if message.chat.type not in GROUP_CHAT_TYPES:
+            return
+        existing = await db.get_user("telegram", message.chat.id)
+        title = message.chat.title or str(message.chat.id)
+        await db.upsert_user(
+            platform="telegram",
+            user_id=message.chat.id,
+            username=None,
+            full_name=f"TG group: {title}",
+            subscription_type=existing.subscription_type if existing else None,
+            subscription_key=existing.subscription_key if existing else None,
+            subscription_title=existing.subscription_title if existing else None,
+            subscription_url=existing.subscription_url if existing else None,
+            group_name=existing.group_name if existing else None,
+            schedule_id=existing.schedule_id if existing else None,
+            is_admin=False,
+            is_editor=existing.is_editor if existing else False,
+        )
+
+    async def user_can_manage_group(message: Message) -> bool:
+        if message.from_user is None or message.chat.type not in GROUP_CHAT_TYPES:
+            return False
+        try:
+            member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+        except TelegramBadRequest:
+            return False
+        status = str(getattr(member, "status", ""))
+        return status in {"administrator", "creator"}
+
+    async def resolve_subscription_input(raw_text: str) -> tuple[dict | None, str | None]:
+        group = await group_catalog.find_group(raw_text) if group_catalog is not None else None
+        if group is not None:
+            return make_group_subscription(group.group_name, group.schedule_id), None
+        if search_catalog is None:
+            return None, "Справочник сейчас недоступен. Попробуй позже."
+        try:
+            target = await search_catalog.find(raw_text)
+        except httpx.HTTPError:
+            return None, "Сайт расписания временно недоступен. Попробуй еще раз через минуту."
+        if target is None or target.kind != "teacher":
+            return None, "Ничего не найдено. Проверь написание и попробуй еще раз."
+        return make_teacher_subscription(target), None
+
+    def format_group_subscription_status(subscription_type: str | None, subscription_title: str | None) -> str:
+        lines = ["<b>Настройка уведомлений для этой группы</b>", ""]
+        subscription_line = subscription_caption(subscription_type, subscription_title)
+        if subscription_line:
+            label, value = subscription_line.split(":", 1)
+            value_lines = [part.strip() for part in value.strip().splitlines() if part.strip()]
+            if value_lines:
+                lines.append(f"{escape(label)}: <b>{escape(value_lines[0])}</b>")
+                lines.extend(escape(part) for part in value_lines[1:])
+            else:
+                lines.append(f"{escape(label)}: <b>-</b>")
+        else:
+            lines.append("Подписка: <b>не выбрана</b>")
+        lines.extend(
+            [
+                "",
+                "Команды:",
+                "/group_setup - интерактивная настройка",
+                "/group_set ИСП-25-1 - быстрая настройка",
+                "/group_clear - очистить подписку",
+            ]
+        )
+        return "\n".join(lines)
 
     def user_is_admin(user_id: int | None) -> bool:
         return bool(user_id and settings.admin_telegram_id and user_id == settings.admin_telegram_id)
@@ -864,18 +934,11 @@ def build_dispatcher(
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def handle_subscription_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
-        group = await group_catalog.find_group(raw_text) if group_catalog is not None else None
-        if group is not None:
-            await db.set_user_subscription("telegram", user_id, **make_group_subscription(group.group_name, group.schedule_id))
-        else:
-            if search_catalog is None:
-                await prompt_group_selection(bot, chat_id, "Справочник сейчас недоступен. Попробуй позже.")
-                return False
-            target = await search_catalog.find(raw_text)
-            if target is None or target.kind != "teacher":
-                await prompt_group_selection(bot, chat_id, "Ничего не найдено. Проверь написание и попробуй еще раз.")
-                return False
-            await db.set_user_subscription("telegram", user_id, **make_teacher_subscription(target))
+        subscription_data, error_text = await resolve_subscription_input(raw_text)
+        if subscription_data is None:
+            await prompt_group_selection(bot, chat_id, error_text)
+            return False
+        await db.set_user_subscription("telegram", user_id, **subscription_data)
         editor = await user_is_editor(user_id)
         user = await get_user_record(user_id)
         await clear_context_messages(bot, chat_id, "group_select")
@@ -1139,6 +1202,18 @@ def build_dispatcher(
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type in GROUP_CHAT_TYPES:
+            await register_group_chat(message)
+            await message.bot.send_message(
+                message.chat.id,
+                "Бот добавлен в группу.\n\n"
+                "Для настройки уведомлений используй:\n"
+                "/group_setup\n"
+                "или\n"
+                "/group_set ИСП-25-1\n\n"
+                "Текущий статус: /group_status",
+            )
+            return
         search_results.pop(message.from_user.id if message.from_user else 0, None)
         if message.from_user:
             awaiting_schedule_search.discard(message.from_user.id)
@@ -1158,6 +1233,8 @@ def build_dispatcher(
     @dispatcher.message(Command("settings"))
     async def handle_settings_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         if message.from_user is None:
             return
         await send_new_context_message(
@@ -1171,6 +1248,8 @@ def build_dispatcher(
     @dispatcher.message(Command("rasp"))
     async def handle_rasp_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id if message.from_user else None):
             return
         await send_new_context_message(
@@ -1184,16 +1263,22 @@ def build_dispatcher(
     @dispatcher.message(Command("homework"))
     async def handle_homework_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
 
     @dispatcher.message(Command("dz"))
     async def handle_dz_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
 
     @dispatcher.message(Command("cancel"))
     async def handle_cancel_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         if message.from_user:
             homework_drafts.pop(message.from_user.id, None)
             awaiting_admin_broadcast_text.discard(message.from_user.id)
@@ -1216,6 +1301,8 @@ def build_dispatcher(
     @dispatcher.message(Command("admin"))
     async def handle_admin_command(message: Message) -> None:
         await register_message_user(message)
+        if message.chat.type != "private":
+            return
         if not user_is_admin(message.from_user.id if message.from_user else None):
             await send_new_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
             return
@@ -1224,6 +1311,87 @@ def build_dispatcher(
             admin_broadcast_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
         await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
+
+    @dispatcher.message(Command("group_setup"))
+    async def handle_group_setup_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type not in GROUP_CHAT_TYPES:
+            return
+        await register_group_chat(message)
+        if not await user_can_manage_group(message):
+            await message.bot.send_message(message.chat.id, "Настройку может выполнять только администратор группы.")
+            return
+        awaiting_group_subscription_input.add(message.chat.id)
+        await message.bot.send_message(
+            message.chat.id,
+            "<b>Настройка уведомлений группы</b>\n\n"
+            "Отправь название группы (например, <b>ИСП-25-1</b>) "
+            "или фамилию преподавателя.\n\n"
+            "Либо используй команду: <b>/group_set ИСП-25-1</b>",
+        )
+
+    @dispatcher.message(Command("group_set"))
+    async def handle_group_set_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type not in GROUP_CHAT_TYPES:
+            return
+        await register_group_chat(message)
+        if not await user_can_manage_group(message):
+            await message.bot.send_message(message.chat.id, "Настройку может выполнять только администратор группы.")
+            return
+        raw_text = ""
+        if message.text:
+            parts = message.text.split(maxsplit=1)
+            raw_text = parts[1].strip() if len(parts) > 1 else ""
+        if not raw_text:
+            await message.bot.send_message(message.chat.id, "Использование: /group_set ИСП-25-1")
+            return
+        subscription_data, error_text = await resolve_subscription_input(raw_text)
+        if subscription_data is None:
+            awaiting_group_subscription_input.add(message.chat.id)
+            await message.bot.send_message(message.chat.id, error_text)
+            return
+        await db.set_user_subscription("telegram", message.chat.id, **subscription_data)
+        awaiting_group_subscription_input.discard(message.chat.id)
+        await message.bot.send_message(
+            message.chat.id,
+            "Подписка группы обновлена.\n\n"
+            + format_group_subscription_status(
+                subscription_data.get("subscription_type"),
+                subscription_data.get("subscription_title"),
+            ),
+        )
+
+    @dispatcher.message(Command("group_status"))
+    async def handle_group_status_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type not in GROUP_CHAT_TYPES:
+            return
+        await register_group_chat(message)
+        group_record = await db.get_user("telegram", message.chat.id)
+        await message.bot.send_message(
+            message.chat.id,
+            format_group_subscription_status(
+                group_record.subscription_type if group_record else None,
+                group_record.subscription_title if group_record else None,
+            ),
+        )
+
+    @dispatcher.message(Command("group_clear"))
+    async def handle_group_clear_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type not in GROUP_CHAT_TYPES:
+            return
+        await register_group_chat(message)
+        if not await user_can_manage_group(message):
+            await message.bot.send_message(message.chat.id, "Отключить уведомления может только администратор группы.")
+            return
+        awaiting_group_subscription_input.discard(message.chat.id)
+        await db.clear_user_subscription("telegram", message.chat.id)
+        await message.bot.send_message(
+            message.chat.id,
+            "Подписка группы очищена. Уведомления об изменениях расписания в этот чат больше не отправляются.",
+        )
 
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
@@ -1748,6 +1916,31 @@ def build_dispatcher(
         if message.from_user is None or message.text is None:
             return
         await wait_message_rate_limit(message.from_user.id)
+
+        if message.chat.type in GROUP_CHAT_TYPES:
+            await register_group_chat(message)
+            if message.chat.id not in awaiting_group_subscription_input:
+                return
+            if message.text.startswith("/"):
+                return
+            if not await user_can_manage_group(message):
+                return
+            subscription_data, error_text = await resolve_subscription_input(message.text.strip())
+            if subscription_data is None:
+                await message.bot.send_message(message.chat.id, error_text)
+                return
+            await db.set_user_subscription("telegram", message.chat.id, **subscription_data)
+            awaiting_group_subscription_input.discard(message.chat.id)
+            await message.bot.send_message(
+                message.chat.id,
+                "Подписка группы обновлена.\n\n"
+                + format_group_subscription_status(
+                    subscription_data.get("subscription_type"),
+                    subscription_data.get("subscription_title"),
+                ),
+            )
+            return
+
         text_normalized = message.text.strip().casefold()
 
         if text_normalized in {"узнать расписание", "расписание"}:
