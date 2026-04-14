@@ -61,6 +61,7 @@ def build_vk_bot(
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     delete_option_map: dict[int, dict[str, tuple[int, str]]] = defaultdict(dict)
+    admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
 
@@ -290,6 +291,24 @@ def build_vk_bot(
             lines.extend(["", error_text])
         return "\n".join(lines)
 
+    def admin_broadcast_prompt_text(error_text: str | None = None) -> str:
+        lines = [
+            "Разослать",
+            "",
+            "Отправь текст сообщения одним сообщением.",
+            "После этого покажу предпросмотр.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
+    def admin_broadcast_preview_text(text: str) -> str:
+        return "\n".join([
+            "Предпросмотр рассылки",
+            "",
+            text,
+        ])
+
     def schedule_keyboard() -> str:
         return make_keyboard(
             [
@@ -332,10 +351,14 @@ def build_vk_bot(
             [
                 ["Статус", "Перепарсить"],
                 ["Сохранить эталон", "Последнее изменение"],
-                ["Пользователи", "Тестовая рассылка"],
+                ["Пользователи", "Разослать"],
+                ["Тестовая рассылка"],
                 ["Закрыть админку"],
             ]
         )
+
+    def admin_broadcast_preview_keyboard() -> str:
+        return make_keyboard([["Отправить"], ["Отменить"]])
 
     def welcome_text(group_name: str | None, is_editor: bool, is_admin: bool) -> str:
         lines = [
@@ -951,11 +974,62 @@ def build_vk_bot(
 
         if normalized in {"/start", "start", "начать"}:
             homework_drafts.pop(user_id, None)
+            admin_broadcast_drafts.pop(peer_id, None)
             user = await db.get_user("vk", user_id)
             if user is None or not user.subscription_key or not user.subscription_title:
                 await prompt_group_selection(peer_id)
             else:
                 await show_main_menu(peer_id, user_id)
+            return
+
+        if user_is_admin(user_id) and mode in {"admin_broadcast_input", "admin_broadcast_preview"}:
+            if text == "Отменить":
+                admin_broadcast_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+            if mode == "admin_broadcast_input":
+                if not text:
+                    await show_screen(peer_id, admin_broadcast_prompt_text("Текст не должен быть пустым."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                admin_broadcast_drafts[peer_id] = text
+                peer_modes[peer_id] = "admin_broadcast_preview"
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(text),
+                    keyboard=admin_broadcast_preview_keyboard(),
+                )
+                return
+            draft_text = admin_broadcast_drafts.get(peer_id)
+            if text == "Отправить":
+                if not draft_text:
+                    peer_modes[peer_id] = "admin_broadcast_input"
+                    await show_screen(peer_id, admin_broadcast_prompt_text("Сначала отправь текст рассылки."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                if broadcaster is None:
+                    await show_screen(peer_id, "Сервис рассылки сейчас недоступен.", keyboard=admin_broadcast_preview_keyboard())
+                    return
+                await broadcaster.broadcast(
+                    draft_text,
+                    telegram_message=escape(draft_text),
+                    vk_message=draft_text,
+                )
+                admin_broadcast_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Рассылка отправлена.\n\nСообщение поставлено в очередь доставки.", keyboard=admin_keyboard())
+                return
+            if text:
+                admin_broadcast_drafts[peer_id] = text
+            draft_text = admin_broadcast_drafts.get(peer_id)
+            if draft_text is None:
+                peer_modes[peer_id] = "admin_broadcast_input"
+                await show_screen(peer_id, admin_broadcast_prompt_text("Сначала отправь текст рассылки."), keyboard=make_keyboard([["Отменить"]]))
+                return
+            await show_screen(
+                peer_id,
+                admin_broadcast_preview_text(draft_text),
+                keyboard=admin_broadcast_preview_keyboard(),
+            )
             return
 
         user = await db.get_user("vk", user_id)
@@ -972,6 +1046,7 @@ def build_vk_bot(
         if text in {"Назад в меню", "Закрыть админку"}:
             homework_drafts.pop(user_id, None)
             search_results.pop(peer_id, None)
+            admin_broadcast_drafts.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
             return
 
@@ -1131,11 +1206,17 @@ def build_vk_bot(
             if not user_is_admin(user_id):
                 await show_screen(peer_id, "Эта кнопка доступна только администратору.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
                 return
+            admin_broadcast_drafts.pop(peer_id, None)
             peer_modes[peer_id] = "admin_menu"
             await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
             return
 
         if user_is_admin(user_id):
+            if text == "Разослать":
+                admin_broadcast_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_broadcast_input"
+                await show_screen(peer_id, admin_broadcast_prompt_text(), keyboard=make_keyboard([["Отменить"]]))
+                return
             if text == "Статус":
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return

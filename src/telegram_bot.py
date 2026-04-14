@@ -83,9 +83,25 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
+            InlineKeyboardButton(text="Разослать", callback_data="admin:broadcast"),
         ],
-        [InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close")],
+        [
+            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
+            InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
+        ],
+    ]
+)
+
+ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
+    ]
+)
+
+ADMIN_BROADCAST_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отправить", callback_data="admin:broadcast_send")],
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
     ]
 )
 
@@ -103,6 +119,8 @@ def build_dispatcher(
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
+    awaiting_admin_broadcast_text: set[int] = set()
+    admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -335,6 +353,24 @@ def build_dispatcher(
             "<b>Админ-панель</b>\n\n"
             "Здесь можно перепарсить сайт, сохранить эталон для сравнения и посмотреть статистику."
         )
+
+    def format_admin_broadcast_prompt(error_text: str | None = None) -> str:
+        lines = [
+            "<b>Разослать</b>",
+            "",
+            "Отправь текст сообщения одним сообщением.",
+            "После этого я покажу предпросмотр.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        return "\n".join(lines)
+
+    def format_admin_broadcast_preview(text: str) -> str:
+        return "\n".join([
+            "<b>Предпросмотр рассылки</b>",
+            "",
+            escape(text),
+        ])
 
     def build_admin_users_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
         nav_row: list[InlineKeyboardButton] = []
@@ -687,7 +723,7 @@ def build_dispatcher(
 
     async def prompt_schedule_search(bot: Bot, chat_id: int, user_id: int, error_text: str | None = None) -> None:
         awaiting_schedule_search.add(user_id)
-        await replace_context_message(bot, chat_id, "schedule", format_search_prompt(error_text))
+        await send_new_context_message(bot, chat_id, "schedule", format_search_prompt(error_text))
 
     async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
         if search_catalog is None:
@@ -696,7 +732,7 @@ def build_dispatcher(
         try:
             target = await search_catalog.find(query)
         except httpx.HTTPError:
-            await replace_context_message(
+            await send_new_context_message(
                 bot,
                 chat_id,
                 "schedule",
@@ -709,7 +745,7 @@ def build_dispatcher(
         try:
             snapshot_obj, _ = await parser.parse_from_url(target.url)
         except httpx.HTTPError:
-            await replace_context_message(
+            await send_new_context_message(
                 bot,
                 chat_id,
                 "schedule",
@@ -742,7 +778,7 @@ def build_dispatcher(
         }
         search_results[user_id] = snapshot
         awaiting_schedule_search.discard(user_id)
-        await replace_context_message(
+        await send_new_context_message(
             bot,
             chat_id,
             "schedule",
@@ -1107,7 +1143,10 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user:
             homework_drafts.pop(message.from_user.id, None)
+            awaiting_admin_broadcast_text.discard(message.from_user.id)
+            admin_broadcast_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "dz")
+        await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
         search_results.pop(message.from_user.id, None)
         awaiting_schedule_search.discard(message.from_user.id)
         await send_new_context_message(
@@ -1127,6 +1166,10 @@ def build_dispatcher(
         if not user_is_admin(message.from_user.id if message.from_user else None):
             await send_new_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
             return
+        if message.from_user is not None:
+            awaiting_admin_broadcast_text.discard(message.from_user.id)
+            admin_broadcast_drafts.pop(message.from_user.id, None)
+        await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
         await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
 
     @dispatcher.callback_query(F.data == "menu:start")
@@ -1136,20 +1179,19 @@ def build_dispatcher(
         await register_callback_user(callback)
         search_results.pop(callback.from_user.id, None)
         awaiting_schedule_search.discard(callback.from_user.id)
+        awaiting_admin_broadcast_text.discard(callback.from_user.id)
+        admin_broadcast_drafts.pop(callback.from_user.id, None)
         editor = await user_is_editor(callback.from_user.id)
         user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
-            try:
-                await callback.message.edit_text(build_welcome_text(user, is_editor=editor), reply_markup=START_KEYBOARD)
-                context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
-            except TelegramBadRequest:
-                await replace_context_message(
-                    callback.bot,
-                    callback.message.chat.id,
-                    "menu",
-                    build_welcome_text(user, is_editor=editor),
-                    reply_markup=START_KEYBOARD,
-                )
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "menu",
+                build_welcome_text(user, is_editor=editor),
+                reply_markup=START_KEYBOARD,
+            )
         await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "menu:settings")
@@ -1213,7 +1255,13 @@ def build_dispatcher(
             return
         snapshot_row = await get_saved_snapshot(callback.from_user.id)
         if snapshot_row is None:
-            await safe_edit_message_text(callback.message, "Не удалось получить расписание для твоей группы.", reply_markup=SCHEDULE_KEYBOARD)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "schedule",
+                "Не удалось получить расписание для твоей группы.",
+                reply_markup=SCHEDULE_KEYBOARD,
+            )
             await safe_callback_answer(callback)
             return
 
@@ -1227,8 +1275,13 @@ def build_dispatcher(
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
 
-        await safe_edit_message_text(callback.message, text, reply_markup=SCHEDULE_KEYBOARD)
-        context_messages[callback.message.chat.id]["schedule"] = [callback.message.message_id]
+        await send_new_context_message(
+            callback.bot,
+            callback.message.chat.id,
+            "schedule",
+            text,
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
         await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data.startswith("homework:view:"))
@@ -1316,6 +1369,56 @@ def build_dispatcher(
 
         action = callback.data.split(":", 1)[1]
         admin_user = await get_user_record(callback.from_user.id)
+        if action == "broadcast":
+            awaiting_admin_broadcast_text.add(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_broadcast",
+                format_admin_broadcast_prompt(),
+                reply_markup=ADMIN_BROADCAST_INPUT_KEYBOARD,
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "broadcast_cancel":
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Рассылка отменена")
+            return
+        if action == "broadcast_send":
+            draft_text = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft_text:
+                await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
+                return
+            if broadcaster is None:
+                await safe_callback_answer(callback, "Сервис рассылки сейчас недоступен.", show_alert=True)
+                return
+            await broadcaster.broadcast(
+                draft_text,
+                telegram_message=escape(draft_text),
+                vk_message=draft_text,
+            )
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                "<b>Рассылка отправлена.</b>\n\nСообщение поставлено в очередь доставки.",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Отправлено")
+            return
         if action == "status":
             text = await format_admin_status()
             await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_KEYBOARD)
@@ -1387,11 +1490,17 @@ def build_dispatcher(
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
             await safe_edit_message_text(callback.message, build_welcome_text(admin_user, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await safe_callback_answer(callback)
             return
         if action == "back":
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
             await safe_edit_message_text(callback.message, format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
             await safe_callback_answer(callback)
             return
@@ -1613,6 +1722,30 @@ def build_dispatcher(
         if message.from_user is None or message.text is None:
             return
         await wait_message_rate_limit(message.from_user.id)
+        if (
+            user_is_admin(message.from_user.id)
+            and message.from_user.id in awaiting_admin_broadcast_text
+        ):
+            draft_text = message.text.strip()
+            if not draft_text:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_broadcast",
+                    format_admin_broadcast_prompt("Текст не должен быть пустым."),
+                    reply_markup=ADMIN_BROADCAST_INPUT_KEYBOARD,
+                )
+                return
+            awaiting_admin_broadcast_text.discard(message.from_user.id)
+            admin_broadcast_drafts[message.from_user.id] = draft_text
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_broadcast",
+                format_admin_broadcast_preview(draft_text),
+                reply_markup=ADMIN_BROADCAST_PREVIEW_KEYBOARD,
+            )
+            return
         user = await get_user_record(message.from_user.id)
         if user is None or not user.subscription_key or not user.subscription_title:
             if message.text.startswith("/"):
