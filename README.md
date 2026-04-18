@@ -83,6 +83,12 @@ uv run --frozen -m src.main
 
 Проект запускается через `docker-compose.yml`.
 
+Миграции БД:
+
+- Используется `Alembic`.
+- При старте приложения миграции применяются автоматически до `head`.
+- Для уже существующей БД без `alembic_version` выполняется безопасный `stamp head`, чтобы не ломать рабочую схему на VPS.
+
 - В compose поднимаются два сервиса:
   - `bot` — основное приложение
   - `rabbitmq` — брокер очередей для уведомлений
@@ -130,6 +136,13 @@ docker compose up -d --build
 docker compose ps
 docker compose logs -f bot
 docker compose logs -f rabbitmq
+```
+
+Проверка миграций в контейнере:
+
+```bash
+docker compose exec bot uv run --frozen alembic current
+docker compose exec bot uv run --frozen alembic heads
 ```
 
 Что важно:
@@ -779,4 +792,3 @@ RabbitMQ используется только для исходящих уве�
 ```bash
 python -m compileall src
 ```
-

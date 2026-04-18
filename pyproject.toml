@@ -13,6 +13,7 @@ dependencies = [
     "APScheduler>=3.10.4,<4.0.0",
     "python-dotenv>=1.0.1,<2.0.0",
     "aio-pika>=9.5.5,<10.0.0",
+    "alembic>=1.13.2,<2.0.0",
 ]
 
 [tool.uv]
