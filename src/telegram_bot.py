@@ -40,8 +40,53 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Расписание на сегодня", callback_data="schedule:today")],
         [InlineKeyboardButton(text="Расписание на завтра", callback_data="schedule:tomorrow")],
         [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="schedule:day_after")],
+        [InlineKeyboardButton(text="Расписание звонков", callback_data="schedule:bells")],
         [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
+    ]
+)
+
+WEEKDAY_BELLS_TEXT = "\n".join(
+    [
+        "Звонки ОПК СТИ НИТУ МИСИС",
+        "",
+        "Будни:",
+        "",
+        "Понедельник(Классный час) 8:30 - 9:20",
+        "",
+        "1 пара 9:00 - 10:30",
+        "",
+        "2 пара 10:40 - 12:10",
+        "",
+        "перерыв 12:10 - 12:40",
+        "",
+        "3 пара 12:40 - 14:10",
+        "",
+        "перерыв 14:10 - 14:30",
+        "",
+        "4 пара 14:30 - 16:00",
+        "",
+        "5 пара 16:10 - 17:40",
+        "",
+        "6 пара 17:50 - 19:20",
+    ]
+)
+
+SATURDAY_BELLS_TEXT = "\n".join(
+    [
+        "Звонки ОПК СТИ НИТУ МИСИС",
+        "",
+        "Суббота:",
+        "",
+        "1 пара 9:00 - 10:30",
+        "",
+        "2 пара 10:40 - 12:10",
+        "",
+        "3 пара 12:20 - 13:50",
+        "",
+        "4 пара 14:00 - 15:30",
+        "",
+        "5 пара 15:40 - 17:10",
     ]
 )
 
@@ -1001,9 +1046,36 @@ def build_dispatcher(
             reply_markup=SCHEDULE_KEYBOARD,
         )
 
+    async def send_bells_schedule(bot: Bot, chat_id: int) -> None:
+        await clear_context_messages(bot, chat_id, "schedule")
+        message_ids: list[int] = []
+
+        weekday_message = await safe_send_message(bot, chat_id, WEEKDAY_BELLS_TEXT)
+        if weekday_message is not None:
+            message_ids.append(weekday_message.message_id)
+
+        saturday_message = await safe_send_message(bot, chat_id, SATURDAY_BELLS_TEXT)
+        if saturday_message is not None:
+            message_ids.append(saturday_message.message_id)
+
+        prompt_message = await safe_send_message(
+            bot,
+            chat_id,
+            "Выбери нужный вариант расписания.",
+            reply_markup=SCHEDULE_KEYBOARD,
+        )
+        if prompt_message is not None:
+            message_ids.append(prompt_message.message_id)
+
+        context_messages[chat_id]["schedule"] = message_ids
+
     async def send_schedule_response(bot: Bot, chat_id: int, user_id: int, action: str) -> None:
         if action == "find":
             await prompt_schedule_search(bot, chat_id, user_id)
+            return
+
+        if action == "bells":
+            await send_bells_schedule(bot, chat_id)
             return
 
         snapshot_row = await get_saved_snapshot(user_id)
@@ -1023,9 +1095,12 @@ def build_dispatcher(
         elif action == "tomorrow":
             day = get_day_by_offset_from_content(snapshot_row["content"], 1)
             text = ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
-        else:
+        elif action == "day_after":
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
             text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
+        else:
+            await send_schedule_menu(bot, chat_id)
+            return
 
         await send_new_context_message(
             bot,
@@ -1994,6 +2069,7 @@ def build_dispatcher(
             "расписание на сегодня",
             "расписание на завтра",
             "расписание на 2 дня",
+            "расписание звонков",
             "найти расписание",
         }:
             if not await ensure_group_selected(message.bot, message.chat.id, message.from_user.id):
@@ -2002,6 +2078,7 @@ def build_dispatcher(
                 "расписание на сегодня": "today",
                 "расписание на завтра": "tomorrow",
                 "расписание на 2 дня": "day_after",
+                "расписание звонков": "bells",
                 "найти расписание": "find",
             }
             await send_schedule_response(
