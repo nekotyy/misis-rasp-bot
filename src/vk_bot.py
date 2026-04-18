@@ -579,11 +579,16 @@ def build_vk_bot(
             f"Активных преподавателей: {active_teacher_count}\n"
             f"Последнее изменение: {last_change_at}\n\n"
             "Статистика отправок\n"
+            f"Всего событий доставки: {delivery_stats['events_total']}\n"
+            f"Успешно / ошибок: {delivery_stats['sent_total']} / {delivery_stats['failed_total']}\n"
+            f"За 24 часа (успешно / ошибок): {delivery_stats['sent_last_24h']} / {delivery_stats['failed_last_24h']}\n"
             f"Уведомлений отправлено: {delivery_stats['notifications_sent']}\n"
             f"Админских рассылок отправлено: {delivery_stats['admin_broadcast_sent']}\n"
-            f"Доставлено через RabbitMQ: {delivery_stats['sent_via_rabbitmq']}\n"
+            f"Служебных уведомлений админу: {delivery_stats['admin_notify_sent']}\n"
+            f"Через RabbitMQ / напрямую: {delivery_stats['sent_via_rabbitmq']} / {delivery_stats['sent_direct']}\n"
             f"Доставлено после ретрая: {delivery_stats['sent_after_retry']}\n"
-            f"Ошибок доставки: {delivery_stats['failed_total']}\n\n"
+            f"TG (успешно / ошибок): {delivery_stats['tg_sent']} / {delivery_stats['tg_failed']}\n"
+            f"VK (успешно / ошибок): {delivery_stats['vk_sent']} / {delivery_stats['vk_failed']}\n\n"
             f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
             f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"
         )
@@ -1283,6 +1288,10 @@ def build_vk_bot(
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
                 return
             if text == "Перепарсить":
+                await show_screen(
+                    peer_id,
+                    "Перепарсинг запущен...\n\nПарсю активные источники и обновляю текущие слепки. Это может занять до минуты.",
+                )
                 report_rows = await refresh_all_active_sources()
                 if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_keyboard())
@@ -1294,6 +1303,10 @@ def build_vk_bot(
                 )
                 return
             if text == "Сохранить эталон":
+                await show_screen(
+                    peer_id,
+                    "Сохранение эталонов запущено...\n\nПарсю активные источники и записываю новый эталон. Это может занять до минуты.",
+                )
                 report_rows = await save_baseline_for_all_active_sources()
                 if not report_rows:
                     await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_keyboard())

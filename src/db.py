@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -816,35 +816,67 @@ class Database:
             await db.commit()
 
     async def get_delivery_stats(self) -> dict[str, int]:
+        threshold_24h = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
                 SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'sent' AND campaign_type = 'notification' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'sent' AND campaign_type = 'admin_broadcast' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND campaign_type = 'admin_notify' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'sent' AND via_broker = 1 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'sent' AND via_broker = 1 AND attempt > 1 THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN status = 'sent' AND via_broker = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND via_broker = 1 AND attempt > 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND platform = 'telegram' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND platform = 'vk' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'vk' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND created_at >= ? THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND created_at >= ? THEN 1 ELSE 0 END)
                 FROM delivery_events
-                """
+                """,
+                (threshold_24h, threshold_24h),
             )
             row = await cursor.fetchone()
 
         if not row:
             return {
+                "events_total": 0,
+                "sent_total": 0,
+                "failed_total": 0,
                 "notifications_sent": 0,
                 "admin_broadcast_sent": 0,
+                "admin_notify_sent": 0,
                 "sent_via_rabbitmq": 0,
-                "failed_total": 0,
+                "sent_direct": 0,
                 "sent_after_retry": 0,
+                "tg_sent": 0,
+                "vk_sent": 0,
+                "tg_failed": 0,
+                "vk_failed": 0,
+                "sent_last_24h": 0,
+                "failed_last_24h": 0,
             }
 
         return {
-            "notifications_sent": int(row[0] or 0),
-            "admin_broadcast_sent": int(row[1] or 0),
-            "sent_via_rabbitmq": int(row[2] or 0),
-            "failed_total": int(row[3] or 0),
-            "sent_after_retry": int(row[4] or 0),
+            "events_total": int(row[0] or 0),
+            "sent_total": int(row[1] or 0),
+            "failed_total": int(row[2] or 0),
+            "notifications_sent": int(row[3] or 0),
+            "admin_broadcast_sent": int(row[4] or 0),
+            "admin_notify_sent": int(row[5] or 0),
+            "sent_via_rabbitmq": int(row[6] or 0),
+            "sent_direct": int(row[7] or 0),
+            "sent_after_retry": int(row[8] or 0),
+            "tg_sent": int(row[9] or 0),
+            "vk_sent": int(row[10] or 0),
+            "tg_failed": int(row[11] or 0),
+            "vk_failed": int(row[12] or 0),
+            "sent_last_24h": int(row[13] or 0),
+            "failed_last_24h": int(row[14] or 0),
         }
 
     async def count_homework_entries(self) -> int:
