@@ -58,17 +58,23 @@
 ## 4. Быстрый запуск
 
 1. Скопировать `.env.example` -> `.env`
-2. Заполнить токены
-3. Установить зависимости:
+1. Заполнить токены
+1. Установить `uv` (если еще не установлен):
 
 ```bash
-pip install -r requirements.txt
+pip install --upgrade uv
 ```
 
-4. Запустить:
+1. Установить зависимости:
 
 ```bash
-python -m src.main
+uv sync --frozen
+```
+
+1. Запустить:
+
+```bash
+uv run --frozen -m src.main
 ```
 
 ---
@@ -104,7 +110,7 @@ docker compose up -d --build
 git pull
 ```
 
-2. Проверить `.env` и убедиться, что там есть блок RabbitMQ:
+1. Проверить `.env` и убедиться, что там есть блок RabbitMQ:
 
 ```env
 RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
@@ -112,7 +118,7 @@ RABBITMQ_QUEUE=misis_notifications
 RABBITMQ_PREFETCH_COUNT=20
 ```
 
-3. Пересобрать и перезапустить сервисы:
+1. Пересобрать и перезапустить сервисы:
 
 ```bash
 docker compose up -d --build

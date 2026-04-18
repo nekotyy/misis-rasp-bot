@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
@@ -10,12 +11,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
 
 COPY src ./src
 COPY README.md ./
 
 RUN mkdir -p /app/runtime
 
-CMD ["python", "-m", "src.main"]
+CMD ["uv", "run", "--frozen", "-m", "src.main"]
