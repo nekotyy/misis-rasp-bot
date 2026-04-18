@@ -555,11 +555,16 @@ def build_dispatcher(
             f"Активных преподавателей: <b>{active_teacher_count}</b>\n"
             f"Последнее изменение: <b>{last_change_at}</b>\n\n"
             "<b>Статистика отправок</b>\n"
+            f"Всего событий доставки: <b>{delivery_stats['events_total']}</b>\n"
+            f"Успешно / ошибок: <b>{delivery_stats['sent_total']}</b> / <b>{delivery_stats['failed_total']}</b>\n"
+            f"За 24 часа (успешно / ошибок): <b>{delivery_stats['sent_last_24h']}</b> / <b>{delivery_stats['failed_last_24h']}</b>\n"
             f"Уведомлений отправлено: <b>{delivery_stats['notifications_sent']}</b>\n"
             f"Админских рассылок отправлено: <b>{delivery_stats['admin_broadcast_sent']}</b>\n"
-            f"Доставлено через RabbitMQ: <b>{delivery_stats['sent_via_rabbitmq']}</b>\n"
+            f"Служебных уведомлений админу: <b>{delivery_stats['admin_notify_sent']}</b>\n"
+            f"Через RabbitMQ / напрямую: <b>{delivery_stats['sent_via_rabbitmq']}</b> / <b>{delivery_stats['sent_direct']}</b>\n"
             f"Доставлено после ретрая: <b>{delivery_stats['sent_after_retry']}</b>\n"
-            f"Ошибок доставки: <b>{delivery_stats['failed_total']}</b>\n\n"
+            f"TG (успешно / ошибок): <b>{delivery_stats['tg_sent']}</b> / <b>{delivery_stats['tg_failed']}</b>\n"
+            f"VK (успешно / ошибок): <b>{delivery_stats['vk_sent']}</b> / <b>{delivery_stats['vk_failed']}</b>\n\n"
             f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
         )
@@ -684,9 +689,8 @@ def build_dispatcher(
                 return
             except (TelegramBadRequest, TelegramNetworkError):
                 pass
-        await clear_context_messages(bot, chat_id, context)
         sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
-        context_messages[chat_id][context] = [sent.message_id] if sent is not None else []
+        context_messages[chat_id][context] = [sent.message_id] if sent is not None else message_ids
 
     async def send_new_context_message(
         bot: Bot,
@@ -1744,9 +1748,20 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         if action == "baseline":
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Сохранение эталонов...</b>\n\nПарсю активные источники и записываю новый эталон. Это может занять до минуты.",
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback, "Сохраняю эталоны...")
             report_rows = await save_baseline_for_all_active_sources()
             if not report_rows:
-                await safe_callback_answer(callback, "Нет активных групп для сохранения эталона.", show_alert=True)
+                await safe_edit_message_text(
+                    callback.message,
+                    "Нет активных групп для сохранения эталона.",
+                    reply_markup=ADMIN_KEYBOARD,
+                )
+                context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
                 return
             await safe_edit_message_text(
                 callback.message,
@@ -1754,7 +1769,6 @@ def build_dispatcher(
                 reply_markup=ADMIN_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback, "Эталоны сохранены")
             return
         if action == "homework_delete":
             await safe_edit_message_text(
@@ -1899,12 +1913,28 @@ def build_dispatcher(
             text = format_daily_change_report("Последние изменения за сегодня", daily_changes)
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Перепарсинг...</b>\n\nПарсю активные источники и обновляю текущие слепки. Это может занять до минуты.",
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback, "Перепарсинг запущен...")
             report_rows = await refresh_all_active_sources()
             if not report_rows:
-                await safe_callback_answer(callback, "Нет активных групп для перепарсинга.", show_alert=True)
+                await safe_edit_message_text(
+                    callback.message,
+                    "Нет активных групп для перепарсинга.",
+                    reply_markup=ADMIN_KEYBOARD,
+                )
+                context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
                 return
-            text = format_group_action_report("Перепарсинг активных групп", report_rows)
-            reply_markup = ADMIN_KEYBOARD
+            await safe_edit_message_text(
+                callback.message,
+                format_group_action_report("Перепарсинг активных групп", report_rows),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            return
         else:
             if broadcaster is not None:
                 await broadcaster.broadcast_test_message()
