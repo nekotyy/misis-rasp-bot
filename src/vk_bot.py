@@ -33,6 +33,50 @@ HOMEWORK_GROUP_NAME = "ИСП-25-1"
 HOMEWORK_SCHEDULE_ID = 600
 SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
 
+WEEKDAY_BELLS_TEXT = "\n".join(
+    [
+        "Звонки ОПК СТИ НИТУ МИСИС",
+        "",
+        "Будни:",
+        "",
+        "Понедельник(Классный час) 8:30 - 9:20",
+        "",
+        "1 пара 9:00 - 10:30",
+        "",
+        "2 пара 10:40 - 12:10",
+        "",
+        "перерыв 12:10 - 12:40",
+        "",
+        "3 пара 12:40 - 14:10",
+        "",
+        "перерыв 14:10 - 14:30",
+        "",
+        "4 пара 14:30 - 16:00",
+        "",
+        "5 пара 16:10 - 17:40",
+        "",
+        "6 пара 17:50 - 19:20",
+    ]
+)
+
+SATURDAY_BELLS_TEXT = "\n".join(
+    [
+        "Звонки ОПК СТИ НИТУ МИСИС",
+        "",
+        "Суббота:",
+        "",
+        "1 пара 9:00 - 10:30",
+        "",
+        "2 пара 10:40 - 12:10",
+        "",
+        "3 пара 12:20 - 13:50",
+        "",
+        "4 пара 14:00 - 15:30",
+        "",
+        "5 пара 15:40 - 17:10",
+    ]
+)
+
 
 def build_vk_bot(
     settings: Settings,
@@ -315,10 +359,17 @@ def build_vk_bot(
                 ["Расписание на сегодня"],
                 ["Расписание на завтра"],
                 ["Расписание на 2 дня"],
+                ["Расписание звонков"],
                 ["Найти расписание"],
                 ["Назад в меню"],
             ]
         )
+
+    async def show_bells_schedule(peer_id: int) -> None:
+        await show_screen(peer_id, WEEKDAY_BELLS_TEXT)
+        await show_screen(peer_id, SATURDAY_BELLS_TEXT)
+        peer_modes[peer_id] = "schedule_menu"
+        await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
 
     def search_result_keyboard() -> str:
         return make_keyboard(
@@ -1087,6 +1138,9 @@ def build_vk_bot(
             return
 
         if mode == "schedule_menu":
+            if text == "Расписание звонков":
+                await show_bells_schedule(peer_id)
+                return
             snapshot = await get_or_fetch_subscription_snapshot(user_id)
             if snapshot is None:
                 await show_screen(peer_id, "Не удалось получить расписание для твоей группы.", keyboard=schedule_keyboard())
