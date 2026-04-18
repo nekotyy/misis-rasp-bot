@@ -94,8 +94,6 @@ class ScheduleComparator:
         for date_iso, day in current_days.items():
             if date_iso not in allowed_dates:
                 continue
-            if not day.lessons:
-                continue
             prev_day = prev_days.get(date_iso)
             if ScheduleComparator._day_changed(prev_day, day):
                 changed_dates.append(day.date_label)
@@ -133,8 +131,6 @@ class ScheduleComparator:
             lesson["number"]: (lesson["subject"], lesson["teacher"], lesson["classroom"])
             for lesson in prev_day["lessons"]
         }
-        if not current_map:
-            return False
         return prev_map != current_map
 
 
