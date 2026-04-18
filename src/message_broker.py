@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Awaitable, Callable
+from uuid import uuid4
 
 import aio_pika
 from aio_pika import DeliveryMode, IncomingMessage, Message
@@ -17,6 +18,10 @@ class OutboundMessage:
     platform: str
     user_id: int
     text: str
+    campaign_type: str = "notification"
+    attempt: int = 1
+    max_attempts: int = 5
+    message_id: str | None = None
 
 
 Sender = Callable[[OutboundMessage], Awaitable[None]]
@@ -55,12 +60,16 @@ class RabbitMQBroker:
         if self._channel is None:
             return False
 
+        if not payload.message_id:
+            payload.message_id = str(uuid4())
+
         body = json.dumps(asdict(payload), ensure_ascii=False).encode("utf-8")
         await self._channel.default_exchange.publish(
             Message(
                 body=body,
                 delivery_mode=DeliveryMode.PERSISTENT,
                 content_type="application/json",
+                message_id=payload.message_id,
             ),
             routing_key=self.queue_name,
         )
@@ -76,9 +85,60 @@ class RabbitMQBroker:
             return
 
         async def _consume(message: IncomingMessage) -> None:
-            async with message.process(requeue=True):
+            try:
                 payload = OutboundMessage(**json.loads(message.body.decode("utf-8")))
+            except Exception as exc:
+                logger.warning("RabbitMQ payload decode failed: %s", exc)
+                await message.reject(requeue=False)
+                return
+
+            try:
                 await sender(payload)
+            except Exception as exc:
+                current_attempt = max(1, payload.attempt)
+                if current_attempt < payload.max_attempts:
+                    retry_payload = OutboundMessage(
+                        platform=payload.platform,
+                        user_id=payload.user_id,
+                        text=payload.text,
+                        campaign_type=payload.campaign_type,
+                        attempt=current_attempt + 1,
+                        max_attempts=payload.max_attempts,
+                        message_id=payload.message_id,
+                    )
+                    try:
+                        await self.publish(retry_payload)
+                    except Exception as publish_exc:
+                        logger.warning(
+                            "RabbitMQ retry publish failed for message %s (attempt %s/%s): %s",
+                            payload.message_id,
+                            current_attempt,
+                            payload.max_attempts,
+                            publish_exc,
+                        )
+                        await message.nack(requeue=True)
+                        return
+
+                    logger.warning(
+                        "Delivery failed for message %s, requeued as attempt %s/%s: %s",
+                        payload.message_id,
+                        retry_payload.attempt,
+                        retry_payload.max_attempts,
+                        exc,
+                    )
+                    await message.ack()
+                    return
+
+                logger.error(
+                    "Delivery failed for message %s after %s attempts: %s",
+                    payload.message_id,
+                    current_attempt,
+                    exc,
+                )
+                await message.reject(requeue=False)
+                return
+
+            await message.ack()
 
         self._consumer_tag = await self._queue.consume(_consume)
         logger.info("RabbitMQ consumer started for queue %s", self.queue_name)
