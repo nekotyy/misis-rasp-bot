@@ -194,6 +194,7 @@ class Database:
                     JOIN change_events AS older
                         ON newer.source_key = older.source_key
                         AND newer.snapshot_hash = older.snapshot_hash
+                        AND substr(newer.created_at, 1, 10) = substr(older.created_at, 1, 10)
                         AND newer.source_key IS NOT NULL
                         AND newer.id > older.id
                 )
@@ -201,8 +202,18 @@ class Database:
             )
             await db.execute(
                 """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_change_events_source_key_snapshot_hash
-                ON change_events(source_key, snapshot_hash)
+                DROP INDEX IF EXISTS idx_change_events_source_key_snapshot_hash
+                """
+            )
+            await db.execute(
+                """
+                DROP INDEX IF EXISTS idx_change_events_source_key_snapshot_hash_day
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_change_events_source_key_snapshot_hash_day
+                ON change_events(source_key, snapshot_hash, substr(created_at, 1, 10))
                 """
             )
             await db.execute(
