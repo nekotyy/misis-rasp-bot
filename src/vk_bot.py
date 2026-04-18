@@ -22,7 +22,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.homework_service import SUBJECTS, format_homework_notification, get_subject
 from src.models import HomeworkAttachment, HomeworkDraft
-from src.notifier import Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -566,17 +566,24 @@ def build_vk_bot(
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
+        delivery_stats = await db.get_delivery_stats()
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = last_change["created_at"] if last_change else "еще не было"
         return (
             "Статус бота\n\n"
             f"Пользователей: {len(users)}\n"
-            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 VK: {vk_users}\n"
-            f"\u041f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439 \u0441 TG: {tg_users}\n"
+            f"Пользователей с VK: {vk_users}\n"
+            f"Пользователей с TG: {tg_users}\n"
             f"Активных групп: {active_group_count}\n"
             f"Активных преподавателей: {active_teacher_count}\n"
             f"Последнее изменение: {last_change_at}\n\n"
+            "Статистика отправок\n"
+            f"Уведомлений отправлено: {delivery_stats['notifications_sent']}\n"
+            f"Админских рассылок отправлено: {delivery_stats['admin_broadcast_sent']}\n"
+            f"Доставлено через RabbitMQ: {delivery_stats['sent_via_rabbitmq']}\n"
+            f"Доставлено после ретрая: {delivery_stats['sent_after_retry']}\n"
+            f"Ошибок доставки: {delivery_stats['failed_total']}\n\n"
             f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
             f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"
         )
@@ -1083,6 +1090,7 @@ def build_vk_bot(
                     draft_text,
                     telegram_message=escape(draft_text),
                     vk_message=draft_text,
+                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                 )
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"

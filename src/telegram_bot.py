@@ -20,7 +20,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.homework_service import SUBJECTS, format_homework_message, format_homework_notification, format_homework_preview, get_subject
 from src.models import HomeworkAttachment, HomeworkDraft
-from src.notifier import Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -542,6 +542,7 @@ def build_dispatcher(
         last_change = await db.get_last_change()
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
+        delivery_stats = await db.get_delivery_stats()
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
@@ -553,6 +554,12 @@ def build_dispatcher(
             f"Активных групп: <b>{active_group_count}</b>\n"
             f"Активных преподавателей: <b>{active_teacher_count}</b>\n"
             f"Последнее изменение: <b>{last_change_at}</b>\n\n"
+            "<b>Статистика отправок</b>\n"
+            f"Уведомлений отправлено: <b>{delivery_stats['notifications_sent']}</b>\n"
+            f"Админских рассылок отправлено: <b>{delivery_stats['admin_broadcast_sent']}</b>\n"
+            f"Доставлено через RabbitMQ: <b>{delivery_stats['sent_via_rabbitmq']}</b>\n"
+            f"Доставлено после ретрая: <b>{delivery_stats['sent_after_retry']}</b>\n"
+            f"Ошибок доставки: <b>{delivery_stats['failed_total']}</b>\n\n"
             f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
         )
@@ -1716,6 +1723,7 @@ def build_dispatcher(
                 draft_text,
                 telegram_message=escape(draft_text),
                 vk_message=draft_text,
+                campaign_type=CAMPAIGN_ADMIN_BROADCAST,
             )
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)

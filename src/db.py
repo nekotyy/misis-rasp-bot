@@ -109,6 +109,19 @@ class Database:
                     expires_at TEXT NOT NULL,
                     used_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS delivery_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT,
+                    campaign_type TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    via_broker INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 1,
+                    error_text TEXT,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -133,6 +146,15 @@ class Database:
             await self._ensure_column(db, "change_events", "schedule_id", "INTEGER")
             await self._ensure_column(db, "homework_attachments", "storage_path", "TEXT")
             await self._ensure_column(db, "homework_attachments", "source_platform", "TEXT")
+            await self._ensure_column(db, "delivery_events", "message_id", "TEXT")
+            await self._ensure_column(db, "delivery_events", "campaign_type", "TEXT NOT NULL DEFAULT 'notification'")
+            await self._ensure_column(db, "delivery_events", "platform", "TEXT NOT NULL DEFAULT 'telegram'")
+            await self._ensure_column(db, "delivery_events", "user_id", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "delivery_events", "via_broker", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "delivery_events", "status", "TEXT NOT NULL DEFAULT 'sent'")
+            await self._ensure_column(db, "delivery_events", "attempt", "INTEGER NOT NULL DEFAULT 1")
+            await self._ensure_column(db, "delivery_events", "error_text", "TEXT")
+            await self._ensure_column(db, "delivery_events", "created_at", "TEXT")
             await db.execute(
                 """
                 UPDATE users
@@ -181,6 +203,18 @@ class Database:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_change_events_source_key_snapshot_hash
                 ON change_events(source_key, snapshot_hash)
+                """
+            )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_events_status_campaign
+                ON delivery_events(status, campaign_type)
+                """
+            )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_events_status_broker
+                ON delivery_events(status, via_broker)
                 """
             )
             await db.commit()
@@ -723,6 +757,84 @@ class Database:
             for row in rows
             if row[0] and row[1]
         ]
+
+    async def record_delivery_event(
+        self,
+        *,
+        campaign_type: str,
+        platform: str,
+        user_id: int,
+        via_broker: bool,
+        status: str,
+        attempt: int = 1,
+        message_id: str | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        safe_error_text = (error_text or "").strip() or None
+        if safe_error_text and len(safe_error_text) > 500:
+            safe_error_text = f"{safe_error_text[:497]}..."
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO delivery_events (
+                    message_id,
+                    campaign_type,
+                    platform,
+                    user_id,
+                    via_broker,
+                    status,
+                    attempt,
+                    error_text,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    campaign_type,
+                    platform,
+                    user_id,
+                    int(via_broker),
+                    status,
+                    max(1, attempt),
+                    safe_error_text,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def get_delivery_stats(self) -> dict[str, int]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 'sent' AND campaign_type = 'notification' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND campaign_type = 'admin_broadcast' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND via_broker = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'sent' AND via_broker = 1 AND attempt > 1 THEN 1 ELSE 0 END)
+                FROM delivery_events
+                """
+            )
+            row = await cursor.fetchone()
+
+        if not row:
+            return {
+                "notifications_sent": 0,
+                "admin_broadcast_sent": 0,
+                "sent_via_rabbitmq": 0,
+                "failed_total": 0,
+                "sent_after_retry": 0,
+            }
+
+        return {
+            "notifications_sent": int(row[0] or 0),
+            "admin_broadcast_sent": int(row[1] or 0),
+            "sent_via_rabbitmq": int(row[2] or 0),
+            "failed_total": int(row[3] or 0),
+            "sent_after_retry": int(row[4] or 0),
+        }
 
     async def count_homework_entries(self) -> int:
         async with aiosqlite.connect(self.path) as db:
