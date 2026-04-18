@@ -10,6 +10,7 @@ from aiogram.enums import ParseMode
 from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
+from src.db_migrations import apply_migrations
 from src.group_catalog import GroupCatalog
 from src.message_broker import RabbitMQBroker
 from src.notifier import Broadcaster
@@ -64,6 +65,7 @@ async def run_vk_polling(vk_bot) -> None:
 
 async def main() -> None:
     settings = Settings.from_env()
+    apply_migrations(settings.database_path)
     db = Database(settings.database_path)
     await db.initialize()
 
