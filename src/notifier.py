@@ -34,6 +34,12 @@ class Broadcaster:
         self.broker = broker
 
     async def start(self) -> None:
+        try:
+            disabled_count = await self.db.auto_disable_undeliverable_telegram_users()
+            if disabled_count:
+                logger.info("Auto-disabled undeliverable telegram users from history: %s", disabled_count)
+        except Exception as exc:
+            logger.warning("Auto-disable sync failed on startup: %s", exc)
         if self.broker is None or not self.broker.enabled:
             return
         await self.broker.start_consumer(self.deliver)
@@ -160,6 +166,10 @@ class Broadcaster:
     ) -> None:
         if self.telegram_bot is None:
             return
+        try:
+            await self.db.auto_disable_undeliverable_telegram_users()
+        except Exception as exc:
+            logger.warning("Auto-disable sync failed before telegram broadcast: %s", exc)
         users = (
             await self.db.get_users_for_homework_notifications(
                 "telegram",
@@ -333,17 +343,20 @@ class Broadcaster:
         return True
 
     def _is_permanent_telegram_failure(self, exc: Exception) -> bool:
+        error_text = str(exc).lower()
+        markers = (
+            "forbidden: bot was blocked by the user",
+            "bot was blocked by the user",
+            "chat not found",
+            "user is deactivated",
+            "have no rights to send a message",
+            "chat_id is empty",
+            "group chat was upgraded to a supergroup chat",
+        )
+        if any(marker in error_text for marker in markers):
+            return True
         if isinstance(exc, TelegramForbiddenError):
             return True
         if isinstance(exc, TelegramBadRequest):
-            error_text = str(exc).lower()
-            markers = (
-                "chat not found",
-                "bot was blocked by the user",
-                "user is deactivated",
-                "have no rights to send a message",
-                "chat_id is empty",
-                "group chat was upgraded to a supergroup chat",
-            )
             return any(marker in error_text for marker in markers)
         return False

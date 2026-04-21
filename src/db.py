@@ -543,6 +543,47 @@ class Database:
             row = await cursor.fetchone()
         return int(row[0] if row else 0)
 
+    async def auto_disable_undeliverable_telegram_users(self) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET
+                    delivery_disabled_auto = 1,
+                    homework_notifications_enabled = 0
+                WHERE
+                    platform = 'telegram'
+                    AND homework_notifications_enabled = 1
+                    AND EXISTS (
+                        SELECT 1
+                        FROM delivery_events AS last_event
+                        WHERE
+                            last_event.platform = 'telegram'
+                            AND last_event.user_id = users.user_id
+                            AND last_event.id = (
+                                SELECT last_inner.id
+                                FROM delivery_events AS last_inner
+                                WHERE
+                                    last_inner.platform = 'telegram'
+                                    AND last_inner.user_id = users.user_id
+                                ORDER BY last_inner.id DESC
+                                LIMIT 1
+                            )
+                            AND last_event.status = 'failed'
+                            AND (
+                                lower(COALESCE(last_event.error_text, '')) LIKE '%telegramforbiddenerror%'
+                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%forbidden: bot was blocked by the user%'
+                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%bot was blocked by the user%'
+                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%chat not found%'
+                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%user is deactivated%'
+                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%have no rights to send a message%'
+                            )
+                    )
+                """
+            )
+            await db.commit()
+        return max(0, int(cursor.rowcount or 0))
+
     async def get_users_for_homework_notifications(
         self,
         platform: str,
