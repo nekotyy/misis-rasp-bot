@@ -34,6 +34,7 @@ class Database:
                     is_admin INTEGER NOT NULL DEFAULT 0,
                     is_editor INTEGER NOT NULL DEFAULT 0,
                     homework_notifications_enabled INTEGER NOT NULL DEFAULT 1,
+                    delivery_disabled_auto INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     PRIMARY KEY (platform, user_id)
@@ -132,6 +133,7 @@ class Database:
             await self._ensure_column(db, "users", "subscription_url", "TEXT")
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
+            await self._ensure_column(db, "users", "delivery_disabled_auto", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "schedule_snapshots", "source_type", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_key", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_title", "TEXT")
@@ -257,9 +259,9 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO users (
-                    platform, user_id, username, full_name, subscription_type, subscription_key, subscription_title, subscription_url, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, created_at, last_seen_at
+                    platform, user_id, username, full_name, subscription_type, subscription_key, subscription_title, subscription_url, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, delivery_disabled_auto, created_at, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name,
@@ -287,6 +289,7 @@ class Database:
                     int(is_admin),
                     int(is_editor),
                     1,
+                    0,
                     now,
                     now,
                 ),
@@ -314,6 +317,7 @@ class Database:
                 is_admin,
                 is_editor,
                 homework_notifications_enabled,
+                delivery_disabled_auto,
                 created_at,
                 last_seen_at
             FROM users
@@ -352,8 +356,9 @@ class Database:
                 is_admin=bool(row[10]),
                 is_editor=bool(row[11]),
                 homework_notifications_enabled=bool(row[12]),
-                created_at=row[13],
-                last_seen_at=row[14],
+                delivery_disabled_auto=bool(row[13]),
+                created_at=row[14],
+                last_seen_at=row[15],
             )
             for row in rows
         ]
@@ -384,6 +389,7 @@ class Database:
                     is_admin,
                     is_editor,
                     homework_notifications_enabled,
+                    delivery_disabled_auto,
                     created_at,
                     last_seen_at
                 FROM users
@@ -409,8 +415,9 @@ class Database:
             is_admin=bool(row[10]),
             is_editor=bool(row[11]),
             homework_notifications_enabled=bool(row[12]),
-            created_at=row[13],
-            last_seen_at=row[14],
+            delivery_disabled_auto=bool(row[13]),
+            created_at=row[14],
+            last_seen_at=row[15],
         )
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
@@ -500,12 +507,41 @@ class Database:
             await db.execute(
                 """
                 UPDATE users
-                SET homework_notifications_enabled = ?
+                SET
+                    homework_notifications_enabled = ?,
+                    delivery_disabled_auto = CASE WHEN ? = 1 THEN 0 ELSE delivery_disabled_auto END
                 WHERE platform = ? AND user_id = ?
                 """,
-                (int(enabled), platform, user_id),
+                (int(enabled), int(enabled), platform, user_id),
             )
             await db.commit()
+
+    async def mark_delivery_auto_disabled(self, platform: str, user_id: int, disabled: bool) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET
+                    delivery_disabled_auto = ?,
+                    homework_notifications_enabled = CASE WHEN ? = 1 THEN 0 ELSE homework_notifications_enabled END
+                WHERE platform = ? AND user_id = ?
+                """,
+                (int(disabled), int(disabled), platform, user_id),
+            )
+            await db.commit()
+
+    async def count_auto_disabled_users(self, platform: str) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*)
+                FROM users
+                WHERE platform = ? AND delivery_disabled_auto = 1
+                """,
+                (platform,),
+            )
+            row = await cursor.fetchone()
+        return int(row[0] if row else 0)
 
     async def get_users_for_homework_notifications(
         self,
@@ -835,10 +871,29 @@ class Database:
                     SUM(CASE WHEN status = 'failed' AND platform = 'telegram' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'failed' AND platform = 'vk' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'sent' AND created_at >= ? THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' AND created_at >= ? THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN status = 'failed' AND created_at >= ? THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND via_broker = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND via_broker = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND via_broker = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND via_broker = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND created_at >= ? THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND (
+                        lower(COALESCE(error_text, '')) LIKE '%telegramforbiddenerror%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%bot was blocked by the user%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%chat not found%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%user is deactivated%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%have no rights to send a message%'
+                    ) THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND created_at >= ? AND (
+                        lower(COALESCE(error_text, '')) LIKE '%telegramforbiddenerror%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%bot was blocked by the user%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%chat not found%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%user is deactivated%'
+                        OR lower(COALESCE(error_text, '')) LIKE '%have no rights to send a message%'
+                    ) THEN 1 ELSE 0 END)
                 FROM delivery_events
                 """,
-                (threshold_24h, threshold_24h),
+                (threshold_24h, threshold_24h, threshold_24h, threshold_24h),
             )
             row = await cursor.fetchone()
 
@@ -859,6 +914,13 @@ class Database:
                 "vk_failed": 0,
                 "sent_last_24h": 0,
                 "failed_last_24h": 0,
+                "failed_via_rabbitmq": 0,
+                "failed_direct": 0,
+                "tg_failed_via_rabbitmq": 0,
+                "tg_failed_direct": 0,
+                "tg_failed_last_24h": 0,
+                "tg_failed_permanent": 0,
+                "tg_failed_permanent_last_24h": 0,
             }
 
         return {
@@ -877,7 +939,52 @@ class Database:
             "vk_failed": int(row[12] or 0),
             "sent_last_24h": int(row[13] or 0),
             "failed_last_24h": int(row[14] or 0),
+            "failed_via_rabbitmq": int(row[15] or 0),
+            "failed_direct": int(row[16] or 0),
+            "tg_failed_via_rabbitmq": int(row[17] or 0),
+            "tg_failed_direct": int(row[18] or 0),
+            "tg_failed_last_24h": int(row[19] or 0),
+            "tg_failed_permanent": int(row[20] or 0),
+            "tg_failed_permanent_last_24h": int(row[21] or 0),
         }
+
+    async def get_top_delivery_errors(
+        self,
+        *,
+        platform: str,
+        status: str = "failed",
+        hours: int = 24,
+        limit: int = 5,
+    ) -> list[dict[str, int | str]]:
+        safe_limit = max(1, min(limit, 20))
+        threshold = (datetime.now() - timedelta(hours=max(1, hours))).isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(error_text, ''), '(без текста)') AS error_text,
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN via_broker = 1 THEN 1 ELSE 0 END) AS via_broker_count,
+                    SUM(CASE WHEN via_broker = 0 THEN 1 ELSE 0 END) AS direct_count
+                FROM delivery_events
+                WHERE platform = ? AND status = ? AND created_at >= ?
+                GROUP BY error_text
+                ORDER BY total_count DESC, error_text ASC
+                LIMIT ?
+                """,
+                (platform, status, threshold, safe_limit),
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "error_text": str(row[0]),
+                "count": int(row[1] or 0),
+                "via_broker": int(row[2] or 0),
+                "direct": int(row[3] or 0),
+            }
+            for row in rows
+        ]
 
     async def count_homework_entries(self) -> int:
         async with aiosqlite.connect(self.path) as db:

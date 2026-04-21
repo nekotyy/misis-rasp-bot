@@ -567,9 +567,15 @@ def build_vk_bot(
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         last_change = await db.get_last_change()
         delivery_stats = await db.get_delivery_stats()
+        tg_auto_disabled = await db.count_auto_disabled_users("telegram")
+        tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = last_change["created_at"] if last_change else "еще не было"
+        tg_top_error_lines = "\n".join(
+            f"- {item['count']}: {item['error_text']}"
+            for item in tg_top_errors
+        ) or "- нет данных"
         return (
             "Статус бота\n\n"
             f"Пользователей: {len(users)}\n"
@@ -586,9 +592,16 @@ def build_vk_bot(
             f"Админских рассылок отправлено: {delivery_stats['admin_broadcast_sent']}\n"
             f"Служебных уведомлений админу: {delivery_stats['admin_notify_sent']}\n"
             f"Через RabbitMQ / напрямую: {delivery_stats['sent_via_rabbitmq']} / {delivery_stats['sent_direct']}\n"
+            f"Ошибок через RabbitMQ / напрямую: {delivery_stats['failed_via_rabbitmq']} / {delivery_stats['failed_direct']}\n"
             f"Доставлено после ретрая: {delivery_stats['sent_after_retry']}\n"
             f"TG (успешно / ошибок): {delivery_stats['tg_sent']} / {delivery_stats['tg_failed']}\n"
+            f"TG ошибок через RabbitMQ / напрямую: {delivery_stats['tg_failed_via_rabbitmq']} / {delivery_stats['tg_failed_direct']}\n"
+            f"TG ошибок за 24ч: {delivery_stats['tg_failed_last_24h']}\n"
+            f"TG перманентных ошибок (всего / 24ч): {delivery_stats['tg_failed_permanent']} / {delivery_stats['tg_failed_permanent_last_24h']}\n"
+            f"TG авто-отключено из-за доставки: {tg_auto_disabled}\n"
             f"VK (успешно / ошибок): {delivery_stats['vk_sent']} / {delivery_stats['vk_failed']}\n\n"
+            "Топ TG ошибок за 24ч\n"
+            f"{tg_top_error_lines}\n\n"
             f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
             f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"
         )

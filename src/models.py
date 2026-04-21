@@ -41,6 +41,7 @@ class UserRecord:
     is_admin: bool
     is_editor: bool
     homework_notifications_enabled: bool
+    delivery_disabled_auto: bool
     created_at: str
     last_seen_at: str
 
