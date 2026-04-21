@@ -257,6 +257,7 @@ class Broadcaster:
         try:
             await self.telegram_bot.send_message(chat_id=user_id, text=message)
         except Exception as exc:
+            error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(
                 campaign_type=campaign_type,
                 platform="telegram",
@@ -265,8 +266,13 @@ class Broadcaster:
                 status="failed",
                 attempt=attempt,
                 message_id=message_id,
-                error_text=str(exc),
+                error_text=error_text,
             )
+            if self._is_permanent_telegram_failure(exc):
+                try:
+                    await self.db.mark_delivery_auto_disabled("telegram", user_id, True)
+                except Exception as disable_exc:
+                    logger.warning("Failed to auto-disable telegram user %s: %s", user_id, disable_exc)
             logger.warning("Telegram broadcast failed for %s: %s", user_id, exc)
             if raise_on_failure:
                 raise
@@ -299,6 +305,7 @@ class Broadcaster:
         try:
             await self.vk_bot.api.messages.send(peer_ids=[user_id], message=message, random_id=0)
         except Exception as exc:  # pragma: no cover - depends on VK API
+            error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(
                 campaign_type=campaign_type,
                 platform="vk",
@@ -307,7 +314,7 @@ class Broadcaster:
                 status="failed",
                 attempt=attempt,
                 message_id=message_id,
-                error_text=str(exc),
+                error_text=error_text,
             )
             logger.warning("VK broadcast failed for %s: %s", user_id, exc)
             if raise_on_failure:
@@ -324,3 +331,19 @@ class Broadcaster:
             message_id=message_id,
         )
         return True
+
+    def _is_permanent_telegram_failure(self, exc: Exception) -> bool:
+        if isinstance(exc, TelegramForbiddenError):
+            return True
+        if isinstance(exc, TelegramBadRequest):
+            error_text = str(exc).lower()
+            markers = (
+                "chat not found",
+                "bot was blocked by the user",
+                "user is deactivated",
+                "have no rights to send a message",
+                "chat_id is empty",
+                "group chat was upgraded to a supergroup chat",
+            )
+            return any(marker in error_text for marker in markers)
+        return False

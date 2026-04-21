@@ -524,9 +524,15 @@ def build_dispatcher(
         current_snapshot = await db.get_latest_snapshot("current")
         baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
         delivery_stats = await db.get_delivery_stats()
+        tg_auto_disabled = await db.count_auto_disabled_users("telegram")
+        tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
         vk_users = sum(1 for user in users if user.platform == "vk")
         tg_users = sum(1 for user in users if user.platform == "telegram")
         last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
+        tg_top_error_lines = "\n".join(
+            f"- <b>{item['count']}</b>: {escape(str(item['error_text']))}"
+            for item in tg_top_errors
+        ) or "- нет данных"
         return (
             "<b>Статус бота</b>\n\n"
             f"Пользователей: <b>{len(users)}</b>\n"
@@ -543,9 +549,16 @@ def build_dispatcher(
             f"Админских рассылок отправлено: <b>{delivery_stats['admin_broadcast_sent']}</b>\n"
             f"Служебных уведомлений админу: <b>{delivery_stats['admin_notify_sent']}</b>\n"
             f"Через RabbitMQ / напрямую: <b>{delivery_stats['sent_via_rabbitmq']}</b> / <b>{delivery_stats['sent_direct']}</b>\n"
+            f"Ошибок через RabbitMQ / напрямую: <b>{delivery_stats['failed_via_rabbitmq']}</b> / <b>{delivery_stats['failed_direct']}</b>\n"
             f"Доставлено после ретрая: <b>{delivery_stats['sent_after_retry']}</b>\n"
             f"TG (успешно / ошибок): <b>{delivery_stats['tg_sent']}</b> / <b>{delivery_stats['tg_failed']}</b>\n"
+            f"TG ошибок через RabbitMQ / напрямую: <b>{delivery_stats['tg_failed_via_rabbitmq']}</b> / <b>{delivery_stats['tg_failed_direct']}</b>\n"
+            f"TG ошибок за 24ч: <b>{delivery_stats['tg_failed_last_24h']}</b>\n"
+            f"TG перманентных ошибок (всего / 24ч): <b>{delivery_stats['tg_failed_permanent']}</b> / <b>{delivery_stats['tg_failed_permanent_last_24h']}</b>\n"
+            f"TG авто-отключено из-за доставки: <b>{tg_auto_disabled}</b>\n"
             f"VK (успешно / ошибок): <b>{delivery_stats['vk_sent']}</b> / <b>{delivery_stats['vk_failed']}</b>\n\n"
+            "<b>Топ TG ошибок за 24ч</b>\n"
+            f"{tg_top_error_lines}\n\n"
             f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
             f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
         )
