@@ -510,16 +510,51 @@ def build_dispatcher(
             escape(text),
         ])
 
-    def build_admin_users_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    def sort_admin_users(users: list, sort_mode: str) -> list:
+        if sort_mode == "platform":
+            return sorted(
+                users,
+                key=lambda user: (
+                    0 if user.platform == "telegram" else 1,
+                    (user.full_name or user.username or "").casefold(),
+                    user.user_id,
+                ),
+            )
+
+        def user_kind_priority(user: object) -> tuple[int, str]:
+            is_teacher = (getattr(user, "subscription_type", None) or "") == "teacher"
+            label = (
+                getattr(user, "subscription_title", None)
+                or getattr(user, "group_name", None)
+                or getattr(user, "full_name", None)
+                or getattr(user, "username", None)
+                or ""
+            )
+            return (1 if is_teacher else 0, label.casefold())
+
+        return sorted(
+            users,
+            key=lambda user: (
+                *user_kind_priority(user),
+                (user.full_name or user.username or "").casefold(),
+                user.user_id,
+            ),
+        )
+
+    def build_admin_users_keyboard(page: int, total_pages: int, sort_mode: str) -> InlineKeyboardMarkup:
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
-            nav_row.append(InlineKeyboardButton(text="<", callback_data=f"admin:users:{page - 1}"))
+            nav_row.append(InlineKeyboardButton(text="<", callback_data=f"admin:users:{sort_mode}:{page - 1}"))
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton(text=">", callback_data=f"admin:users:{page + 1}"))
+            nav_row.append(InlineKeyboardButton(text=">", callback_data=f"admin:users:{sort_mode}:{page + 1}"))
 
         rows: list[list[InlineKeyboardButton]] = []
         if nav_row:
             rows.append(nav_row)
+        rows.append(
+            [InlineKeyboardButton(text="Отсортировать по: группам/преподам", callback_data="admin:users:kind:0")]
+        )
+        rows.append([InlineKeyboardButton(text="Отсортировать по: платформе (tg/vk)", callback_data="admin:users:platform:0")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1862,15 +1897,22 @@ def build_dispatcher(
             reply_markup = ADMIN_KEYBOARD
         elif action == "users" or action.startswith("users:"):
             users = await db.list_users()
+            sort_mode = "kind"
             if not users:
                 text = "<b>Пользователи</b>\n\nПока никто не зарегистрирован."
-                reply_markup = build_admin_users_keyboard(page=0, total_pages=1)
+                reply_markup = build_admin_users_keyboard(page=0, total_pages=1, sort_mode=sort_mode)
             else:
                 page = 0
                 if action.startswith("users:"):
-                    _, page_raw = action.split(":", 1)
-                    if page_raw.isdigit():
-                        page = int(page_raw)
+                    action_parts = action.split(":")
+                    if len(action_parts) >= 2 and action_parts[1] in {"kind", "platform"}:
+                        sort_mode = action_parts[1]
+                        if len(action_parts) >= 3 and action_parts[2].isdigit():
+                            page = int(action_parts[2])
+                    elif len(action_parts) >= 2 and action_parts[1].isdigit():
+                        page = int(action_parts[1])
+
+                users = sort_admin_users(users, sort_mode)
 
                 user_rows: list[str] = []
                 for user in users:
@@ -1915,7 +1957,7 @@ def build_dispatcher(
                 lines.extend(page_rows)
 
                 text = "\n".join(lines)
-                reply_markup = build_admin_users_keyboard(page=page, total_pages=total_pages)
+                reply_markup = build_admin_users_keyboard(page=page, total_pages=total_pages, sort_mode=sort_mode)
         elif action == "editors":
             users = [user for user in await db.list_users("telegram")]
             text = "<b>Управление редакторами</b>\n\nНажми на пользователя, чтобы выдать или снять роль редактора."
