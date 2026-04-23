@@ -492,32 +492,45 @@ def build_dispatcher(
         ])
 
     def sort_admin_users(users: list, sort_mode: str) -> list:
+        def platform_priority(user: object) -> int:
+            return 0 if getattr(user, "platform", None) == "telegram" else 1
+
+        def user_display_label(user: object) -> str:
+            return (
+                getattr(user, "full_name", None)
+                or getattr(user, "username", None)
+                or ""
+            ).casefold()
+
+        def source_label(user: object) -> str:
+            return (
+                getattr(user, "subscription_title", None)
+                or getattr(user, "group_name", None)
+                or ""
+            ).casefold()
+
         if sort_mode == "platform":
             return sorted(
                 users,
                 key=lambda user: (
-                    0 if user.platform == "telegram" else 1,
-                    (user.full_name or user.username or "").casefold(),
+                    platform_priority(user),
+                    source_label(user),
+                    user_display_label(user),
                     user.user_id,
                 ),
             )
 
-        def user_kind_priority(user: object) -> tuple[int, str]:
+        def user_kind_priority(user: object) -> int:
             is_teacher = (getattr(user, "subscription_type", None) or "") == "teacher"
-            label = (
-                getattr(user, "subscription_title", None)
-                or getattr(user, "group_name", None)
-                or getattr(user, "full_name", None)
-                or getattr(user, "username", None)
-                or ""
-            )
-            return (1 if is_teacher else 0, label.casefold())
+            return 1 if is_teacher else 0
 
         return sorted(
             users,
             key=lambda user: (
-                *user_kind_priority(user),
-                (user.full_name or user.username or "").casefold(),
+                user_kind_priority(user),
+                source_label(user),
+                platform_priority(user),
+                user_display_label(user),
                 user.user_id,
             ),
         )
