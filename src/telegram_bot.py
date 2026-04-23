@@ -509,7 +509,18 @@ def build_dispatcher(
                 or ""
             ).casefold()
 
-        if sort_mode == "platform":
+        if sort_mode == "platform_vk":
+            return sorted(
+                users,
+                key=lambda user: (
+                    1 - platform_priority(user),
+                    source_label(user),
+                    user_display_label(user),
+                    user.user_id,
+                ),
+            )
+
+        if sort_mode == "platform_tg":
             return sorted(
                 users,
                 key=lambda user: (
@@ -524,6 +535,18 @@ def build_dispatcher(
             is_teacher = (getattr(user, "subscription_type", None) or "") == "teacher"
             return 1 if is_teacher else 0
 
+        if sort_mode == "kind_teacher":
+            return sorted(
+                users,
+                key=lambda user: (
+                    1 - user_kind_priority(user),
+                    source_label(user),
+                    platform_priority(user),
+                    user_display_label(user),
+                    user.user_id,
+                ),
+            )
+
         return sorted(
             users,
             key=lambda user: (
@@ -535,6 +558,13 @@ def build_dispatcher(
             ),
         )
 
+    def get_admin_users_toggle_modes(sort_mode: str) -> tuple[str, str]:
+        platform_mode = sort_mode if sort_mode in {"platform_tg", "platform_vk"} else "platform_tg"
+        kind_mode = sort_mode if sort_mode in {"kind_group", "kind_teacher"} else "kind_group"
+        next_platform_mode = "platform_vk" if platform_mode == "platform_tg" else "platform_tg"
+        next_kind_mode = "kind_teacher" if kind_mode == "kind_group" else "kind_group"
+        return next_kind_mode, next_platform_mode
+
     def build_admin_users_keyboard(page: int, total_pages: int, sort_mode: str) -> InlineKeyboardMarkup:
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
@@ -542,13 +572,15 @@ def build_dispatcher(
         if page < total_pages - 1:
             nav_row.append(InlineKeyboardButton(text=">", callback_data=f"admin:users:{sort_mode}:{page + 1}"))
 
+        next_kind_mode, next_platform_mode = get_admin_users_toggle_modes(sort_mode)
+        kind_button_text = "Сначала преподы" if next_kind_mode == "kind_teacher" else "Сначала группы"
+        platform_button_text = "Сначала VK" if next_platform_mode == "platform_vk" else "Сначала TG"
+
         rows: list[list[InlineKeyboardButton]] = []
         if nav_row:
             rows.append(nav_row)
-        rows.append(
-            [InlineKeyboardButton(text="Отсортировать по: группам/преподам", callback_data="admin:users:kind:0")]
-        )
-        rows.append([InlineKeyboardButton(text="Отсортировать по: платформе (tg/vk)", callback_data="admin:users:platform:0")])
+        rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"admin:users:{next_kind_mode}:0")])
+        rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"admin:users:{next_platform_mode}:0")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1891,7 +1923,7 @@ def build_dispatcher(
             reply_markup = ADMIN_KEYBOARD
         elif action == "users" or action.startswith("users:"):
             users = await db.list_users()
-            sort_mode = "kind"
+            sort_mode = "kind_group"
             if not users:
                 text = "<b>Пользователи</b>\n\nПока никто не зарегистрирован."
                 reply_markup = build_admin_users_keyboard(page=0, total_pages=1, sort_mode=sort_mode)
@@ -1899,7 +1931,7 @@ def build_dispatcher(
                 page = 0
                 if action.startswith("users:"):
                     action_parts = action.split(":")
-                    if len(action_parts) >= 2 and action_parts[1] in {"kind", "platform"}:
+                    if len(action_parts) >= 2 and action_parts[1] in {"kind_group", "kind_teacher", "platform_tg", "platform_vk"}:
                         sort_mode = action_parts[1]
                         if len(action_parts) >= 3 and action_parts[2].isdigit():
                             page = int(action_parts[2])
