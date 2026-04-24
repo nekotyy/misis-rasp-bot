@@ -77,27 +77,6 @@ class Broadcaster:
             campaign_type=CAMPAIGN_NOTIFICATION,
         )
 
-    async def broadcast_homework_update(
-        self,
-        message: str,
-        schedule_id: int | None = None,
-        subscription_key: str | None = None,
-    ) -> None:
-        await self._broadcast_telegram(
-            message,
-            homework_only=True,
-            schedule_id=schedule_id,
-            subscription_key=subscription_key,
-            campaign_type=CAMPAIGN_NOTIFICATION,
-        )
-        await self._broadcast_vk(
-            message,
-            homework_only=True,
-            schedule_id=schedule_id,
-            subscription_key=subscription_key,
-            campaign_type=CAMPAIGN_NOTIFICATION,
-        )
-
     async def notify_admins(self, telegram_message: str, vk_message: str | None = None) -> None:
         if self.telegram_bot is not None and self.admin_telegram_id is not None:
             if not await self._enqueue_or_send(
@@ -159,7 +138,6 @@ class Broadcaster:
     async def _broadcast_telegram(
         self,
         message: str,
-        homework_only: bool = False,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
@@ -170,18 +148,10 @@ class Broadcaster:
             await self.db.auto_disable_undeliverable_telegram_users()
         except Exception as exc:
             logger.warning("Auto-disable sync failed before telegram broadcast: %s", exc)
-        users = (
-            await self.db.get_users_for_homework_notifications(
-                "telegram",
-                schedule_id=schedule_id,
-                subscription_key=subscription_key,
-            )
-            if homework_only
-            else await self.db.get_users_for_notifications(
-                "telegram",
-                schedule_id=schedule_id,
-                subscription_key=subscription_key,
-            )
+        users = await self.db.get_users_for_notifications(
+            "telegram",
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
         )
         for user in users:
             payload = OutboundMessage(
@@ -201,25 +171,16 @@ class Broadcaster:
     async def _broadcast_vk(
         self,
         message: str,
-        homework_only: bool = False,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
     ) -> None:
         if self.vk_bot is None:
             return
-        users = (
-            await self.db.get_users_for_homework_notifications(
-                "vk",
-                schedule_id=schedule_id,
-                subscription_key=subscription_key,
-            )
-            if homework_only
-            else await self.db.get_users_for_notifications(
-                "vk",
-                schedule_id=schedule_id,
-                subscription_key=subscription_key,
-            )
+        users = await self.db.get_users_for_notifications(
+            "vk",
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
         )
         for user in users:
             payload = OutboundMessage(
