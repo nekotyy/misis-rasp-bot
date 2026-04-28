@@ -13,15 +13,10 @@ from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
 from vkbottle.http import AiohttpClient
-from vkbottle.tools.uploader.doc import DocMessagesUploader
-from vkbottle.tools.uploader.photo import PhotoMessageUploader
 
-from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.homework_service import SUBJECTS, format_homework_notification, get_subject
-from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -29,8 +24,6 @@ from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_b
 from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
 
 PAGE_SIZE = 6
-HOMEWORK_GROUP_NAME = "ИСП-25-1"
-HOMEWORK_SCHEDULE_ID = 600
 SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
 
 WEEKDAY_BELLS_TEXT = "\n".join(
@@ -83,7 +76,6 @@ def build_vk_bot(
     db: Database,
     parser: ScheduleParser,
     broadcaster: Broadcaster | None = None,
-    attachment_storage: AttachmentStorage | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
 ) -> Bot | None:
@@ -99,12 +91,10 @@ def build_vk_bot(
 
     error_handler = ErrorHandler(redirect_arguments=True)
     bot = Bot(token=settings.vk_bot_token, api=api, error_handler=error_handler)
-    homework_drafts: dict[int, HomeworkDraft] = {}
     search_results: dict[int, dict[str, object]] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
-    delete_option_map: dict[int, dict[str, tuple[int, str]]] = defaultdict(dict)
     admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -208,13 +198,6 @@ def build_vk_bot(
             return False
         user = await db.get_user("vk", user_id)
         return bool(user and user.is_editor)
-
-    async def user_has_homework_access(user_id: int | None) -> bool:
-        if user_id is None:
-            return False
-        user = await db.get_user("vk", user_id)
-        return bool(user and user.schedule_id == HOMEWORK_SCHEDULE_ID)
-
     async def fetch_vk_names(user_ids: list[int]) -> dict[int, str]:
         unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
         if not unique_ids:
@@ -272,38 +255,6 @@ def build_vk_bot(
             attachment=attachment,
             random_id=0,
         )
-
-    async def upload_attachment_for_vk(peer_id: int, attachment: HomeworkAttachment | dict) -> str | None:
-        file_type = attachment.file_type if isinstance(attachment, HomeworkAttachment) else attachment.get("file_type")
-        file_id = attachment.file_id if isinstance(attachment, HomeworkAttachment) else attachment.get("file_id")
-        storage_path = attachment.storage_path if isinstance(attachment, HomeworkAttachment) else attachment.get("storage_path")
-        if file_id and not storage_path and file_type == "vk_attachment":
-            return file_id
-        if attachment_storage is None:
-            return file_id if file_type == "vk_attachment" else None
-
-        local_path = attachment_storage.resolve_path(storage_path)
-        if not local_path or not local_path.exists():
-            return file_id if file_type == "vk_attachment" else None
-
-        if file_type == "photo":
-            return await PhotoMessageUploader(bot.api).upload(str(local_path), peer_id=peer_id)
-
-        file_name = attachment.file_name if isinstance(attachment, HomeworkAttachment) else attachment.get("file_name")
-        return await DocMessagesUploader(bot.api).upload(
-            str(local_path),
-            peer_id=peer_id,
-            title=file_name or local_path.name,
-        )
-
-    async def collect_vk_attachments(peer_id: int, attachments: list[HomeworkAttachment | dict]) -> str | None:
-        uploaded: list[str] = []
-        for attachment in attachments:
-            uploaded_attachment = await upload_attachment_for_vk(peer_id, attachment)
-            if uploaded_attachment:
-                uploaded.append(uploaded_attachment)
-        return ",".join(uploaded) if uploaded else None
-
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Настройки"]]
         if is_admin:
@@ -378,16 +329,6 @@ def build_vk_bot(
                 ["Назад в меню"],
             ]
         )
-
-    def homework_view_keyboard() -> str:
-        return make_keyboard([["Вернуться к списку ДЗ"], ["Назад в меню"]])
-
-    def draft_preview_keyboard() -> str:
-        return make_keyboard([["Добавить вложения"], ["Опубликовать"], ["Отменить"]])
-
-    def draft_attachment_keyboard() -> str:
-        return make_keyboard([["Опубликовать"], ["Отменить"]])
-
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
         rows: list[list[str]] = [
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
@@ -523,36 +464,6 @@ def build_vk_bot(
         for lesson in day.lessons:
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
-
-    def homework_text(entry: dict, success_title: str | None = None) -> str:
-        created_at = datetime.fromisoformat(entry["created_at"])
-        lines = []
-        if success_title:
-            lines.extend([success_title, ""])
-        lines.extend(
-            [
-                f"{entry['subject']} - {entry['teacher']}",
-                f"#{entry['id']} | {entry['created_by_name']}",
-                "-------------",
-                entry["text"],
-                "-------------",
-                created_at.strftime("%d.%m.%Y %H:%M"),
-            ]
-        )
-        return "\n".join(lines)
-
-    def preview_text(draft: HomeworkDraft, author: str) -> str:
-        return "\n".join(
-            [
-                f"{draft.subject_name} - {draft.teacher_name}",
-                f"предпросмотр | {author}",
-                "-------------",
-                draft.text,
-                "-------------",
-                "Будет сохранено после подтверждения",
-            ]
-        )
-
     def snapshot_line(title: str, snapshot: dict | None) -> str:
         if snapshot is None:
             return f"{title}: еще не было"
@@ -814,31 +725,6 @@ def build_vk_bot(
                 has_subscription=bool(user and user.subscription_key),
             ),
         )
-
-    async def show_homework_subjects(peer_id: int, page: int = 0) -> None:
-        labels = [subject["subject"] for subject in SUBJECTS]
-        rows, actual_page = paged_rows(labels, page)
-        peer_pages[peer_id]["homework_subjects"] = actual_page
-        rows.append(["Назад в меню"])
-        peer_modes[peer_id] = "homework_subjects"
-        await show_screen(peer_id, "Выбери предмет. После выбора я покажу последнее домашнее задание.", keyboard=make_keyboard(rows))
-
-    async def show_dz_subjects(peer_id: int, page: int = 0) -> None:
-        labels = [subject["subject"] for subject in SUBJECTS]
-        rows, actual_page = paged_rows(labels, page)
-        peer_pages[peer_id]["dz_subjects"] = actual_page
-        rows.append(["Назад в меню"])
-        peer_modes[peer_id] = "dz_subjects"
-        await show_screen(peer_id, "Выбери предмет для нового домашнего задания.", keyboard=make_keyboard(rows))
-
-    async def show_admin_delete_subjects(peer_id: int, page: int = 0) -> None:
-        labels = [subject["subject"] for subject in SUBJECTS]
-        rows, actual_page = paged_rows(labels, page)
-        peer_pages[peer_id]["admin_delete_subjects"] = actual_page
-        rows.append(["Назад в админку"])
-        peer_modes[peer_id] = "admin_delete_subjects"
-        await show_screen(peer_id, "Удаление домашнего задания\n\nВыбери предмет, чтобы увидеть последние записи.", keyboard=make_keyboard(rows))
-
     async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
         sources = await db.get_active_sources()
         if not sources:
@@ -942,82 +828,6 @@ def build_vk_bot(
         rows.append(["Назад в админку"])
 
         await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard(rows))
-
-    async def show_latest_homework(peer_id: int, subject_key: str) -> None:
-        subject = get_subject(subject_key)
-        if subject is None:
-            await show_screen(peer_id, "Предмет не найден.", keyboard=homework_view_keyboard())
-            return
-        entries = await db.get_homework_for_subject(subject_key)
-        peer_modes[peer_id] = "homework_entry"
-        if not entries:
-            await show_screen(peer_id, f"По предмету {subject['subject']} пока нет домашних заданий.", keyboard=homework_view_keyboard())
-            return
-        entry = entries[0]
-        await show_screen(
-            peer_id,
-            homework_text(entry),
-            keyboard=homework_view_keyboard(),
-            attachment=await collect_vk_attachments(peer_id, entry["attachments"]),
-        )
-
-    async def show_draft_preview(peer_id: int, author: str, draft: HomeworkDraft) -> None:
-        peer_modes[peer_id] = "dz_preview"
-        await show_screen(
-            peer_id,
-            preview_text(draft, author),
-            keyboard=draft_preview_keyboard(),
-            attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
-        )
-
-    async def publish_homework(peer_id: int, user_id: int, author: str) -> None:
-        draft = homework_drafts[user_id]
-        homework_id = await db.create_homework(
-            subject_key=draft.subject_key,
-            subject=draft.subject_name,
-            teacher=draft.teacher_name,
-            text=draft.text,
-            created_by_platform="vk",
-            created_by_user_id=user_id,
-            created_by_name=author,
-            attachments=draft.attachments or [],
-        )
-        entry = {
-            "id": homework_id,
-            "subject": draft.subject_name,
-            "teacher": draft.teacher_name,
-            "text": draft.text,
-            "created_by_name": author,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "attachments": [
-                {
-                    "file_id": item.file_id,
-                    "file_type": item.file_type,
-                    "file_name": item.file_name,
-                    "mime_type": item.mime_type,
-                    "storage_path": item.storage_path,
-                    "source_platform": item.source_platform,
-                }
-                for item in (draft.attachments or [])
-            ],
-        }
-        homework_drafts.pop(user_id, None)
-        await show_screen(
-            peer_id,
-            homework_text(entry, success_title="Домашнее задание успешно создано"),
-            keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)),
-            attachment=await collect_vk_attachments(peer_id, draft.attachments or []),
-        )
-        if broadcaster is not None:
-            await broadcaster.broadcast_homework_update(format_homework_notification(entry), schedule_id=HOMEWORK_SCHEDULE_ID)
-
-    def subject_by_title(title: str) -> dict[str, str] | None:
-        normalized = title.strip().casefold()
-        for subject in SUBJECTS:
-            if subject["subject"].casefold() == normalized:
-                return subject
-        return None
-
     def build_editor_keyboard(peer_id: int, users: list, page: int) -> str:
         labels: dict[str, int] = {}
         button_texts: list[str] = []
@@ -1034,22 +844,6 @@ def build_vk_bot(
         rows.append(["Назад в админку"])
         editor_option_map[peer_id] = labels
         return make_keyboard(rows)
-
-    def build_delete_keyboard(peer_id: int, subject_key: str, entries: list[dict], page: int) -> str:
-        labels: dict[str, tuple[int, str]] = {}
-        button_texts: list[str] = []
-        for entry in entries:
-            preview = entry["text"].strip().replace("\n", " ")
-            label = shorten_button_label(f"Удалить #{entry['id']} {preview or 'без текста'}")
-            labels[label] = (entry["id"], subject_key)
-            button_texts.append(label)
-        rows, actual_page = paged_rows(button_texts, page)
-        peer_pages[peer_id]["delete_entries"] = actual_page
-        rows.append(["Назад к предметам"])
-        rows.append(["Назад в админку"])
-        delete_option_map[peer_id] = labels
-        return make_keyboard(rows)
-
     @bot.on.message()
     async def all_messages_handler(message: Message) -> None:
         await register_user(message)
@@ -1061,14 +855,12 @@ def build_vk_bot(
         text = (message.text or "").strip()
         normalized = text.casefold()
         mode = peer_modes.get(peer_id, "main_menu")
-        draft = homework_drafts.get(user_id)
 
         has_attachments = bool(getattr(message, "attachments", None))
         if text and not has_attachments:
             await wait_rate_limit_queue(user_id, 0.8)
 
         if normalized in {"/start", "start", "начать"}:
-            homework_drafts.pop(user_id, None)
             admin_broadcast_drafts.pop(peer_id, None)
             user = await db.get_user("vk", user_id)
             if user is None or not user.subscription_key or not user.subscription_title:
@@ -1140,7 +932,6 @@ def build_vk_bot(
                 return
 
         if text in {"Назад в меню", "Закрыть админку"}:
-            homework_drafts.pop(user_id, None)
             search_results.pop(peer_id, None)
             admin_broadcast_drafts.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
@@ -1151,12 +942,12 @@ def build_vk_bot(
             return
 
         if text == "Отключить уведомления":
-            await db.set_homework_notifications("vk", user_id, False)
+            await db.set_notifications_enabled("vk", user_id, False)
             await show_settings(peer_id, user_id, extra="Уведомления отключены.")
             return
 
         if text == "Включить уведомления":
-            await db.set_homework_notifications("vk", user_id, True)
+            await db.set_notifications_enabled("vk", user_id, True)
             await show_settings(peer_id, user_id, extra="Уведомления включены.")
             return
 
@@ -1166,7 +957,6 @@ def build_vk_bot(
 
         if text == "Отписаться от группы":
             await db.clear_user_subscription("vk", user_id)
-            homework_drafts.pop(user_id, None)
             await prompt_group_selection(peer_id, "Ты отписался от своей группы. Выбери новую, когда захочешь.")
             return
 
@@ -1218,88 +1008,6 @@ def build_vk_bot(
                 )
                 return
 
-        if text in {"/homework", "Домашние задания", "/dz", "Добавить ДЗ", "Вернуться к списку ДЗ"}:
-            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-            return
-
-        if mode in {"homework_subjects", "dz_subjects", "dz_text", "dz_attachments", "homework_entry"}:
-            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-            return
-
-        if text == "Отменить":
-            homework_drafts.pop(user_id, None)
-            await show_main_menu(peer_id, user_id)
-            return
-
-        if mode == "dz_subjects":
-            if text == "Следующая страница":
-                await show_dz_subjects(peer_id, peer_pages[peer_id].get("dz_subjects", 0) + 1)
-                return
-            if text == "Предыдущая страница":
-                await show_dz_subjects(peer_id, peer_pages[peer_id].get("dz_subjects", 0) - 1)
-                return
-            subject = subject_by_title(text)
-            if subject is not None:
-                homework_drafts[user_id] = HomeworkDraft(
-                    subject_key=subject["key"],
-                    subject_name=subject["subject"],
-                    teacher_name=subject["teacher"],
-                )
-                peer_modes[peer_id] = "dz_text"
-                await show_screen(peer_id, f"Выбран предмет {subject['subject']}.\n\nТеперь отправь текст домашнего задания одним сообщением.", keyboard=make_keyboard([["Отменить"]]))
-                return
-
-        if draft is not None and draft.awaiting_text and text and text not in {"Добавить вложения", "Опубликовать"}:
-            draft.text = text
-            draft.awaiting_text = False
-            draft.awaiting_attachments = False
-            await show_draft_preview(peer_id, str(user_id), draft)
-            return
-
-        if text == "Добавить вложения":
-            if draft is None or not draft.text.strip():
-                await show_screen(peer_id, "Сначала добавь текст домашнего задания.", keyboard=draft_preview_keyboard())
-                return
-            draft.awaiting_attachments = True
-            peer_modes[peer_id] = "dz_attachments"
-            await show_screen(peer_id, "Отправь вложения сообщениями: документ, фото, видео или аудио.\n\nПосле каждого файла я обновлю предпросмотр. Когда закончишь, нажми «Опубликовать».", keyboard=draft_attachment_keyboard())
-            return
-
-        if draft is not None and draft.awaiting_attachments:
-            full_message = await message.get_full_message()
-            attachments = (
-                await attachment_storage.save_vk_message_attachments(full_message)
-                if attachment_storage is not None
-                else []
-            )
-            if not attachments:
-                attachment_strings = full_message.get_attachment_strings() or []
-                attachments = [
-                    HomeworkAttachment(
-                        file_id=attachment,
-                        file_type="vk_attachment",
-                        file_name=None,
-                        mime_type=None,
-                        source_platform="vk",
-                    )
-                    for attachment in attachment_strings
-                ]
-            if attachments:
-                draft.attachments.extend(attachments)
-                await show_draft_preview(peer_id, str(user_id), draft)
-                return
-            if text == "Опубликовать" and draft.text.strip():
-                await publish_homework(peer_id, user_id, str(user_id))
-                return
-            await show_screen(peer_id, "Сейчас я жду вложение. Отправь документ, фото, видео или аудио, либо нажми «Опубликовать».", keyboard=draft_attachment_keyboard())
-            return
-
-        if text == "Опубликовать":
-            if draft is None or not draft.text.strip():
-                await show_screen(peer_id, "Нет готового черновика для публикации.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
-                return
-            await publish_homework(peer_id, user_id, str(user_id))
-            return
 
         if text in {"/admin", "Админка"}:
             if not user_is_admin(user_id):
@@ -1389,55 +1097,6 @@ def build_vk_bot(
                         await db.set_editor("vk", target_id, not target.is_editor)
                     users = await db.list_users("vk")
                     await show_screen(peer_id, "Управление редакторами\n\nРоль обновлена. Выбери пользователя, чтобы продолжить.", keyboard=build_editor_keyboard(peer_id, users, peer_pages[peer_id].get("editors", 0)))
-                    return
-            if text == "Удалить ДЗ":
-                await show_admin_delete_subjects(peer_id)
-                return
-            if mode == "admin_delete_subjects":
-                if text == "Следующая страница":
-                    await show_admin_delete_subjects(peer_id, peer_pages[peer_id].get("admin_delete_subjects", 0) + 1)
-                    return
-                if text == "Предыдущая страница":
-                    await show_admin_delete_subjects(peer_id, peer_pages[peer_id].get("admin_delete_subjects", 0) - 1)
-                    return
-                subject = subject_by_title(text)
-                if subject is not None:
-                    entries = await db.get_homework_for_subject(subject["key"])
-                    peer_modes[peer_id] = "admin_delete_entries"
-                    if not entries:
-                        await show_screen(peer_id, f"{subject['subject']}\n\nДля этого предмета пока нет записей.", keyboard=make_keyboard([["Назад к предметам"], ["Назад в админку"]]))
-                    else:
-                        await show_screen(peer_id, f"{subject['subject']}\n\nВыбери запись, которую нужно удалить.", keyboard=build_delete_keyboard(peer_id, subject["key"], entries, 0))
-                    return
-            if text == "Назад к предметам":
-                await show_admin_delete_subjects(peer_id)
-                return
-            if mode == "admin_delete_entries":
-                mapping = delete_option_map.get(peer_id, {})
-                subject_key = next(iter(mapping.values()))[1] if mapping else None
-                if text == "Следующая страница" and subject_key:
-                    entries = await db.get_homework_for_subject(subject_key)
-                    subject = get_subject(subject_key)
-                    await show_screen(peer_id, f"{subject['subject']}\n\nВыбери запись, которую нужно удалить.", keyboard=build_delete_keyboard(peer_id, subject_key, entries, peer_pages[peer_id].get("delete_entries", 0) + 1))
-                    return
-                if text == "Предыдущая страница" and subject_key:
-                    entries = await db.get_homework_for_subject(subject_key)
-                    subject = get_subject(subject_key)
-                    await show_screen(peer_id, f"{subject['subject']}\n\nВыбери запись, которую нужно удалить.", keyboard=build_delete_keyboard(peer_id, subject_key, entries, peer_pages[peer_id].get("delete_entries", 0) - 1))
-                    return
-                if text in mapping:
-                    homework_id, subject_key = mapping[text]
-                    attachments = await db.get_homework_attachments(homework_id)
-                    deleted = await db.delete_homework(homework_id)
-                    if deleted and attachment_storage is not None:
-                        attachment_storage.delete_attachments(attachments)
-                    entries = await db.get_homework_for_subject(subject_key)
-                    subject = get_subject(subject_key)
-                    subject_name = subject["subject"] if subject else "Предмет"
-                    if not entries:
-                        await show_screen(peer_id, f"{subject_name}\n\n" + ("Запись удалена." if deleted else "Запись не найдена."), keyboard=make_keyboard([["Назад к предметам"], ["Назад в админку"]]))
-                    else:
-                        await show_screen(peer_id, f"{subject_name}\n\n" + ("Запись удалена.\n\nВыбери следующую запись для удаления." if deleted else "Запись не найдена.\n\nВыбери следующую запись для удаления."), keyboard=build_delete_keyboard(peer_id, subject_key, entries, peer_pages[peer_id].get("delete_entries", 0)))
                     return
             if text == "Тестовая рассылка":
                 users = await db.get_users_for_platform("vk")

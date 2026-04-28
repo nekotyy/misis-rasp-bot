@@ -12,14 +12,11 @@ import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, PhotoSize, Video
+from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from src.attachment_storage import AttachmentStorage
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.homework_service import SUBJECTS, format_homework_message, format_homework_notification, format_homework_preview, get_subject
-from src.models import HomeworkAttachment, HomeworkDraft
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -29,8 +26,6 @@ from src.subscription_utils import make_group_subscription, make_teacher_subscri
 
 logger = logging.getLogger(__name__)
 
-HOMEWORK_GROUP_NAME = "ИСП-25-1"
-HOMEWORK_SCHEDULE_ID = 600
 SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 
@@ -87,12 +82,6 @@ SATURDAY_BELLS_TEXT = "\n".join(
         "4 пара 14:00 - 15:30",
         "",
         "5 пара 15:40 - 17:10",
-    ]
-)
-
-HOMEWORK_BACK_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="Вернуться к списку ДЗ", callback_data="menu:homework")],
     ]
 )
 
@@ -160,12 +149,10 @@ def build_dispatcher(
     db: Database,
     parser: ScheduleParser,
     broadcaster: Broadcaster | None = None,
-    attachment_storage: AttachmentStorage | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
-    homework_drafts: dict[int, HomeworkDraft] = {}
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
@@ -199,75 +186,6 @@ def build_dispatcher(
             if delay > 0:
                 await asyncio.sleep(delay)
             bucket[user_id] = monotonic() + cooldown
-
-    def build_homework_subjects_keyboard(mode: str) -> InlineKeyboardMarkup:
-        rows: list[list[InlineKeyboardButton]] = []
-        for subject in SUBJECTS:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=subject["subject"],
-                        callback_data=(
-                            f"homework:view:{subject['key']}"
-                            if mode == "homework"
-                            else f"dz:subject:{subject['key']}"
-                        ),
-                    )
-                ]
-            )
-        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def build_editors_keyboard(users: list) -> InlineKeyboardMarkup:
-        rows: list[list[InlineKeyboardButton]] = []
-        for user in users:
-            if user.platform != "telegram":
-                continue
-            display = user.full_name or user.username or str(user.user_id)
-            prefix = "Убрать редактора" if user.is_editor else "Сделать редактором"
-            rows.append(
-                [InlineKeyboardButton(text=f"{prefix}: {display}", callback_data=f"editor:toggle:{user.user_id}")]
-            )
-        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def build_homework_preview_keyboard() -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Добавить вложения", callback_data="dz:add_attachments")],
-                [InlineKeyboardButton(text="Опубликовать", callback_data="dz:save")],
-                [InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")],
-            ]
-        )
-
-    def build_homework_attachment_keyboard() -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Опубликовать", callback_data="dz:save")],
-                [InlineKeyboardButton(text="Отменить", callback_data="dz:cancel")],
-            ]
-        )
-
-    def build_admin_homework_subjects_keyboard() -> InlineKeyboardMarkup:
-        rows = [
-            [InlineKeyboardButton(text=subject["subject"], callback_data=f"admin:hw_subject:{subject['key']}")]
-            for subject in SUBJECTS
-        ]
-        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
-    def build_admin_homework_entries_keyboard(subject_key: str, entries: list[dict]) -> InlineKeyboardMarkup:
-        rows: list[list[InlineKeyboardButton]] = []
-        for entry in entries:
-            preview = entry["text"].strip().replace("\n", " ")
-            if len(preview) > 24:
-                preview = f"{preview[:24].rstrip()}..."
-            label = f"Удалить #{entry['id']} {preview or 'без текста'}"
-            rows.append([InlineKeyboardButton(text=label, callback_data=f"admin:hw_delete:{entry['id']}:{subject_key}")])
-        rows.append([InlineKeyboardButton(text="Назад к предметам", callback_data="admin:homework_delete")])
-        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
     async def register_message_user(message: Message) -> None:
         user = message.from_user
         if user is None:
@@ -390,11 +308,6 @@ def build_dispatcher(
         if user_id is None:
             return None
         return await db.get_user("telegram", user_id)
-
-    async def user_has_homework_access(user_id: int | None) -> bool:
-        user = await get_user_record(user_id)
-        return bool(user and user.schedule_id == HOMEWORK_SCHEDULE_ID)
-
     async def get_saved_snapshot(user_id: int | None) -> dict | None:
         user = await get_user_record(user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
@@ -863,21 +776,6 @@ def build_dispatcher(
                 continue
             await safe_delete_message(bot, chat_id, message_id)
         context_messages[chat_id][context] = kept_ids
-
-    async def try_edit_source_message(
-        source_message: Message | None,
-        text: str,
-        reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> bool:
-        if source_message is None:
-            return False
-        try:
-            await source_message.edit_text(text, reply_markup=reply_markup)
-            context_messages[source_message.chat.id]["homework"] = [source_message.message_id]
-            return True
-        except TelegramBadRequest:
-            return False
-
     async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> None:
         retries = 3
         for attempt in range(1, retries + 1):
@@ -1213,212 +1111,6 @@ def build_dispatcher(
             text,
             reply_markup=SCHEDULE_KEYBOARD,
         )
-
-    async def send_homework_subject_picker(bot: Bot, chat_id: int, mode: str) -> None:
-        text = (
-            "<b>Выбери предмет</b>\n\nПосле выбора я покажу домашние задания."
-            if mode == "homework"
-            else "<b>Выбери предмет для нового домашнего задания</b>"
-        )
-        await send_new_context_message(
-            bot,
-            chat_id,
-            "homework" if mode == "homework" else "dz",
-            text,
-            reply_markup=build_homework_subjects_keyboard(mode),
-        )
-
-    async def send_homework_entries(
-        bot: Bot,
-        chat_id: int,
-        subject_key: str,
-        source_message: Message | None = None,
-    ) -> None:
-        subject = get_subject(subject_key)
-        if subject is None:
-            if source_message is not None:
-                await source_message.edit_text("Предмет не найден.", reply_markup=HOMEWORK_BACK_KEYBOARD)
-                context_messages[chat_id]["homework"] = [source_message.message_id]
-            else:
-                await replace_context_message(
-                    bot,
-                    chat_id,
-                    "homework",
-                    "Предмет не найден.",
-                    reply_markup=HOMEWORK_BACK_KEYBOARD,
-                )
-            return
-
-        entries = await db.get_homework_for_subject(subject_key)
-        if not entries:
-            if source_message is not None:
-                await clear_context_messages_except(bot, chat_id, "homework", source_message.message_id)
-                if await try_edit_source_message(
-                    source_message,
-                    f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
-                    reply_markup=HOMEWORK_BACK_KEYBOARD,
-                ):
-                    return
-            else:
-                await replace_context_message(
-                    bot,
-                    chat_id,
-                    "homework",
-                    f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
-                    reply_markup=HOMEWORK_BACK_KEYBOARD,
-                )
-                return
-            await replace_context_message(
-                bot,
-                chat_id,
-                "homework",
-                f"По предмету <b>{escape(subject['subject'])}</b> пока нет домашних заданий.",
-                reply_markup=HOMEWORK_BACK_KEYBOARD,
-            )
-            return
-
-        if source_message is not None:
-            try:
-                await source_message.delete()
-            except TelegramBadRequest:
-                pass
-        await clear_context_messages(bot, chat_id, "homework")
-
-        latest_entry = entries[0]
-        context_messages[chat_id]["homework"] = await send_homework_entry_with_attachments(
-            bot,
-            chat_id,
-            latest_entry,
-            include_back_button=True,
-        )
-
-    async def send_homework_entry_with_attachments(
-        bot: Bot,
-        chat_id: int,
-        entry: dict,
-        include_back_button: bool = False,
-        title: str | None = None,
-    ) -> list[int]:
-        message_text = format_homework_message(entry)
-        attachments = entry["attachments"]
-        sent_ids: list[int] = []
-        reply_markup = HOMEWORK_BACK_KEYBOARD if include_back_button else None
-        if title:
-            message_text = f"{title}\n\n{message_text}"
-        if not attachments:
-            sent = await bot.send_message(chat_id, message_text, reply_markup=reply_markup)
-            sent_ids.append(sent.message_id)
-            return sent_ids
-
-        first, *rest = attachments
-        first_sent = await send_attachment(bot, chat_id, first, caption=message_text, reply_markup=reply_markup)
-        if first_sent is not None:
-            sent_ids.append(first_sent.message_id)
-        for attachment in rest:
-            extra_sent = await send_attachment(
-                bot,
-                chat_id,
-                attachment,
-                caption=attachment.get("file_name") or "Вложение",
-            )
-            if extra_sent is not None:
-                sent_ids.append(extra_sent.message_id)
-        return sent_ids
-
-    async def send_attachment(
-        bot: Bot,
-        chat_id: int,
-        attachment: dict,
-        caption: str | None = None,
-        reply_markup: InlineKeyboardMarkup | None = None,
-    ):
-        file_type = attachment["file_type"]
-        file_id = attachment["file_id"]
-        storage_path = attachment.get("storage_path")
-        if attachment_storage and storage_path:
-            local_path = attachment_storage.resolve_path(storage_path)
-            if local_path and local_path.exists():
-                input_file = FSInputFile(local_path)
-                if file_type == "photo":
-                    return await bot.send_photo(chat_id, photo=input_file, caption=caption, reply_markup=reply_markup)
-                if file_type == "video":
-                    return await bot.send_video(chat_id, video=input_file, caption=caption, reply_markup=reply_markup)
-                if file_type == "audio":
-                    return await bot.send_audio(chat_id, audio=input_file, caption=caption, reply_markup=reply_markup)
-                return await bot.send_document(chat_id, document=input_file, caption=caption, reply_markup=reply_markup)
-        if file_type == "vk_attachment":
-            return None
-        if file_type == "photo":
-            return await bot.send_photo(chat_id, photo=file_id, caption=caption, reply_markup=reply_markup)
-        if file_type == "video":
-            return await bot.send_video(chat_id, video=file_id, caption=caption, reply_markup=reply_markup)
-        if file_type == "audio":
-            return await bot.send_audio(chat_id, audio=file_id, caption=caption, reply_markup=reply_markup)
-        return await bot.send_document(chat_id, document=file_id, caption=caption, reply_markup=reply_markup)
-
-    async def send_draft_preview_message(
-        bot: Bot,
-        chat_id: int,
-        draft: HomeworkDraft,
-        author: str,
-    ) -> list[int]:
-        preview_text = format_homework_preview(
-            subject_name=draft.subject_name,
-            teacher_name=draft.teacher_name,
-            text=draft.text,
-            attachments=draft.attachments or [],
-            created_by_name=author,
-        )
-        preview_keyboard = build_homework_preview_keyboard()
-        attachments = draft.attachments or []
-        if not attachments:
-            sent = await bot.send_message(chat_id, preview_text, reply_markup=preview_keyboard)
-            return [sent.message_id]
-
-        sent_ids: list[int] = []
-        first_attachment = {
-            "file_id": attachments[0].file_id,
-            "file_type": attachments[0].file_type,
-            "file_name": attachments[0].file_name,
-            "mime_type": attachments[0].mime_type,
-            "storage_path": attachments[0].storage_path,
-        }
-        first_sent = await send_attachment(
-            bot,
-            chat_id,
-            first_attachment,
-            caption=preview_text,
-            reply_markup=preview_keyboard,
-        )
-        if first_sent is not None:
-            sent_ids.append(first_sent.message_id)
-
-        for attachment in attachments[1:]:
-            extra_sent = await send_attachment(
-                bot,
-                chat_id,
-                {
-                    "file_id": attachment.file_id,
-                    "file_type": attachment.file_type,
-                    "file_name": attachment.file_name,
-                    "mime_type": attachment.mime_type,
-                    "storage_path": attachment.storage_path,
-                },
-            )
-            if extra_sent is not None:
-                sent_ids.append(extra_sent.message_id)
-
-        return sent_ids
-
-    async def send_draft_preview(
-        bot: Bot,
-        chat_id: int,
-        author: str,
-        draft: HomeworkDraft,
-    ) -> None:
-        await clear_context_messages(bot, chat_id, "dz")
-        context_messages[chat_id]["dz"] = await send_draft_preview_message(bot, chat_id, draft, author)
-
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
         await register_message_user(message)
@@ -1479,28 +1171,12 @@ def build_dispatcher(
             "Выбери нужный вариант расписания.",
             reply_markup=SCHEDULE_KEYBOARD,
         )
-
-    @dispatcher.message(Command("homework"))
-    async def handle_homework_command(message: Message) -> None:
-        await register_message_user(message)
-        if message.chat.type != "private":
-            return
-        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
-
-    @dispatcher.message(Command("dz"))
-    async def handle_dz_command(message: Message) -> None:
-        await register_message_user(message)
-        if message.chat.type != "private":
-            return
-        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
-
     @dispatcher.message(Command("cancel"))
     async def handle_cancel_command(message: Message) -> None:
         await register_message_user(message)
         if message.chat.type != "private":
             return
         if message.from_user:
-            homework_drafts.pop(message.from_user.id, None)
             awaiting_admin_broadcast_text.discard(message.from_user.id)
             admin_broadcast_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "dz")
@@ -1655,14 +1331,6 @@ def build_dispatcher(
             )
         context_messages[callback.message.chat.id]["settings"] = [callback.message.message_id]
         await safe_callback_answer(callback)
-
-    @dispatcher.callback_query(F.data == "menu:homework")
-    async def handle_menu_homework(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
@@ -1673,14 +1341,6 @@ def build_dispatcher(
             return
         await send_schedule_menu(callback.bot, callback.from_user.id)
         await safe_callback_answer(callback)
-
-    @dispatcher.callback_query(F.data == "start:homework")
-    async def handle_start_homework(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
     @dispatcher.callback_query(F.data.startswith("schedule:"))
     async def handle_schedule_callback(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
@@ -1697,43 +1357,6 @@ def build_dispatcher(
             action,
         )
         await safe_callback_answer(callback)
-
-    @dispatcher.callback_query(F.data.startswith("homework:view:"))
-    async def handle_homework_subject(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
-    @dispatcher.callback_query(F.data.startswith("dz:subject:"))
-    async def handle_homework_subject_for_create(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
-    @dispatcher.callback_query(F.data == "dz:add_attachments")
-    async def handle_add_attachments(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
-    @dispatcher.callback_query(F.data == "dz:save")
-    async def handle_save_homework(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
-    @dispatcher.callback_query(F.data == "dz:cancel")
-    async def handle_cancel_homework(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
-        await register_callback_user(callback)
-        homework_drafts.pop(callback.from_user.id, None)
-        await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback):
@@ -1746,7 +1369,7 @@ def build_dispatcher(
         if action == "toggle_notifications":
             user = await db.get_user("telegram", callback.from_user.id)
             enabled = not (user.homework_notifications_enabled if user else True)
-            await db.set_homework_notifications("telegram", callback.from_user.id, enabled)
+            await db.set_notifications_enabled("telegram", callback.from_user.id, enabled)
             await safe_edit_message_text(
                 callback.message,
                 await format_subscription_settings_text(callback.from_user.id),
@@ -1754,12 +1377,8 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Уведомления обновлены")
             return
-        if action == "toggle_hw":
-            await safe_callback_answer(callback, "Модуль ДЗ отключен.", show_alert=True)
-            return
         if action == "clear_group":
             await db.clear_user_subscription("telegram", callback.from_user.id)
-            homework_drafts.pop(callback.from_user.id, None)
             await safe_edit_message_text(
                 callback.message,
                 format_group_prompt("Ты отписался от своей группы. Выбери новую, когда захочешь."),
@@ -1862,56 +1481,6 @@ def build_dispatcher(
                 reply_markup=ADMIN_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            return
-        if action == "homework_delete":
-            await safe_edit_message_text(
-                callback.message,
-                "<b>Удаление домашнего задания</b>\n\nВыбери предмет, чтобы увидеть последние записи.",
-                reply_markup=build_admin_homework_subjects_keyboard(),
-            )
-            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback)
-            return
-        if action.startswith("hw_subject:"):
-            subject_key = action.split(":", 1)[1]
-            subject = get_subject(subject_key)
-            entries = await db.get_homework_for_subject(subject_key)
-            if subject is None:
-                text = "Предмет не найден."
-                reply_markup = build_admin_homework_subjects_keyboard()
-            elif not entries:
-                text = f"<b>{escape(subject['subject'])}</b>\n\nДля этого предмета пока нет записей."
-                reply_markup = build_admin_homework_subjects_keyboard()
-            else:
-                text = f"<b>{escape(subject['subject'])}</b>\n\nВыбери запись, которую нужно удалить."
-                reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
-            await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
-            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback)
-            return
-        if action.startswith("hw_delete:"):
-            _, homework_id_text, subject_key = action.split(":", 2)
-            homework_id = int(homework_id_text)
-            attachments = await db.get_homework_attachments(homework_id)
-            deleted = await db.delete_homework(homework_id)
-            if deleted and attachment_storage is not None:
-                attachment_storage.delete_attachments(attachments)
-            subject = get_subject(subject_key)
-            entries = await db.get_homework_for_subject(subject_key)
-            subject_name = escape(subject["subject"]) if subject else "Предмет"
-            if not entries:
-                text = (
-                    f"<b>{subject_name}</b>\n\n"
-                    + ("Запись удалена." if deleted else "Запись не найдена.")
-                )
-                reply_markup = build_admin_homework_subjects_keyboard()
-            else:
-                prefix = "Запись удалена.\n\n" if deleted else "Запись не найдена.\n\n"
-                text = f"<b>{subject_name}</b>\n\n{prefix}Выбери следующую запись для удаления."
-                reply_markup = build_admin_homework_entries_keyboard(subject_key, entries)
-            await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
-            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback, "Удалено" if deleted else "Не найдено")
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
@@ -2066,104 +1635,6 @@ def build_dispatcher(
             reply_markup=build_editors_keyboard(users),
         )
         await safe_callback_answer(callback, "Роль обновлена")
-
-    @dispatcher.message(F.document | F.photo | F.video | F.audio)
-    async def handle_homework_attachment_message(message: Message) -> None:
-        await register_message_user(message)
-        if message.from_user is None:
-            return
-        draft = homework_drafts.get(message.from_user.id)
-        if draft is None or not draft.awaiting_attachments:
-            return
-
-        attachment: HomeworkAttachment | None = None
-        if message.document:
-            attachment = (
-                await attachment_storage.save_telegram_file(
-                    bot=message.bot,
-                    file_id=message.document.file_id,
-                    file_type="document",
-                    file_name=message.document.file_name,
-                    mime_type=message.document.mime_type,
-                )
-                if attachment_storage is not None
-                else HomeworkAttachment(
-                    file_id=message.document.file_id,
-                    file_type="document",
-                    file_name=message.document.file_name,
-                    mime_type=message.document.mime_type,
-                )
-            )
-        elif message.photo:
-            photo: PhotoSize = message.photo[-1]
-            attachment = (
-                await attachment_storage.save_telegram_file(
-                    bot=message.bot,
-                    file_id=photo.file_id,
-                    file_type="photo",
-                    file_name="photo.jpg",
-                    mime_type="image/jpeg",
-                )
-                if attachment_storage is not None
-                else HomeworkAttachment(
-                    file_id=photo.file_id,
-                    file_type="photo",
-                    file_name="photo.jpg",
-                    mime_type="image/jpeg",
-                )
-            )
-        elif message.video:
-            video: Video = message.video
-            attachment = (
-                await attachment_storage.save_telegram_file(
-                    bot=message.bot,
-                    file_id=video.file_id,
-                    file_type="video",
-                    file_name=video.file_name,
-                    mime_type=video.mime_type,
-                )
-                if attachment_storage is not None
-                else HomeworkAttachment(
-                    file_id=video.file_id,
-                    file_type="video",
-                    file_name=video.file_name,
-                    mime_type=video.mime_type,
-                )
-            )
-        elif message.audio:
-            attachment = (
-                await attachment_storage.save_telegram_file(
-                    bot=message.bot,
-                    file_id=message.audio.file_id,
-                    file_type="audio",
-                    file_name=message.audio.file_name,
-                    mime_type=message.audio.mime_type,
-                )
-                if attachment_storage is not None
-                else HomeworkAttachment(
-                    file_id=message.audio.file_id,
-                    file_type="audio",
-                    file_name=message.audio.file_name,
-                    mime_type=message.audio.mime_type,
-                )
-            )
-
-        if attachment is None:
-            return
-
-        draft.attachments.append(attachment)
-        draft.awaiting_attachments = True
-        await try_delete_message(message)
-        author = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
-        await send_draft_preview(message.bot, message.chat.id, author, draft)
-
-    @dispatcher.message(F.text == "Домашние задания")
-    async def handle_homework_text_shortcut(message: Message) -> None:
-        await register_message_user(message)
-        if message.from_user is not None:
-            await wait_message_rate_limit(message.from_user.id)
-        await send_new_context_message(message.bot, message.chat.id, "menu", "Модуль ДЗ отключен.")
-
     @dispatcher.message(F.text)
     async def handle_text_message(message: Message) -> None:
         await register_message_user(message)
@@ -2263,27 +1734,6 @@ def build_dispatcher(
             await try_delete_message(message)
             await perform_schedule_search(message.bot, message.chat.id, message.from_user.id, message.text)
             return
-        draft = homework_drafts.get(message.from_user.id)
-        if draft is not None and draft.awaiting_text:
-            draft.text = message.text.strip()
-            draft.awaiting_text = False
-            draft.awaiting_attachments = False
-            await try_delete_message(message)
-            author = message.from_user.full_name or message.from_user.username or "Неизвестный пользователь"
-            await send_draft_preview(message.bot, message.chat.id, author, draft)
-            return
-
-        if draft is not None and draft.awaiting_attachments:
-            await try_delete_message(message)
-            await replace_context_message(
-                message.bot,
-                message.chat.id,
-                "dz",
-                "Сейчас я жду вложение. Отправь документ, фото, видео или аудио, либо нажми «Опубликовать».",
-                reply_markup=build_homework_attachment_keyboard(),
-            )
-            return
-
         await send_new_context_message(
             message.bot,
             message.chat.id,

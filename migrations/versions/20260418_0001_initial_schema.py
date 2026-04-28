@@ -34,6 +34,7 @@ def upgrade() -> None:
         sa.Column("is_admin", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("is_editor", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("homework_notifications_enabled", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("delivery_disabled_auto", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("created_at", sa.Text(), nullable=False),
         sa.Column("last_seen_at", sa.Text(), nullable=False),
         sa.PrimaryKeyConstraint("platform", "user_id"),
@@ -69,51 +70,6 @@ def upgrade() -> None:
         sa.Column("changed_dates_json", sa.Text(), nullable=False),
         sa.Column("payload_json", sa.Text(), nullable=False),
         sa.Column("created_at", sa.Text(), nullable=False),
-    )
-
-    op.create_table(
-        "homework_entries",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("subject_key", sa.Text(), nullable=False),
-        sa.Column("subject", sa.Text(), nullable=False),
-        sa.Column("teacher", sa.Text(), nullable=False),
-        sa.Column("text", sa.Text(), nullable=False),
-        sa.Column("created_by_platform", sa.Text(), nullable=False),
-        sa.Column("created_by_user_id", sa.Integer(), nullable=False),
-        sa.Column("created_by_name", sa.Text(), nullable=False),
-        sa.Column("created_at", sa.Text(), nullable=False),
-    )
-
-    op.create_table(
-        "homework_attachments",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("homework_id", sa.Integer(), nullable=False),
-        sa.Column("file_id", sa.Text(), nullable=False),
-        sa.Column("file_type", sa.Text(), nullable=False),
-        sa.Column("file_name", sa.Text(), nullable=True),
-        sa.Column("mime_type", sa.Text(), nullable=True),
-        sa.Column("storage_path", sa.Text(), nullable=True),
-        sa.Column("source_platform", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False),
-        sa.ForeignKeyConstraint(["homework_id"], ["homework_entries.id"], ondelete="CASCADE"),
-    )
-
-    op.create_table(
-        "linked_accounts",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("telegram_user_id", sa.Integer(), unique=True, nullable=True),
-        sa.Column("vk_user_id", sa.Integer(), unique=True, nullable=True),
-        sa.Column("created_at", sa.Text(), nullable=False),
-    )
-
-    op.create_table(
-        "link_tokens",
-        sa.Column("token", sa.Text(), primary_key=True),
-        sa.Column("source_platform", sa.Text(), nullable=False),
-        sa.Column("source_user_id", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.Text(), nullable=False),
-        sa.Column("expires_at", sa.Text(), nullable=False),
-        sa.Column("used_at", sa.Text(), nullable=True),
     )
 
     op.create_table(
@@ -156,10 +112,6 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_change_events_source_key_snapshot_hash_day")
 
     op.drop_table("delivery_events")
-    op.drop_table("link_tokens")
-    op.drop_table("linked_accounts")
-    op.drop_table("homework_attachments")
-    op.drop_table("homework_entries")
     op.drop_table("change_events")
     op.drop_table("schedule_snapshots")
     op.drop_table("users")

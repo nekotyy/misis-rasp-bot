@@ -15,7 +15,6 @@ class Settings:
     schedule_url: str
     group_name: str
     database_path: Path
-    attachments_path: Path
     app_timezone: str
     schedule_request_delay_seconds: float
     schedule_request_jitter_seconds: float
@@ -31,14 +30,12 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         database_path = Path(os.getenv("DATABASE_PATH", "bot.db")).resolve()
-        attachments_path = Path(os.getenv("ATTACHMENTS_PATH", "storage/attachments")).resolve()
         admin_telegram_id_raw = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
         admin_vk_id_raw = os.getenv("ADMIN_VK_ID", "").strip()
         return cls(
             schedule_url=os.getenv("SCHEDULE_URL", "http://asu.sf-misis.ru/rasp/600"),
             group_name=os.getenv("GROUP_NAME", "ИСП-25-1"),
             database_path=database_path,
-            attachments_path=attachments_path,
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
             schedule_request_delay_seconds=float(os.getenv("SCHEDULE_REQUEST_DELAY_SECONDS", "8").strip()),
             schedule_request_jitter_seconds=float(os.getenv("SCHEDULE_REQUEST_JITTER_SECONDS", "4").strip()),
