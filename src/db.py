@@ -553,6 +553,32 @@ class Database:
         groups = await self.get_active_sources()
         return [group for group in groups if group["source_type"] == "group"]
 
+    async def get_group_user_stats(self) -> list[dict[str, int | str]]:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    subscription_title,
+                    COUNT(*) AS users_count
+                FROM users
+                WHERE subscription_type = 'group'
+                  AND subscription_title IS NOT NULL
+                  AND subscription_title != ''
+                  AND NOT (platform = 'telegram' AND user_id < 0)
+                GROUP BY subscription_key, subscription_title
+                ORDER BY users_count DESC, subscription_title ASC
+                """
+            )
+            rows = await cursor.fetchall()
+
+        return [
+            {
+                "group_name": str(row[0]),
+                "users_count": int(row[1] or 0),
+            }
+            for row in rows
+        ]
+
     async def get_active_sources(self) -> list[dict]:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
