@@ -122,10 +122,13 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Разослать", callback_data="admin:broadcast"),
+            InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
         ],
         [
+            InlineKeyboardButton(text="Разослать", callback_data="admin:broadcast"),
             InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
+        ],
+        [
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -578,6 +581,19 @@ def build_dispatcher(
         lines.append("")
         for row in rows:
             lines.append(f"{escape(row['group_name'])} | <b>{escape(row['created_at'])}</b>")
+        return "\n".join(lines)
+
+    def format_group_user_stats(rows: list[dict[str, int | str]]) -> str:
+        lines = ["<b>Информация по группам</b>", ""]
+        if not rows:
+            lines.append("Пока нет пользователей с выбранной учебной группой.")
+            return "\n".join(lines)
+        lines.append("№ | группа | кол-во юзеров")
+        lines.append("")
+        for index, row in enumerate(rows, start=1):
+            lines.append(
+                f"{index} | {escape(str(row['group_name']))} | <b>{int(row['users_count'])}</b>"
+            )
         return "\n".join(lines)
 
     async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
@@ -1561,6 +1577,9 @@ def build_dispatcher(
             today_prefix = datetime.now().date().isoformat()
             daily_changes = await db.get_daily_change_groups(today_prefix)
             text = format_daily_change_report("Последние изменения за сегодня", daily_changes)
+            reply_markup = ADMIN_KEYBOARD
+        elif action == "group_info":
+            text = format_group_user_stats(await db.get_group_user_stats())
             reply_markup = ADMIN_KEYBOARD
         elif action == "refresh":
             await safe_edit_message_text(

@@ -343,8 +343,8 @@ def build_vk_bot(
             [
                 ["Статус", "Перепарсить"],
                 ["Сохранить эталон", "Последнее изменение"],
-                ["Пользователи", "Разослать"],
-                ["Тестовая рассылка"],
+                ["Пользователи", "Информация по группам"],
+                ["Разослать", "Тестовая рассылка"],
                 ["Закрыть админку"],
             ]
         )
@@ -430,6 +430,17 @@ def build_vk_bot(
         lines.append("")
         for row in rows:
             lines.append(f"{row['group_name']} | {row['created_at']}")
+        return "\n".join(lines)
+
+    def format_group_user_stats(rows: list[dict[str, int | str]]) -> str:
+        lines = ["Информация по группам", ""]
+        if not rows:
+            lines.append("Пока нет пользователей с выбранной учебной группой.")
+            return "\n".join(lines)
+        lines.append("№ | группа | кол-во юзеров")
+        lines.append("")
+        for index, row in enumerate(rows, start=1):
+            lines.append(f"{index} | {row['group_name']} | {int(row['users_count'])}")
         return "\n".join(lines)
 
     async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
@@ -1046,6 +1057,9 @@ def build_vk_bot(
                 return
             if text == "Пользователи":
                 await show_admin_users(peer_id, 0)
+                return
+            if text == "Информация по группам":
+                await show_screen(peer_id, format_group_user_stats(await db.get_group_user_stats()), keyboard=admin_keyboard())
                 return
             if mode == "admin_users":
                 if text == "Следующая страница":
