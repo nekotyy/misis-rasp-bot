@@ -588,6 +588,10 @@ def build_dispatcher(
         if not rows:
             lines.append("Пока нет пользователей с выбранной учебной группой.")
             return "\n".join(lines)
+        total_users = sum(int(row["users_count"]) for row in rows)
+        lines.append(f"Групп найдено: <b>{len(rows)}</b>")
+        lines.append(f"Всего пользователей с группой: <b>{total_users}</b>")
+        lines.append("")
         lines.append("№ | группа | кол-во юзеров")
         lines.append("")
         for index, row in enumerate(rows, start=1):

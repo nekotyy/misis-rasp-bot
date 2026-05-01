@@ -437,6 +437,10 @@ def build_vk_bot(
         if not rows:
             lines.append("Пока нет пользователей с выбранной учебной группой.")
             return "\n".join(lines)
+        total_users = sum(int(row["users_count"]) for row in rows)
+        lines.append(f"Групп найдено: {len(rows)}")
+        lines.append(f"Всего пользователей с группой: {total_users}")
+        lines.append("")
         lines.append("№ | группа | кол-во юзеров")
         lines.append("")
         for index, row in enumerate(rows, start=1):
