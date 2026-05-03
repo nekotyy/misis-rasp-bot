@@ -19,6 +19,7 @@ RUN uv sync --frozen --no-install-project
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY src ./src
+COPY web_configurator ./web_configurator
 COPY README.md ./
 
 RUN mkdir -p /app/runtime

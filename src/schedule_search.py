@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import re
+import unicodedata
 from urllib.parse import urlsplit
 
 import httpx
@@ -76,14 +78,14 @@ class ScheduleSearchCatalog:
                     href = link.get("href", "")
                     if not title or not href:
                         continue
-                    normalized_title = self.normalize(title)
                     target = SearchTarget(
                         kind="teacher",
                         title=title,
                         url=f"{self.base_origin}{href}",
                     )
-                    self._preps[normalized_title] = target
-                    self._prep_items.append((normalized_title, target))
+                    for normalized_title in self._teacher_search_keys(title):
+                        self._preps[normalized_title] = target
+                        self._prep_items.append((normalized_title, target))
                 self._preps_loaded = True
 
     async def _ensure_auds_loaded(self) -> None:
@@ -129,27 +131,48 @@ class ScheduleSearchCatalog:
     def _find_partial(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
         if not normalized:
             return None
+        normalized_compact = self._compact_name_key(normalized)
         exact_word_matches: list[SearchTarget] = []
         startswith_matches: list[SearchTarget] = []
         contains_matches: list[SearchTarget] = []
         for candidate_text, target in items:
             parts = candidate_text.split()
-            if normalized in parts:
+            candidate_compact = self._compact_name_key(candidate_text)
+            if normalized in parts or normalized_compact == candidate_compact:
                 exact_word_matches.append(target)
                 continue
-            if any(part.startswith(normalized) for part in parts) or candidate_text.startswith(normalized):
+            if (
+                any(part.startswith(normalized) for part in parts)
+                or candidate_text.startswith(normalized)
+                or candidate_compact.startswith(normalized_compact)
+            ):
                 startswith_matches.append(target)
                 continue
-            if normalized in candidate_text:
+            if normalized in candidate_text or normalized_compact in candidate_compact:
                 contains_matches.append(target)
         for matches in (exact_word_matches, startswith_matches, contains_matches):
-            if len(matches) == 1:
-                return matches[0]
+            unique_matches = {match.url: match for match in matches}
+            if len(unique_matches) == 1:
+                return next(iter(unique_matches.values()))
         return None
+
+    def _teacher_search_keys(self, title: str) -> set[str]:
+        normalized = self.normalize(title)
+        keys = {normalized, self._compact_name_key(normalized)}
+        parts = normalized.split()
+        if parts:
+            keys.add(parts[0])
+        return {key for key in keys if key}
+
+    @staticmethod
+    def _compact_name_key(value: str) -> str:
+        return re.sub(r"[^\w]+", "", value, flags=re.UNICODE)
 
     @staticmethod
     def normalize(value: str) -> str:
-        normalized = value.strip().casefold().replace("ё", "е")
+        normalized = unicodedata.normalize("NFKC", value).strip().casefold().replace("ё", "е")
         for dash in ("—", "–", "‑", "−"):
             normalized = normalized.replace(dash, "-")
+        normalized = re.sub(r"(?<=\w)\.(?=\w)", ". ", normalized, flags=re.UNICODE)
+        normalized = re.sub(r"[^\w\s.-]+", " ", normalized, flags=re.UNICODE)
         return " ".join(normalized.split())

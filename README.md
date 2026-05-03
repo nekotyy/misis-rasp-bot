@@ -48,8 +48,7 @@
 - `src/scheduler.py` — регулярные фоновые задачи
 - `src/notifier.py` — producer/dispatcher уведомлений в Telegram/VK
 - `src/message_broker.py` — RabbitMQ broker, очередь и consumer доставки
-- `src/homework_service.py` — справочник предметов и форматирование ДЗ
-- `src/attachment_storage.py` — хранение вложений ДЗ
+- `src/lesson_counters.py` — счетчики пройденных пар по группам
 - `src/telegram_bot.py` — вся Telegram-логика
 - `src/vk_bot.py` — вся VK-логика
 
@@ -206,7 +205,6 @@ docker compose logs -f bot
 
 - `APP_TIMEZONE` — таймзона APScheduler и контейнера
 - `SCHEDULE_URL` — базовый URL расписания (обычно `http://asu.sf-misis.ru/rasp/600`)
-- `GROUP_NAME` — дефолтное имя группы (сейчас не является главным источником, группа выбирается пользователем)
 - `DATABASE_PATH` — путь к sqlite
 - `ATTACHMENTS_PATH` — корень файлов вложений
 - `ADMIN_TELEGRAM_ID` — Telegram ID администратора
@@ -217,6 +215,13 @@ docker compose logs -f bot
 - `RABBITMQ_URL` — адрес подключения к RabbitMQ
 - `RABBITMQ_QUEUE` — имя очереди уведомлений
 - `RABBITMQ_PREFETCH_COUNT` — сколько сообщений consumer берет в работу одновременно
+- `LESSON_COUNTERS_ENABLED` — глобальный выключатель счетчиков пройденных пар
+- `LESSON_COUNTERS_PATH` — путь к JSON со счетчиками по группам
+- `LESSON_COUNTERS_QUEUE` — отдельная RabbitMQ-очередь задач подсчета пар
+- `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий веб-конфигуратора
+- `WEB_SUPERUSER_LOGIN` — логин суперпользователя веб-конфигуратора
+- `WEB_SUPERUSER_PASSWORD` — пароль суперпользователя веб-конфигуратора
+- `WEB_USERS_PATH` — JSON-хранилище веб-пользователей и прав
 
 Рекомендуемый блок для Docker/VPS:
 
@@ -225,7 +230,6 @@ APP_TIMEZONE=Europe/Moscow
 SCHEDULE_REQUEST_DELAY_SECONDS=10
 SCHEDULE_REQUEST_JITTER_SECONDS=8
 SCHEDULE_URL=http://asu.sf-misis.ru/rasp/600
-GROUP_NAME=ИСП-25-1
 DATABASE_PATH=/app/runtime/bot.db
 ATTACHMENTS_PATH=/app/runtime/attachments
 ADMIN_TELEGRAM_ID=...
@@ -236,6 +240,13 @@ VK_DISABLE_SSL_VERIFY=false
 RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
 RABBITMQ_QUEUE=misis_notifications
 RABBITMQ_PREFETCH_COUNT=20
+LESSON_COUNTERS_ENABLED=false
+LESSON_COUNTERS_PATH=/app/runtime/lesson_counters.json
+LESSON_COUNTERS_QUEUE=misis_lesson_counters
+WEB_CONFIG_SECRET=change-me-long-random-secret
+WEB_SUPERUSER_LOGIN=admin
+WEB_SUPERUSER_PASSWORD=change-me
+WEB_USERS_PATH=/app/runtime/web_users.json
 ```
 
 Пояснение по RabbitMQ-переменным:
@@ -250,6 +261,107 @@ RABBITMQ_PREFETCH_COUNT=20
   - ограничение на число сообщений, одновременно взятых consumer в обработку
   - меньше — мягче и медленнее
   - больше — быстрее, но агрессивнее
+- `LESSON_COUNTERS_QUEUE=misis_lesson_counters`
+  - durable-очередь задач подсчета пар по группам
+  - используется только счетчиками, уведомления остаются в `RABBITMQ_QUEUE`
+
+Пример `lesson_counters.json`:
+
+```json
+{
+  "groups": [
+    {
+      "schedule_id": 600,
+      "group_name": "ИСП-25-1",
+      "subjects": [
+        {
+          "subject": "Литература",
+          "teacher": "Волошина Н. В.",
+          "passed": 10,
+          "total": 62
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## 7. Веб-конфигуратор
+
+Веб-модуль лежит отдельно в `web_configurator/` и запускается независимо от бота:
+
+```bash
+uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
+```
+
+В Docker Compose обычный запуск поднимает все сервисы: `bot`, `rabbitmq` и `web`.
+
+```bash
+docker compose up -d --build
+```
+
+Если вебка не нужна или не поднялась, основной сервис `bot` продолжает работать отдельно.
+
+RabbitMQ поднимается рядом с ботом. Если брокер временно недоступен, бот не падает: RabbitMQ-consumer не стартует, а отправка продолжает работать через прямой fallback.
+
+Возможности:
+
+- метрики аптайма, пользователей TG/VK, сервисов, парсинга, изменений расписания, активных групп и доставки сообщений
+- список пользователей с фильтрами: TG/VK, преподаватели/группы, новые/старые
+- редактор `lesson_counters.json` с валидацией дисциплин по расписанию группы
+- управление веб-пользователями и правами по разделам
+
+Суперпользователь задается через `WEB_SUPERUSER_LOGIN` и `WEB_SUPERUSER_PASSWORD`.
+
+### 7.1. nginx and public dashboard access
+
+Now `docker compose up -d --build` starts `bot`, `rabbitmq`, `web`, and `nginx`.
+
+Flow:
+
+- `web` stays inside the Docker network on `web:8080`
+- `nginx` accepts external traffic and proxies it to `web`
+- HTTP is exposed on `80`
+- HTTPS is exposed on `2443`
+
+Public URL after deploy:
+
+```text
+http://dashboard.nekoty.ru
+https://dashboard.nekoty.ru:2443
+```
+
+Relevant `.env` values:
+
+```env
+NGINX_SERVER_NAME=dashboard.nekoty.ru
+NGINX_HTTP_PORT=80
+NGINX_HTTPS_PORT=2443
+WEB_UPSTREAM=web:8080
+NGINX_SSL_CERT_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/fullchain.pem
+NGINX_SSL_KEY_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/privkey.pem
+```
+
+DNS setup:
+
+- use `CNAME` if `dashboard.nekoty.ru` should point to another hostname
+- use an `A` record if the subdomain should point directly to the VPS IP
+
+Certificate note:
+
+- put certbot certificates into `./deploy/certs`, they are mounted into the container as `/etc/letsencrypt`
+- after certificate renewal, restart nginx: `docker compose restart nginx`
+
+Post-deploy check:
+
+```bash
+docker compose ps
+docker compose logs -f nginx
+docker compose logs -f web
+```
+
 
 ---
 
@@ -438,24 +550,20 @@ RabbitMQ используется только для исходящих уве�
 
 ### 10.3. Слой `Database`
 
-`Database` инкапсулирует весь SQL: инициализацию схемы, CRUD пользователей, snapshots, change events, ДЗ и вложения, привязку аккаунтов.
+`Database` инкапсулирует весь SQL: инициализацию схемы, CRUD пользователей, snapshots, change events, счетчики пар, привязку аккаунтов.
 
 ---
 
-## 11. Домашние задания
+## 11. Счетчики пар
 
-- Справочник предметов и преподавателей: `homework_service.SUBJECTS`
-- ДЗ доступно только для `HOMEWORK_SCHEDULE_ID = 600`
-- Роль `is_editor` требуется для создания/публикации ДЗ
-- Вложения:
-  - Telegram: скачиваются через `bot.download`
-  - VK: скачиваются по URL либо хранятся как attachment-строка
+- Список групп и дисциплин хранится в JSON из `LESSON_COUNTERS_PATH`.
+- В 23:00 и 23:40 бот создает задачи подсчета по всем группам из JSON, даже если на группу никто не подписан.
+- При включенном RabbitMQ задачи идут в durable-очередь `LESSON_COUNTERS_QUEUE`.
+- Одна и та же пара за одну дату не засчитывается повторно.
 
-### Форматирование
+### Формат JSON
 
-- `format_homework_message` — карточка ДЗ для Telegram
-- `format_homework_preview` — предпросмотр перед публикацией
-- `format_homework_notification` — короткое сообщение для рассылки
+См. пример в `storage/lesson_counters.json`.
 
 ---
 
@@ -605,20 +713,12 @@ RabbitMQ используется только для исходящих уве�
 - `save_daily_baseline_fallback` — fallback baseline.
 - `sync_current_snapshot` — синхронизация current, сравнение, запись и рассылка.
 
-### 14.10 `src/homework_service.py`
+### 14.10 `src/lesson_counters.py`
 
-- `get_subject` — предмет по ключу.
-- `format_homework_message` — формат карточки ДЗ.
-- `format_homework_preview` — формат предпросмотра ДЗ.
-- `format_homework_notification` — короткое уведомление о новом ДЗ.
-
-### 14.11 `src/attachment_storage.py` (`AttachmentStorage`)
-
-- `__init__` — создание директории хранилища.
-- `resolve_path` — абсолютный путь по относительному `storage_path`.
-- `has_local_file` — проверка наличия файла вложения.
-- `delete_attachments` — удаление локальных файлов вложений.
-- `save_telegram_file` — скачивание Telegram-вложения в хранилище.
+- `load_config_file` — чтение JSON счетчиков.
+- `sync_config` — синхронизация JSON в БД.
+- `configured_schedule_ids` — список групп, по которым надо считать пары.
+- `count_today_for_snapshot` — учет сегодняшних пар без дублей.
 - `save_vk_url` — скачивание файла из URL (VK).
 - `save_vk_message_attachments` — извлечение/сохранение вложений из VK сообщения.
 - `_build_relative_path` — формирование безопасного относительного пути.
@@ -817,17 +917,10 @@ RabbitMQ используется только для исходящих уве�
    - `Broadcaster` создает задачи на рассылку
    - задачи уходят в RabbitMQ
    - consumer читает очередь и доставляет сообщения пользователям выбранной группы
-6. Редакторы создают ДЗ, запись уходит в `homework_entries`
-7. Подписчики на ДЗ получают уведомление по той же схеме:
-   - запись в БД
-   - публикация задачи в очередь
-   - доставка в Telegram/VK consumer-ом
-
 ---
 
 ## 16. Ограничения и важные детали
 
-- ДЗ и создание ДЗ сейчас ограничены группой `ИСП-25-1` (`schedule_id=600`).
 - В Telegram и VK используются отдельные состояния диалога.
 - В Telegram применяются HTML-сообщения (`ParseMode.HTML`) — строки экранируются через `html.escape`.
 - Для стабильной работы на VPS обязательно корректно выставлять `APP_TIMEZONE`.
