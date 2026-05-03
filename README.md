@@ -169,6 +169,10 @@ docker compose exec bot uv run --frozen alembic heads
 - `LESSON_COUNTERS_ENABLED` — глобальный выключатель счетчиков пройденных пар
 - `LESSON_COUNTERS_PATH` — путь к JSON со счетчиками по группам
 - `LESSON_COUNTERS_QUEUE` — отдельная RabbitMQ-очередь задач подсчета пар
+- `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий веб-конфигуратора
+- `WEB_SUPERUSER_LOGIN` — логин суперпользователя веб-конфигуратора
+- `WEB_SUPERUSER_PASSWORD` — пароль суперпользователя веб-конфигуратора
+- `WEB_USERS_PATH` — JSON-хранилище веб-пользователей и прав
 
 Рекомендуемый блок для Docker/VPS:
 
@@ -190,6 +194,10 @@ RABBITMQ_PREFETCH_COUNT=20
 LESSON_COUNTERS_ENABLED=false
 LESSON_COUNTERS_PATH=/app/runtime/lesson_counters.json
 LESSON_COUNTERS_QUEUE=misis_lesson_counters
+WEB_CONFIG_SECRET=change-me-long-random-secret
+WEB_SUPERUSER_LOGIN=admin
+WEB_SUPERUSER_PASSWORD=change-me
+WEB_USERS_PATH=/app/runtime/web_users.json
 ```
 
 Пояснение по RabbitMQ-переменным:
@@ -228,6 +236,83 @@ LESSON_COUNTERS_QUEUE=misis_lesson_counters
   ]
 }
 ```
+
+---
+
+## 7. Веб-конфигуратор
+
+Веб-модуль лежит отдельно в `web_configurator/` и запускается независимо от бота:
+
+```bash
+uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
+```
+
+В Docker Compose обычный запуск поднимает все сервисы: `bot`, `rabbitmq` и `web`.
+
+```bash
+docker compose up -d --build
+```
+
+Если вебка не нужна или не поднялась, основной сервис `bot` продолжает работать отдельно.
+
+RabbitMQ поднимается рядом с ботом. Если брокер временно недоступен, бот не падает: RabbitMQ-consumer не стартует, а отправка продолжает работать через прямой fallback.
+
+Возможности:
+
+- метрики аптайма, пользователей TG/VK, сервисов, парсинга, изменений расписания, активных групп и доставки сообщений
+- список пользователей с фильтрами: TG/VK, преподаватели/группы, новые/старые
+- редактор `lesson_counters.json` с валидацией дисциплин по расписанию группы
+- управление веб-пользователями и правами по разделам
+
+Суперпользователь задается через `WEB_SUPERUSER_LOGIN` и `WEB_SUPERUSER_PASSWORD`.
+
+### 7.1. nginx and public dashboard access
+
+Now `docker compose up -d --build` starts `bot`, `rabbitmq`, `web`, and `nginx`.
+
+Flow:
+
+- `web` stays inside the Docker network on `web:8080`
+- `nginx` accepts external traffic and proxies it to `web`
+- HTTP is exposed on `80`
+- HTTPS is exposed on `2443`
+
+Public URL after deploy:
+
+```text
+http://dashboard.nekoty.ru
+https://dashboard.nekoty.ru:2443
+```
+
+Relevant `.env` values:
+
+```env
+NGINX_SERVER_NAME=dashboard.nekoty.ru
+NGINX_HTTP_PORT=80
+NGINX_HTTPS_PORT=2443
+WEB_UPSTREAM=web:8080
+NGINX_SSL_CERT_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/fullchain.pem
+NGINX_SSL_KEY_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/privkey.pem
+```
+
+DNS setup:
+
+- use `CNAME` if `dashboard.nekoty.ru` should point to another hostname
+- use an `A` record if the subdomain should point directly to the VPS IP
+
+Certificate note:
+
+- put certbot certificates into `./deploy/certs`, they are mounted into the container as `/etc/letsencrypt`
+- after certificate renewal, restart nginx: `docker compose restart nginx`
+
+Post-deploy check:
+
+```bash
+docker compose ps
+docker compose logs -f nginx
+docker compose logs -f web
+```
+
 
 ---
 

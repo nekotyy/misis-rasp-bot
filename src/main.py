@@ -27,43 +27,94 @@ logging.basicConfig(
 )
 
 
-async def run_telegram_polling(
+def start_background_task(name: str, coro) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+
+    def _log_result(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logging.exception("%s stopped unexpectedly.", name)
+
+    task.add_done_callback(_log_result)
+    return task
+
+
+async def run_forever(name: str, runner, restart_delay_seconds: float = 15.0) -> None:
+    while True:
+        try:
+            await runner()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("%s failed. Restarting in %.0f seconds.", name, restart_delay_seconds)
+            await asyncio.sleep(restart_delay_seconds)
+            continue
+        logging.warning("%s stopped without exception. Restarting in %.0f seconds.", name, restart_delay_seconds)
+        await asyncio.sleep(restart_delay_seconds)
+
+
+def start_telegram_polling(
     settings: Settings,
     db: Database,
     parser: ScheduleParser,
     broadcaster: Broadcaster,
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
-) -> Bot | None:
+) -> None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
-        return None
-    bot = Bot(
-        token=settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    broadcaster.telegram_bot = bot
-    dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog)
-    asyncio.create_task(dispatcher.start_polling(bot))
-    return bot
+        return
+
+    async def _run_once() -> None:
+        bot = Bot(
+            token=settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        broadcaster.telegram_bot = bot
+        dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog)
+        try:
+            await dispatcher.start_polling(bot)
+        finally:
+            await bot.session.close()
+
+    start_background_task("telegram-supervisor", run_forever("Telegram bot", _run_once))
 
 
-async def run_vk_polling(vk_bot) -> None:
-    if vk_bot is None:
+def start_vk_polling(
+    settings: Settings,
+    db: Database,
+    parser: ScheduleParser,
+    broadcaster: Broadcaster,
+    group_catalog: GroupCatalog,
+    search_catalog: ScheduleSearchCatalog,
+) -> None:
+    if not settings.vk_bot_token:
         logging.warning("VK_BOT_TOKEN не задан. VK-бот не будет запущен.")
         return
 
-    async def _run_vk() -> None:
+    async def _run_once() -> None:
+        vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog)
+        if vk_bot is None:
+            return
+        broadcaster.vk_bot = vk_bot
         # vkbottle in this version expects to own the loop unless we mark it as already running.
         vk_bot.loop_wrapper.loop = asyncio.get_running_loop()
         vk_bot.loop_wrapper._running = True
         await vk_bot.run_polling()
 
-    asyncio.create_task(_run_vk())
+    start_background_task("vk-supervisor", run_forever("VK bot", _run_once))
 
 
 async def main() -> None:
     settings = Settings.from_env()
+    if not settings.rabbitmq_url:
+        logging.error("RABBITMQ_URL is not set. RabbitMQ consumers are disabled; direct delivery fallback remains available.")
+    if not settings.telegram_bot_token and not settings.vk_bot_token:
+        logging.error("Neither TELEGRAM_BOT_TOKEN nor VK_BOT_TOKEN is set. Bot polling is disabled, background jobs keep running.")
+
     apply_migrations(settings.database_path)
     db = Database(settings.database_path)
     await db.initialize()
@@ -93,13 +144,13 @@ async def main() -> None:
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
     )
-    telegram_bot = await run_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
-    vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog)
-    await run_vk_polling(vk_bot)
+    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
+    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
 
-    broadcaster.telegram_bot = telegram_bot
-    broadcaster.vk_bot = vk_bot
-    await broadcaster.start()
+    try:
+        await broadcaster.start()
+    except Exception:
+        logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
     jobs = ScheduleJobs(
         db=db,
         parser=parser,
@@ -112,8 +163,14 @@ async def main() -> None:
         lesson_counter_broker=lesson_counter_broker,
     )
     jobs.start()
-    await jobs.start_lesson_counter_consumer()
-    await jobs.sync_current_snapshot()
+    try:
+        await jobs.start_lesson_counter_consumer()
+    except Exception:
+        logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+    try:
+        await jobs.sync_current_snapshot()
+    except Exception:
+        logging.exception("Initial schedule sync failed. Background scheduler will retry later.")
 
     await asyncio.Event().wait()
 

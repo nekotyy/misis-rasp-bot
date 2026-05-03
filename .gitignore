@@ -24,6 +24,7 @@ env/
 *.sqlite-wal
 storage/attachments/
 storage/tmp/
+storage/web_users.json
 uploads/
 runtime/
 
