@@ -12,6 +12,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
+from src.message_broker import OutboundMessage, RabbitMQBroker
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST
 from src.parser import ScheduleParser
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 from web_configurator.metrics import collect_metrics
@@ -41,6 +43,7 @@ PERMISSION_DESCRIPTIONS = {
     "stats_delivery": "Сколько сообщений доставлено сегодня и за все время: RabbitMQ, напрямую, Telegram и VK.",
     "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что учитывалось сегодня, текущий прогресс.",
     "config_lesson_counters": "Доступ к редактору счетчиков пар: группы, дисциплины, преподаватели, JSON-режим.",
+    "manage_bot_admin": "Рассылки, перепарсинг, сохранение эталона и управление редакторами бота прямо из вебки.",
     "manage_web_users": "Создание, удаление и изменение прав пользователей веб-админки.",
 }
 
@@ -265,6 +268,62 @@ async def delete_web_user(
     return RedirectResponse("/web-users", status_code=303)
 
 
+@app.get("/control", response_class=HTMLResponse)
+async def control_page(user: Annotated[WebUser, Depends(require("manage_bot_admin"))]) -> str:
+    return layout("Управление ботом", await bot_control_html(), user)
+
+
+@app.post("/control/broadcast", response_class=HTMLResponse)
+async def control_broadcast(
+    user: Annotated[WebUser, Depends(require("manage_bot_admin"))],
+    message: Annotated[str, Form()],
+) -> str:
+    text = message.strip()
+    if not text:
+        return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Текст рассылки не должен быть пустым.</div>"), user)
+    try:
+        sent = await enqueue_broadcast(text)
+    except Exception as exc:
+        return layout("Управление ботом", await bot_control_html(f"<div class='alert bad'>Не удалось поставить рассылку в очередь: {html_escape(exc)}</div>"), user)
+    return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Рассылка поставлена в очередь. Получателей: {sent}.</div>"), user)
+
+
+@app.post("/control/test", response_class=HTMLResponse)
+async def control_test_broadcast(user: Annotated[WebUser, Depends(require("manage_bot_admin"))]) -> str:
+    try:
+        sent = await enqueue_broadcast("Тестовое уведомление: бот активен и рассылка работает.")
+    except Exception as exc:
+        return layout("Управление ботом", await bot_control_html(f"<div class='alert bad'>Тестовую рассылку не удалось отправить: {html_escape(exc)}</div>"), user)
+    return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Тестовая рассылка поставлена в очередь. Получателей: {sent}.</div>"), user)
+
+
+@app.post("/control/refresh", response_class=HTMLResponse)
+async def control_refresh(user: Annotated[WebUser, Depends(require("manage_bot_admin"))]) -> str:
+    rows = await refresh_all_active_sources()
+    return layout("Управление ботом", await bot_control_html(action_report_html("Перепарсинг активных источников", rows, "перепарсено")), user)
+
+
+@app.post("/control/baseline", response_class=HTMLResponse)
+async def control_baseline(user: Annotated[WebUser, Depends(require("manage_bot_admin"))]) -> str:
+    rows = await save_baseline_for_all_active_sources()
+    return layout("Управление ботом", await bot_control_html(action_report_html("Сохранение эталонов", rows, "эталон сохранен")), user)
+
+
+@app.post("/control/editors", response_class=HTMLResponse)
+async def control_editor_toggle(
+    user: Annotated[WebUser, Depends(require("manage_bot_admin"))],
+    platform: Annotated[str, Form()],
+    user_id: Annotated[int, Form()],
+) -> str:
+    db = await get_db()
+    target = await db.get_user(platform, user_id)
+    if target is None:
+        return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Пользователь не найден.</div>"), user)
+    await db.set_editor(platform, user_id, not target.is_editor)
+    label = "выдана" if not target.is_editor else "снята"
+    return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Роль редактора {label} для {html_escape(platform)}:{user_id}.</div>"), user)
+
+
 def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: str | None = None) -> str:
     groups = [item for item in payload.get("groups", []) if isinstance(item, dict)]
     group_cards = "\n".join(lesson_group_card(group) for group in groups)
@@ -405,12 +464,235 @@ async def validate_payload_for_save(payload: dict[str, Any]) -> tuple[dict[str, 
     return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser)
 
 
+async def get_db() -> Database:
+    fresh_settings = Settings.from_env()
+    db = Database(fresh_settings.database_path)
+    await db.initialize()
+    return db
+
+
+async def enqueue_broadcast(message: str) -> int:
+    fresh_settings = Settings.from_env()
+    if not fresh_settings.rabbitmq_url:
+        raise RuntimeError("RabbitMQ не настроен.")
+    db = await get_db()
+    broker = RabbitMQBroker(
+        url=fresh_settings.rabbitmq_url,
+        queue_name=fresh_settings.rabbitmq_queue,
+        prefetch_count=fresh_settings.rabbitmq_prefetch_count,
+    )
+    telegram_users = await db.get_users_for_notifications("telegram")
+    vk_users = await db.get_users_for_notifications("vk")
+    sent = 0
+    try:
+        for user in telegram_users:
+            await broker.publish(
+                OutboundMessage(
+                    platform="telegram",
+                    user_id=user.user_id,
+                    text=message,
+                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
+                )
+            )
+            sent += 1
+        for user in vk_users:
+            await broker.publish(
+                OutboundMessage(
+                    platform="vk",
+                    user_id=user.user_id,
+                    text=message,
+                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
+                )
+            )
+            sent += 1
+    finally:
+        await broker.close()
+    return sent
+
+
+async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+    db = await get_db()
+    sources = await db.get_active_sources()
+    if not sources:
+        return []
+    parser = ScheduleParser(Settings.from_env().schedule_url)
+    rows: list[tuple[str, str, str]] = []
+    for source in sources:
+        try:
+            if source["source_type"] == "teacher" and source["source_url"]:
+                snapshot, snapshot_hash = await parser.parse_from_url(str(source["source_url"]))
+            else:
+                snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
+            await db.save_snapshot(
+                "current",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+        except Exception as exc:
+            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), f"ошибка: {type(exc).__name__}"))
+    return rows
+
+
+async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
+    db = await get_db()
+    sources = await db.get_active_sources()
+    if not sources:
+        return []
+    parser = ScheduleParser(Settings.from_env().schedule_url)
+    rows: list[tuple[str, str, str]] = []
+    for source in sources:
+        try:
+            if source["source_type"] == "teacher" and source["source_url"]:
+                snapshot, snapshot_hash = await parser.parse_from_url(str(source["source_url"]))
+            else:
+                snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
+            await db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                source["schedule_id"],
+                source["group_name"],
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
+        except Exception as exc:
+            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), f"ошибка: {type(exc).__name__}"))
+    return rows
+
+
+def action_report_html(title: str, rows: list[tuple[str, str, str]], success_label: str) -> str:
+    if not rows:
+        return f"<div class='alert'>{html_escape(title)}: активных источников пока нет.</div>"
+    items = "".join(
+        f"<tr><td>{html_escape(source)}</td><td>{html_escape(action_time)}</td><td>{html_escape(action_name or success_label)}</td></tr>"
+        for source, action_time, action_name in rows
+    )
+    return (
+        f"<div class='alert good'>{html_escape(title)} завершено. Источников: {len(rows)}.</div>"
+        f"<div class='table-wrap'><table><tr><th>Источник</th><th>Когда</th><th>Результат</th></tr>{items}</table></div>"
+    )
+
+
+async def bot_control_html(report: str = "") -> str:
+    db = await get_db()
+    users = await db.list_users()
+    editors = [user for user in users if not user.is_admin]
+    group_rows = await db.get_group_user_stats()
+    changes = await db.get_daily_change_groups(datetime.now().date().isoformat())
+    active_sources = await db.get_active_sources()
+    delivery_stats = await db.get_delivery_stats()
+    group_table = "".join(
+        f"<tr><td>{index}</td><td>{html_escape(row['group_name'])}</td><td>{int(row['users_count'])}</td></tr>"
+        for index, row in enumerate(group_rows, start=1)
+    ) or "<tr><td colspan='3'>Пока нет пользователей с группами.</td></tr>"
+    change_table = "".join(
+        f"<tr><td>{html_escape(row['group_name'])}</td><td>{html_escape(row['created_at'])}</td></tr>"
+        for row in changes
+    ) or "<tr><td colspan='2'>За сегодня изменений пока не было.</td></tr>"
+    editor_cards = "\n".join(bot_editor_row(user) for user in editors) or "<div class='empty-state'>Пока нет пользователей бота для управления ролями.</div>"
+    source_count = len(active_sources)
+    teacher_count = sum(1 for item in active_sources if item.get("source_type") == "teacher")
+    group_count = sum(1 for item in active_sources if item.get("source_type") == "group")
+    return f"""
+    <section class="page-head compact-head">
+      <div>
+        <p class="eyebrow">Операции</p>
+        <h2>Управление ботом</h2>
+        <p>Веб-панель для массовых действий: рассылка, перепарсинг активных источников, эталоны и редакторы.</p>
+      </div>
+      <div class="head-chips">
+        <span class="chip">Источников: {source_count}</span>
+        <span class="chip">Групп: {group_count}</span>
+        <span class="chip">Преподавателей: {teacher_count}</span>
+      </div>
+    </section>
+    {report}
+    <section class="dashboard-block">
+      <div class="metric-grid compact">
+        <div class="card"><span>Пользователей</span><b>{len(users)}</b><small>TG/VK вместе</small></div>
+        <div class="card"><span>Редакторов</span><b>{sum(1 for user in users if user.is_editor)}</b><small>без админов</small></div>
+        <div class="card"><span>Рассылок</span><b>{delivery_stats.get('admin_broadcast_sent', 0)}</b><small>успешно за все время</small></div>
+        <div class="card"><span>Служебных уведомлений</span><b>{delivery_stats.get('admin_notify_sent', 0)}</b><small>админу</small></div>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('tools')}</span><h3>Быстрые действия</h3></div>
+      <div class="action-grid">
+        <form method="post" action="/control/refresh" class="action-card"><b>{icon('refresh')} Перепарсить</b><p>Обновить текущие слепки по всем активным источникам.</p><button type="submit">Запустить</button></form>
+        <form method="post" action="/control/baseline" class="action-card"><b>{icon('layers')} Сохранить эталон</b><p>Записать свежий baseline для сегодняшних сравнений.</p><button type="submit">Сохранить</button></form>
+        <form method="post" action="/control/test" class="action-card"><b>{icon('flask')} Тестовая рассылка</b><p>Поставить в очередь короткое тестовое сообщение всем получателям.</p><button type="submit">Отправить тест</button></form>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('megaphone')}</span><h3>Рассылка</h3></div>
+      <form method="post" action="/control/broadcast" class="broadcast-form">
+        <label>Текст сообщения <textarea name="message" placeholder="Сообщение для всех пользователей с включенными уведомлениями." required></textarea></label>
+        <button type="submit">{icon('send')} Поставить в очередь</button>
+      </form>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('users')}</span><h3>Редакторы бота</h3></div>
+      <div class="editor-grid">{editor_cards}</div>
+    </section>
+    <section class="two-col">
+      <div class="panel">
+        <div class="panel-title"><span class="icon">{icon('calendar')}</span><h3>Группы</h3></div>
+        <div class="table-wrap"><table><tr><th>#</th><th>Группа</th><th>Юзеров</th></tr>{group_table}</table></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title"><span class="icon">{icon('alert')}</span><h3>Изменения за сегодня</h3></div>
+        <div class="table-wrap"><table><tr><th>Источник</th><th>Когда</th></tr>{change_table}</table></div>
+      </div>
+    </section>
+    """
+
+
+def bot_editor_row(user: Any) -> str:
+    display_name = user.full_name or (f"@{user.username}" if user.username else f"{user.platform}:{user.user_id}")
+    profile_href = user_profile_link(user.platform, user.user_id, user.username)
+    status_chip = "<span class='chip chip-ok'>редактор</span>" if user.is_editor else "<span class='chip'>без роли</span>"
+    return f"""
+    <article class="editor-card-row">
+      <div>
+        <a class="profile-link strong" href="{html_escape(profile_href)}" target="_blank" rel="noreferrer">{html_escape(display_name)}</a>
+        <p class="muted">{html_escape(user.platform.upper())} · ID {user.user_id}</p>
+      </div>
+      <div class="chips">{status_chip}</div>
+      <form method="post" action="/control/editors">
+        <input type="hidden" name="platform" value="{html_escape(user.platform)}">
+        <input type="hidden" name="user_id" value="{user.user_id}">
+        <button class="secondary" type="submit">{icon('shield')} {"Снять роль" if user.is_editor else "Сделать редактором"}</button>
+      </form>
+    </article>
+    """
+
+
+def user_profile_link(platform: str, user_id: int, username: str | None) -> str:
+    if platform == "vk":
+        return f"https://vk.com/id{user_id}"
+    if username:
+        return f"https://t.me/{username.lstrip('@')}"
+    return f"tg://user?id={user_id}"
+
+
 def dashboard_html(user: WebUser) -> str:
     cards = []
     if can(user, "stats_overview"):
         cards.append(
             """
-            <button class="to-top" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})">Наверх</button>
+            <button class="to-top icon-only" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="Наверх" title="Наверх">
+              __TO_TOP_ICON__
+            </button>
             <section class="hero">
               <div>
                 <p class="eyebrow">Системный монитор</p>
@@ -418,8 +700,9 @@ def dashboard_html(user: WebUser) -> str:
                 <p>Обновляется каждые 30 секунд. Смотри нагрузку, доставку, подписки и состояние счетчиков в одном месте.</p>
               </div>
             </section>
-            <section><div id="overview" class="metric-grid"></div></section>
+            <section class="dashboard-block"><div id="overview" class="metric-grid"></div></section>
             """
+            .replace("__TO_TOP_ICON__", icon("arrow-up"))
         )
     if can(user, "stats_services"):
         cards.append(f"<section class='panel'><div class='panel-title'><span class='icon'>{icon('pulse')}</span><h3>Сервисы</h3></div><div id='services' class='service-grid'></div></section>")
@@ -511,6 +794,8 @@ def layout(title: str, content: str, user: WebUser) -> str:
     nav_items = [nav_link("/", "Метрики", "dashboard")]
     if can(user, "config_lesson_counters"):
         nav_items.append(nav_link("/lessons", "Счетчики пар", "counter"))
+    if can(user, "manage_bot_admin"):
+        nav_items.append(nav_link("/control", "Управление ботом", "tools"))
     if can(user, "manage_web_users"):
         nav_items.append(nav_link("/web-users", "Веб-пользователи", "shield"))
     nav = "".join(nav_items)
@@ -554,6 +839,7 @@ def icon(name: str) -> str:
         "users": "<svg viewBox='0 0 24 24'><path d='M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4ZM8 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm8 2c-3 0-6 1.5-6 4v2h12v-2c0-2.5-3-4-6-4ZM8 14c-3.3 0-6 1.7-6 4v2h6v-2c0-1.5.7-2.8 2-3.8-.6-.1-1.3-.2-2-.2Z'/></svg>",
         "calendar": "<svg viewBox='0 0 24 24'><path d='M7 2h2v2h6V2h2v2h3v18H4V4h3V2Zm13 8H4v10h16V10Z'/></svg>",
         "send": "<svg viewBox='0 0 24 24'><path d='M2 21 23 12 2 3v7l15 2-15 2v7Z'/></svg>",
+        "megaphone": "<svg viewBox='0 0 24 24'><path d='M3 10v4h3l5 4V6l-5 4H3Zm11.5-2.8V17a6 6 0 0 0 0-9.8ZM13 9.3v5.4a4 4 0 0 0 0-5.4Z'/></svg>",
         "search": "<svg viewBox='0 0 24 24'><path d='m21 19.6-5.2-5.2A7.5 7.5 0 1 0 14.4 16L19.6 21 21 19.6ZM4 10.5A5.5 5.5 0 1 1 9.5 16 5.5 5.5 0 0 1 4 10.5Z'/></svg>",
         "file-json": "<svg viewBox='0 0 24 24'><path d='M14 2H6v20h12V6l-4-4Zm-1 2.5L15.5 7H13V4.5ZM9 17H7v-2h2v2Zm0-4H7v-2h2v2Zm8 4h-2v-2h2v2Zm0-4h-2v-2h2v2Z'/></svg>",
         "save": "<svg viewBox='0 0 24 24'><path d='M17 3H4v18h16V6l-3-3ZM7 5h8v5H7V5Zm10 14H7v-6h10v6Z'/></svg>",
@@ -562,6 +848,11 @@ def icon(name: str) -> str:
         "alert": "<svg viewBox='0 0 24 24'><path d='M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z'/></svg>",
         "trash": "<svg viewBox='0 0 24 24'><path d='M7 21h10l1-13H6l1 13ZM9 4l1-2h4l1 2h5v2H4V4h5Z'/></svg>",
         "help": "<svg viewBox='0 0 24 24'><path d='M11 18h2v-2h-2v2Zm1-16a7 7 0 0 0-7 7h2a5 5 0 1 1 8.6 3.5c-1.7 1.6-2.6 2.4-2.6 4.5h-2c0-3 1.4-4.3 3.2-5.9A3 3 0 0 0 12 4Z'/></svg>",
+        "tools": "<svg viewBox='0 0 24 24'><path d='m14.7 6.3 3 3L20 7l-3-3-2.3 2.3ZM13.3 7.7 4 17v3h3l9.3-9.3-3-3ZM20.7 13.3l-2-2a6 6 0 0 1-7.4 7.4l2 2A8 8 0 0 0 20.7 13.3ZM10.7 3.3 8.7 5.3A8 8 0 0 0 3.3 10.7l2 2a6 6 0 0 1 5.4-5.4Z'/></svg>",
+        "refresh": "<svg viewBox='0 0 24 24'><path d='M12 5a7 7 0 0 1 6.2 3.8L16 11h6V5l-2.2 2.2A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7Z'/></svg>",
+        "layers": "<svg viewBox='0 0 24 24'><path d='M12 2 1 8l11 6 9-4.9V17h2V8L12 2Zm0 14L4.2 11.8 1 13.5l11 6 11-6-3.2-1.7L12 16Z'/></svg>",
+        "flask": "<svg viewBox='0 0 24 24'><path d='M9 2v2l1 1v4.6L4.4 18A3 3 0 0 0 7 22h10a3 3 0 0 0 2.6-4L14 9.6V5l1-1V2H9Zm2 8h2l5 8a1 1 0 0 1-.9 2H7a1 1 0 0 1-.9-2l5-8Z'/></svg>",
+        "arrow-up": "<svg viewBox='0 0 24 24'><path d='m12 5 7 7-1.4 1.4-4.6-4.6V20h-2V8.8l-4.6 4.6L5 12l7-7Z'/></svg>",
     }
     return icons.get(name, icons["spark"])
 
@@ -626,18 +917,19 @@ STYLE = """
 svg{width:18px;height:18px;fill:currentColor;flex:0 0 auto;display:block} a{color:inherit;text-decoration:none} h1,h2,h3,p{margin:0} h1{font-size:28px;font-weight:700;letter-spacing:0} h2{font-size:25px;font-weight:700;letter-spacing:0} h3{font-size:16px;font-weight:700;letter-spacing:0}
 .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:22px;background:#101318;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:24px}.brand{display:flex;gap:12px;align-items:center}.brand b{display:block;font-size:16px}.brand small{display:block;color:var(--muted);font-size:12px}.brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:8px;background:#1d211f;border:1px solid #3b382f;color:var(--accent)}
 nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#d8d0c4;transition:.16s ease}.sidebar nav a:hover{background:#1a1e25;color:var(--text)}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#12161b;border-radius:999px;padding:9px 13px;color:#e4dccf}
-main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}.to-top{position:fixed;right:22px;bottom:22px;z-index:20;box-shadow:0 12px 35px rgba(0,0,0,.35)}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 45px rgba(0,0,0,.18);animation:rise .18s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#1b1e22;border:1px solid #343942}
+main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}.to-top{position:fixed;right:22px;bottom:22px;z-index:20;box-shadow:0 12px 35px rgba(0,0,0,.35)}.icon-only{width:46px;height:46px;padding:0;border-radius:999px}.dashboard-block{margin-bottom:18px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 45px rgba(0,0,0,.18);animation:rise .18s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#1b1e22;border:1px solid #343942;flex:0 0 auto}
 @keyframes rise{from{opacity:.55;transform:translateY(5px)}to{opacity:1;transform:none}}.metric-grid,.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.metric-grid.compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card,.service-card{position:relative;overflow:hidden;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:16px;min-height:108px}.card span,.service-card span{color:var(--muted);display:block;font-size:12px;font-weight:600}.card b,.service-card b{font-size:26px;line-height:1.2;display:block;margin-top:8px;font-weight:800}.card small,.service-card small{color:var(--muted)}
 .status{display:inline-flex;gap:7px;align-items:center}.dot{width:9px;height:9px;border-radius:999px;background:var(--bad)}.dot.ok{background:var(--good)}button{display:inline-flex;gap:8px;align-items:center;justify-content:center;background:#e7dcc9;color:#111418;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;transition:.16s ease}button:hover{background:#f1eadf}button.ghost,button.secondary{background:#1b1f26;color:var(--text);border:1px solid var(--line)}button.danger{color:#f0b7b7}
 .login{display:grid;place-items:center;min-height:100vh}.narrow{width:min(390px,calc(100vw - 40px))}.login .panel{padding:28px}.login h1{margin-bottom:18px}label{display:grid;gap:7px;margin:0 0 12px;color:#ddd5c8;font-weight:600}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;background:#0e1115;color:var(--text);font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#5a5346;box-shadow:0 0 0 3px rgba(215,200,170,.1)}textarea{min-height:620px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;resize:vertical}
 .toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:12px;margin:4px 0 16px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}.section-gap{margin-top:14px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#cfc6b8;background:#101318;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#181c22}.profile-link{color:#eadfcf;text-decoration:underline;text-decoration-color:#5b5549;text-underline-offset:3px}
-.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px}.check input{width:auto}.check span:first-of-type{flex:1}
+.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px}.check input{width:auto}.check span:first-of-type{flex:1}.check .help{margin-left:auto}
 .help{position:relative;display:grid;place-items:center;width:24px;height:24px;color:var(--accent);cursor:help}.help svg{width:16px;height:16px}.tooltip{position:absolute;right:0;bottom:30px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
-.collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
+.collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none;min-height:76px}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px;min-height:60px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
+.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.editor-grid{display:grid;gap:12px}.editor-card-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:8px;background:#101318}.profile-link.strong{font-weight:700}.chip-ok{border-color:#304a36;color:#bbf7d0}.summary-gap{margin-top:6px}
 .head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
-@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
+@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head,.two-col,.action-grid,.editor-card-row{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
 </style>
 """
 

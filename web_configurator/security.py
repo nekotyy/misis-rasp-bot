@@ -20,6 +20,7 @@ ALL_PERMISSIONS = [
     "stats_delivery",
     "stats_lesson_counters",
     "config_lesson_counters",
+    "manage_bot_admin",
     "manage_web_users",
 ]
 
@@ -32,6 +33,7 @@ PERMISSION_LABELS = {
     "stats_lesson_counters": "Подсчет пар",
     "config_lesson_counters": "Редактор пар",
     "manage_web_users": "Веб-пользователи",
+    "manage_bot_admin": "Управление ботом",
 }
 
 
