@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -15,7 +15,7 @@ from src.group_catalog import GroupCatalog
 from src.parser import ScheduleParser
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 from web_configurator.metrics import collect_metrics
-from web_configurator.security import ALL_PERMISSIONS, PERMISSION_LABELS, SessionSigner, WebAuthStore, WebUser
+from web_configurator.security import PERMISSION_LABELS, SessionSigner, WebAuthStore, WebUser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,10 +65,9 @@ async def index(user: Annotated[WebUser, Depends(current_user)]) -> str:
 async def login_form() -> str:
     return base_page(
         "Вход",
-        """
+        f"""
         <main class="login">
           <form method="post" action="/login" class="panel narrow">
-            <h1>Вход</h1>
             <div class="brand" style="margin-bottom:18px"><span class="brand-mark">{icon("spark")}</span><div><b>MISIS Control</b><small>secure dashboard</small></div></div>
             <label>Логин <input name="login" autocomplete="username" required></label>
             <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
@@ -113,39 +112,11 @@ async def api_metrics(user: Annotated[WebUser, Depends(current_user)]):
 @app.get("/lessons", response_class=HTMLResponse)
 async def lessons_page(user: Annotated[WebUser, Depends(require("config_lesson_counters"))]) -> str:
     payload = load_lesson_config(Settings.from_env().lesson_counters_path)
-    content = f"""
-    <section class="page-head">
-      <div>
-        <p class="eyebrow">Конфигурация семестра</p>
-        <h2>Счетчики пройденных пар</h2>
-        <p>Правь JSON, проверяй дисциплины по расписанию группы и сохраняй только валидный список.</p>
-      </div>
-    </section>
-    <section class="editor-layout">
-      <form method="post" class="panel editor-card">
-        <div class="panel-title"><span class="icon">{icon("file-json")}</span><h3>lesson_counters.json</h3></div>
-        <textarea name="payload" spellcheck="false">{html_escape(json_dumps(payload))}</textarea>
-        <div class="actions">
-          <button class="secondary" name="mode" value="validate" type="submit">{icon("scan")} Проверить</button>
-          <button name="mode" value="save" type="submit">{icon("save")} Проверить и сохранить</button>
-        </div>
-      </form>
-      <aside class="panel guide-card">
-        <div class="panel-title"><span class="icon">{icon("spark")}</span><h3>Как это работает</h3></div>
-        <ul class="guide-list">
-          <li>Можно указать <b>schedule_id</b> или <b>group_name</b>.</li>
-          <li>Название дисциплины нормализуется: регистр, точки и дефисы не мешают.</li>
-          <li>Если предмета нет в расписании группы, вебка не даст сохранить.</li>
-          <li>Счетчик <b>passed</b> не сбрасывается при рестарте, пока запись остается в JSON.</li>
-        </ul>
-      </aside>
-    </section>
-    """
-    return layout("Счетчики пар", content, user)
+    return layout("Счетчики пар", lessons_manager_html(payload), user)
 
 
-@app.post("/lessons", response_class=HTMLResponse)
-async def save_lessons(
+@app.post("/lessons/json", response_class=HTMLResponse)
+async def save_lessons_json(
     user: Annotated[WebUser, Depends(require("config_lesson_counters"))],
     payload: Annotated[str, Form()],
     mode: Annotated[str, Form()] = "validate",
@@ -166,31 +137,96 @@ async def save_lessons(
         editor_value = payload
         report = f"<div class='alert bad'>Ошибка: {html_escape(str(exc))}</div>"
 
-    content = f"""
-    <section class="page-head">
-      <div>
-        <p class="eyebrow">Конфигурация семестра</p>
-        <h2>Счетчики пройденных пар</h2>
-        <p>Результат проверки ниже. Ошибки блокируют сохранение, предупреждения оставляют решение за тобой.</p>
-      </div>
-    </section>
-    <section class="editor-layout">
-      <form method="post" class="panel editor-card">
-        <div class="panel-title"><span class="icon">{icon("file-json")}</span><h3>lesson_counters.json</h3></div>
-      {report}
-        <textarea name="payload" spellcheck="false">{html_escape(editor_value)}</textarea>
-        <div class="actions">
-          <button class="secondary" name="mode" value="validate" type="submit">{icon("scan")} Проверить</button>
-          <button name="mode" value="save" type="submit">{icon("save")} Проверить и сохранить</button>
-        </div>
-      </form>
-      <aside class="panel guide-card">
-        <div class="panel-title"><span class="icon">{icon("alert")}</span><h3>Валидация</h3></div>
-        <p class="muted">Проверка ходит на сайт расписания, поэтому может занять несколько секунд.</p>
-      </aside>
-    </section>
-    """
+    try:
+        display_payload = parse_json_payload(editor_value)
+    except Exception:
+        display_payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    content = lessons_manager_html(display_payload, report=report, raw_json=editor_value)
     return layout("Счетчики пар", content, user)
+
+
+@app.post("/lessons/groups")
+async def add_lesson_group(
+    _: Annotated[WebUser, Depends(require("config_lesson_counters"))],
+    group_name: Annotated[str, Form()] = "",
+    schedule_id: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    group_catalog = GroupCatalog(Settings.from_env().schedule_url)
+    await group_catalog.ensure_loaded()
+    resolved_id, resolved_name = await resolve_group_input(group_catalog, group_name, schedule_id)
+    if resolved_id is None:
+        return RedirectResponse("/lessons?error=group", status_code=303)
+    groups = payload.setdefault("groups", [])
+    if not any(safe_int(item.get("schedule_id")) == resolved_id for item in groups if isinstance(item, dict)):
+        groups.append({"schedule_id": resolved_id, "group_name": resolved_name or str(resolved_id), "subjects": []})
+        save_lesson_config(Settings.from_env().lesson_counters_path, payload)
+    return RedirectResponse("/lessons", status_code=303)
+
+
+@app.post("/lessons/groups/delete")
+async def delete_lesson_group(
+    _: Annotated[WebUser, Depends(require("config_lesson_counters"))],
+    schedule_id: Annotated[int, Form()],
+) -> RedirectResponse:
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    payload["groups"] = [
+        item for item in payload.get("groups", [])
+        if not (isinstance(item, dict) and safe_int(item.get("schedule_id")) == schedule_id)
+    ]
+    save_lesson_config(Settings.from_env().lesson_counters_path, payload)
+    return RedirectResponse("/lessons", status_code=303)
+
+
+@app.post("/lessons/subjects")
+async def upsert_lesson_subject(
+    user: Annotated[WebUser, Depends(require("config_lesson_counters"))],
+    schedule_id: Annotated[int, Form()],
+    subject: Annotated[str, Form()],
+    teacher: Annotated[str, Form()],
+    passed: Annotated[int, Form()] = 0,
+    total: Annotated[int, Form()] = 0,
+    original_subject: Annotated[str, Form()] = "",
+    original_teacher: Annotated[str, Form()] = "",
+):
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    group = find_config_group(payload, schedule_id)
+    if group is None:
+        return RedirectResponse("/lessons?error=group", status_code=303)
+    subjects = group.setdefault("subjects", [])
+    replacement = {"subject": subject.strip(), "teacher": teacher.strip(), "passed": max(0, passed), "total": max(0, total)}
+    replaced = False
+    if original_subject or original_teacher:
+        for index, item in enumerate(subjects):
+            if item.get("subject") == original_subject and item.get("teacher") == original_teacher:
+                subjects[index] = replacement
+                replaced = True
+                break
+    if not replaced:
+        subjects.append(replacement)
+    normalized, problems = await validate_payload_for_save(payload)
+    if any(problem["level"] == "error" for problem in problems):
+        return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
+    save_lesson_config(Settings.from_env().lesson_counters_path, normalized)
+    return RedirectResponse("/lessons", status_code=303)
+
+
+@app.post("/lessons/subjects/delete")
+async def delete_lesson_subject(
+    _: Annotated[WebUser, Depends(require("config_lesson_counters"))],
+    schedule_id: Annotated[int, Form()],
+    subject: Annotated[str, Form()],
+    teacher: Annotated[str, Form()],
+) -> RedirectResponse:
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    group = find_config_group(payload, schedule_id)
+    if group is not None:
+        group["subjects"] = [
+            item for item in group.get("subjects", [])
+            if not (item.get("subject") == subject and item.get("teacher") == teacher)
+        ]
+        save_lesson_config(Settings.from_env().lesson_counters_path, payload)
+    return RedirectResponse("/lessons", status_code=303)
 
 
 @app.get("/web-users", response_class=HTMLResponse)
@@ -218,6 +254,146 @@ async def delete_web_user(
     return RedirectResponse("/web-users", status_code=303)
 
 
+def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: str | None = None) -> str:
+    groups = [item for item in payload.get("groups", []) if isinstance(item, dict)]
+    group_cards = "\n".join(lesson_group_card(group) for group in groups)
+    if not group_cards:
+        group_cards = "<div class='empty-state'>Пока нет групп. Добавь первую группу по названию или schedule_id.</div>"
+    raw_json = raw_json if raw_json is not None else json_dumps(payload)
+    return f"""
+    <section class="page-head compact-head">
+      <div>
+        <p class="eyebrow">Семестр</p>
+        <h2>Счетчики пройденных пар</h2>
+        <p>Основной режим — карточки и формы. JSON оставлен как расширенный режим для быстрых массовых правок.</p>
+      </div>
+      <div class="head-chips">
+        <span class="chip">Групп: {len(groups)}</span>
+        <span class="chip">JSON доступен</span>
+      </div>
+    </section>
+    {report}
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon("calendar")}</span><h3>Добавить группу</h3></div>
+      <form method="post" action="/lessons/groups" class="inline-form">
+        <label>Группа <input name="group_name" placeholder="ИСП-25-1"></label>
+        <label>schedule_id <input name="schedule_id" inputmode="numeric" placeholder="600"></label>
+        <button type="submit">{icon("save")} Добавить</button>
+      </form>
+    </section>
+    <section class="lesson-grid">{group_cards}</section>
+    <details class="panel json-details">
+      <summary>{icon("file-json")} Расширенный режим JSON</summary>
+      <form method="post" action="/lessons/json" class="json-form">
+        <textarea name="payload" spellcheck="false">{html_escape(raw_json)}</textarea>
+        <div class="actions">
+          <button class="secondary" name="mode" value="validate" type="submit">{icon("scan")} Проверить</button>
+          <button name="mode" value="save" type="submit">{icon("save")} Проверить и сохранить JSON</button>
+        </div>
+      </form>
+    </details>
+    """
+
+
+def lesson_group_card(group: dict[str, Any]) -> str:
+    schedule_id = int(group.get("schedule_id", 0) or 0)
+    group_name = str(group.get("group_name") or schedule_id)
+    subjects = [item for item in group.get("subjects", []) if isinstance(item, dict)]
+    subject_rows = "\n".join(lesson_subject_row(schedule_id, item) for item in subjects)
+    if not subject_rows:
+        subject_rows = "<div class='empty-state small'>В этой группе пока нет дисциплин.</div>"
+    return f"""
+    <article class="panel lesson-card">
+      <div class="lesson-card-head">
+        <div>
+          <h3>{html_escape(group_name)}</h3>
+          <div class="chips"><span class="chip">ID {schedule_id}</span><span class="chip">{len(subjects)} дисциплин</span></div>
+        </div>
+        <form method="post" action="/lessons/groups/delete">
+          <input type="hidden" name="schedule_id" value="{schedule_id}">
+          <button class="ghost danger" type="submit">{icon("trash")}</button>
+        </form>
+      </div>
+      <div class="subject-list">{subject_rows}</div>
+      <form method="post" action="/lessons/subjects" class="subject-form">
+        <input type="hidden" name="schedule_id" value="{schedule_id}">
+        <label>Дисциплина <input name="subject" placeholder="Информатика" required></label>
+        <label>Преподаватель <input name="teacher" placeholder="Иванов И. И." required></label>
+        <label>Прошло <input name="passed" type="number" min="0" value="0"></label>
+        <label>Всего <input name="total" type="number" min="0" value="0"></label>
+        <button type="submit">{icon("save")} Добавить дисциплину</button>
+      </form>
+    </article>
+    """
+
+
+def lesson_subject_row(schedule_id: int, item: dict[str, Any]) -> str:
+    subject = str(item.get("subject") or "")
+    teacher = str(item.get("teacher") or "")
+    passed = int(item.get("passed", 0) or 0)
+    total = int(item.get("total", 0) or 0)
+    return f"""
+    <details class="subject-row">
+      <summary>
+        <span><b>{html_escape(subject)}</b><small>{html_escape(teacher)}</small></span>
+        <span class="chip">{passed}/{total}</span>
+      </summary>
+      <form method="post" action="/lessons/subjects" class="subject-form edit">
+        <input type="hidden" name="schedule_id" value="{schedule_id}">
+        <input type="hidden" name="original_subject" value="{html_escape(subject)}">
+        <input type="hidden" name="original_teacher" value="{html_escape(teacher)}">
+        <label>Дисциплина <input name="subject" value="{html_escape(subject)}" required></label>
+        <label>Преподаватель <input name="teacher" value="{html_escape(teacher)}" required></label>
+        <label>Прошло <input name="passed" type="number" min="0" value="{passed}"></label>
+        <label>Всего <input name="total" type="number" min="0" value="{total}"></label>
+        <button type="submit">{icon("save")} Сохранить</button>
+      </form>
+      <form method="post" action="/lessons/subjects/delete" class="delete-line">
+        <input type="hidden" name="schedule_id" value="{schedule_id}">
+        <input type="hidden" name="subject" value="{html_escape(subject)}">
+        <input type="hidden" name="teacher" value="{html_escape(teacher)}">
+        <button class="ghost danger" type="submit">{icon("trash")} Удалить дисциплину</button>
+      </form>
+    </details>
+    """
+
+
+async def resolve_group_input(group_catalog: GroupCatalog, group_name: str, schedule_id: str) -> tuple[int | None, str | None]:
+    if schedule_id.strip():
+        try:
+            resolved_id = int(schedule_id.strip())
+        except ValueError:
+            return None, None
+        group = await group_catalog.get_by_schedule_id(resolved_id)
+        return resolved_id, group.group_name if group else group_name.strip()
+    if group_name.strip():
+        group = await group_catalog.find_group(group_name.strip())
+        if group is not None:
+            return group.schedule_id, group.group_name
+    return None, None
+
+
+def find_config_group(payload: dict[str, Any], schedule_id: int) -> dict[str, Any] | None:
+    for item in payload.get("groups", []):
+        if isinstance(item, dict) and safe_int(item.get("schedule_id")) == schedule_id:
+            return item
+    return None
+
+
+def safe_int(value: object, default: int = -1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def validate_payload_for_save(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    group_catalog = GroupCatalog(Settings.from_env().schedule_url)
+    await group_catalog.ensure_loaded()
+    parser = ScheduleParser(Settings.from_env().schedule_url)
+    return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser)
+
+
 def dashboard_html(user: WebUser) -> str:
     cards = []
     if can(user, "stats_overview"):
@@ -225,12 +401,9 @@ def dashboard_html(user: WebUser) -> str:
             """
             <section class="hero">
               <div>
-                <p class="eyebrow">Live monitor</p>
+                <p class="eyebrow">Системный монитор</p>
                 <h2>Пульс бота расписания</h2>
                 <p>Обновляется каждые 30 секунд. Смотри нагрузку, доставку, подписки и состояние счетчиков в одном месте.</p>
-              </div>
-              <div class="hero-orbit">
-                <span></span><span></span><span></span>
               </div>
             </section>
             <section><div id="overview" class="metric-grid"></div></section>
@@ -400,20 +573,22 @@ def problems_html(problems: list[dict], saved: bool) -> str:
 
 STYLE = """
 <style>
-:root{--bg:#090d14;--surface:#111824;--surface2:#151f2e;--line:#263244;--text:#eef4ff;--muted:#91a0b5;--accent:#6ee7f9;--accent2:#8b5cf6;--good:#34d399;--warn:#f59e0b;--bad:#fb7185}
-*{box-sizing:border-box} body{margin:0;font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:radial-gradient(circle at 20% 0%,rgba(110,231,249,.16),transparent 28%),radial-gradient(circle at 90% 10%,rgba(139,92,246,.16),transparent 30%),var(--bg);color:var(--text)}
-svg{width:18px;height:18px;fill:currentColor;flex:0 0 auto} a{color:inherit;text-decoration:none} h1,h2,h3,p{margin:0} h1{font-size:30px;letter-spacing:0} h2{font-size:26px;letter-spacing:0} h3{font-size:16px;letter-spacing:0}
-.shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:22px;background:rgba(12,18,28,.88);border-right:1px solid var(--line);backdrop-filter:blur(18px);display:flex;flex-direction:column;gap:24px}.brand{display:flex;gap:12px;align-items:center}.brand b{display:block;font-size:17px}.brand small{display:block;color:var(--muted)}.brand-mark{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#08101b}
-nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#cbd6e6;transition:.18s ease}.sidebar nav a:hover{background:#172235;color:#fff;transform:translateX(3px)}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:rgba(17,24,36,.72);border-radius:999px;padding:9px 13px;color:#d7e2f3}
-main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:190px;padding:28px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(135deg,rgba(21,31,46,.96),rgba(13,19,30,.92));box-shadow:0 24px 80px rgba(0,0,0,.32);margin-bottom:18px}.hero p,.page-head p{max-width:680px;color:var(--muted);margin-top:10px}.hero-orbit{position:relative;width:180px;min-width:180px}.hero-orbit span{position:absolute;border-radius:999px;border:1px solid rgba(110,231,249,.45);animation:float 5s ease-in-out infinite}.hero-orbit span:nth-child(1){inset:20px}.hero-orbit span:nth-child(2){inset:48px;animation-delay:.5s;border-color:rgba(139,92,246,.55)}.hero-orbit span:nth-child(3){inset:75px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:0}
-@keyframes float{50%{transform:translateY(-8px) scale(1.02)}}.panel{background:rgba(17,24,36,.82);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 50px rgba(0,0,0,.24);animation:rise .22s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#0d2530;border:1px solid #1f4250}
-@keyframes rise{from{opacity:.4;transform:translateY(8px)}to{opacity:1;transform:none}}.metric-grid,.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.metric-grid.compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card,.service-card{position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(24,35,52,.95),rgba(17,24,36,.95));border:1px solid var(--line);border-radius:8px;padding:16px;min-height:108px}.card:before,.service-card:before{content:"";position:absolute;inset:0 0 auto;height:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:.9}.card span,.service-card span{color:var(--muted);display:block}.card b,.service-card b{font-size:28px;line-height:1.2;display:block;margin-top:8px}.card small,.service-card small{color:var(--muted)}
-.status{display:inline-flex;gap:7px;align-items:center}.dot{width:9px;height:9px;border-radius:999px;background:var(--bad);box-shadow:0 0 14px currentColor}.dot.ok{background:var(--good)}button{display:inline-flex;gap:8px;align-items:center;justify-content:center;background:linear-gradient(135deg,#0891b2,#7c3aed);color:white;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;transition:.16s ease}button:hover{transform:translateY(-1px);filter:brightness(1.08)}button.ghost,button.secondary{background:#1b2738;color:#dce8f8;border:1px solid var(--line)}button.danger{color:#fecdd3}
-.login{display:grid;place-items:center;min-height:100vh}.narrow{width:min(390px,calc(100vw - 40px))}.login .panel{padding:28px}.login h1{margin-bottom:18px}label{display:grid;gap:7px;margin:0 0 12px;color:#dbe7f7}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;background:#0c121c;color:var(--text);font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(110,231,249,.12)}textarea{min-height:620px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;resize:vertical}
-.toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:10px;margin-bottom:14px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#a9b8cc;background:#101827;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#131d2b}
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap');
+:root{--bg:#0b0d10;--surface:#14171c;--surface2:#1a1e25;--line:#2a3039;--text:#f1eadf;--muted:#a9a195;--accent:#d7c8aa;--accent2:#8f856f;--good:#7fba8d;--warn:#d0a85f;--bad:#c77878}
+*{box-sizing:border-box} body{margin:0;font:14px/1.55 Montserrat,system-ui,sans-serif;background:var(--bg);color:var(--text)}
+svg{width:18px;height:18px;fill:currentColor;flex:0 0 auto;display:block} a{color:inherit;text-decoration:none} h1,h2,h3,p{margin:0} h1{font-size:28px;font-weight:700;letter-spacing:0} h2{font-size:25px;font-weight:700;letter-spacing:0} h3{font-size:16px;font-weight:700;letter-spacing:0}
+.shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:22px;background:#101318;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:24px}.brand{display:flex;gap:12px;align-items:center}.brand b{display:block;font-size:16px}.brand small{display:block;color:var(--muted);font-size:12px}.brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:8px;background:#1d211f;border:1px solid #3b382f;color:var(--accent)}
+nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#d8d0c4;transition:.16s ease}.sidebar nav a:hover{background:#1a1e25;color:var(--text)}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#12161b;border-radius:999px;padding:9px 13px;color:#e4dccf}
+main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 45px rgba(0,0,0,.18);animation:rise .18s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#1b1e22;border:1px solid #343942}
+@keyframes rise{from{opacity:.55;transform:translateY(5px)}to{opacity:1;transform:none}}.metric-grid,.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.metric-grid.compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card,.service-card{position:relative;overflow:hidden;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:16px;min-height:108px}.card span,.service-card span{color:var(--muted);display:block;font-size:12px;font-weight:600}.card b,.service-card b{font-size:26px;line-height:1.2;display:block;margin-top:8px;font-weight:800}.card small,.service-card small{color:var(--muted)}
+.status{display:inline-flex;gap:7px;align-items:center}.dot{width:9px;height:9px;border-radius:999px;background:var(--bad)}.dot.ok{background:var(--good)}button{display:inline-flex;gap:8px;align-items:center;justify-content:center;background:#e7dcc9;color:#111418;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;transition:.16s ease}button:hover{background:#f1eadf}button.ghost,button.secondary{background:#1b1f26;color:var(--text);border:1px solid var(--line)}button.danger{color:#f0b7b7}
+.login{display:grid;place-items:center;min-height:100vh}.narrow{width:min(390px,calc(100vw - 40px))}.login .panel{padding:28px}.login h1{margin-bottom:18px}label{display:grid;gap:7px;margin:0 0 12px;color:#ddd5c8;font-weight:600}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;background:#0e1115;color:var(--text);font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#5a5346;box-shadow:0 0 0 3px rgba(215,200,170,.1)}textarea{min-height:620px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;resize:vertical}
+.toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:10px;margin-bottom:14px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#cfc6b8;background:#101318;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#181c22}
 .editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px}.guide-list{display:grid;gap:12px;padding-left:18px;color:#c9d6e7}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#d7e2f3}.check input{width:auto}
+.head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
-@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}.hero-orbit{display:none}main{padding:0 16px 32px}.toolbar,.editor-layout{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}}
+@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}}
 </style>
 """
 
