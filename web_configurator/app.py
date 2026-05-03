@@ -36,17 +36,16 @@ signer = SessionSigner(os.getenv("WEB_CONFIG_SECRET", "change-me"))
 app = FastAPI(title="MISIS bot configurator")
 
 PERMISSION_DESCRIPTIONS = {
-    "stats_overview": "Главные цифры на первой строке дашборда: аптайм, аудитория, новые пользователи и общая активность.",
-    "stats_users": "Таблица пользователей Telegram/VK, фильтры по платформе, подписке и свежести регистрации.",
-    "stats_services": "Состояние Telegram, VK и RabbitMQ без технических деталей ошибок.",
-    "stats_schedule": "Последний парсинг, активные группы и журнал изменений расписания.",
-    "stats_delivery": "Сколько сообщений доставлено сегодня и за все время: RabbitMQ, напрямую, Telegram и VK.",
-    "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что учитывалось сегодня, текущий прогресс.",
-    "config_lesson_counters": "Доступ к редактору счетчиков пар: группы, дисциплины, преподаватели, JSON-режим.",
-    "manage_bot_admin": "Рассылки, перепарсинг и сохранение эталона бота прямо из вебки.",
-    "manage_web_users": "Создание, удаление и изменение прав пользователей веб-админки.",
+    "stats_overview": "Главные карточки на верхней строке дашборда: аптайм, аудитория, новые пользователи и общая активность.",
+    "stats_users": "Таблица пользователей Telegram и VK с фильтрами по платформе, типу подписки и свежести регистрации.",
+    "stats_services": "Состояние Telegram, VK и RabbitMQ без технического шума и внутренних деталей ошибок.",
+    "stats_schedule": "Последний парсинг, активные группы и журнал изменений расписания по всем источникам.",
+    "stats_delivery": "Сводка по доставке сообщений за сегодня и за всё время: RabbitMQ, direct fallback, Telegram и VK.",
+    "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что было учтено сегодня и какой сейчас прогресс.",
+    "config_lesson_counters": "Доступ к настройке счетчиков пар: группы, дисциплины, преподаватели, карточный режим и JSON-режим.",
+    "manage_bot_admin": "Управление ботом из вебки: рассылки, тестовая доставка, перепарсинг и сохранение эталонов.",
+    "manage_web_users": "Создание веб-пользователей, изменение их прав и удаление лишних учеток.",
 }
-
 
 def current_user(request: Request) -> WebUser:
     login = signer.unsign(request.cookies.get("web_config_session"))
@@ -705,16 +704,19 @@ def web_user_row(user: dict[str, Any]) -> str:
 
 def permission_checklist(selected: list[str]) -> str:
     selected_set = set(selected)
-    return "\n".join(
-        f"""
-        <label class='check'>
-          <input type='checkbox' name='permissions' value='{permission}' {'checked' if permission in selected_set else ''}>
-          <span>{html_escape(PERMISSION_LABELS[permission])}</span>
-          <span class='help' tabindex='0'>{icon('help')}<span class='tooltip'>{html_escape(PERMISSION_DESCRIPTIONS[permission])}</span></span>
-        </label>
-        """
-        for permission in ALL_PERMISSIONS
-    )
+    rows: list[str] = []
+    for permission in ALL_PERMISSIONS:
+        description = html_escape(PERMISSION_DESCRIPTIONS[permission])
+        rows.append(
+            f"""
+            <label class='check'>
+              <input type='checkbox' name='permissions' value='{permission}' {'checked' if permission in selected_set else ''}>
+              <span>{html_escape(PERMISSION_LABELS[permission])}</span>
+              <span class='help' tabindex='0' role='note' aria-label='{description}' title='{description}'>{icon('help')}<span class='tooltip'>{description}</span></span>
+            </label>
+            """
+        )
+    return "\n".join(rows)
 
 
 def delete_form(login: str) -> str:
@@ -778,7 +780,7 @@ def icon(name: str) -> str:
         "spark": "<svg viewBox='0 0 24 24'><path d='m12 2 2.2 6.8H21l-5.5 4 2.1 6.8-5.6-4.2-5.6 4.2 2.1-6.8-5.5-4h6.8L12 2Z'/></svg>",
         "alert": "<svg viewBox='0 0 24 24'><path d='M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z'/></svg>",
         "trash": "<svg viewBox='0 0 24 24'><path d='M7 21h10l1-13H6l1 13ZM9 4l1-2h4l1 2h5v2H4V4h5Z'/></svg>",
-        "help": "<svg viewBox='0 0 24 24'><path d='M11 18h2v-2h-2v2Zm1-16a7 7 0 0 0-7 7h2a5 5 0 1 1 8.6 3.5c-1.7 1.6-2.6 2.4-2.6 4.5h-2c0-3 1.4-4.3 3.2-5.9A3 3 0 0 0 12 4Z'/></svg>",
+        "help": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 15.5a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Zm1.7-5.2-.9.6c-.7.4-1 1-1 1.8v.5h-1.8v-.7c0-1.4.5-2.4 1.6-3.1l1-.7c.7-.4 1-.9 1-1.6 0-1-.8-1.7-2-1.7-1.3 0-2.1.8-2.2 2.1H7.6c.1-2.4 1.9-3.9 4.7-3.9 2.6 0 4.4 1.5 4.4 3.7 0 1.3-.7 2.3-2 3.1Z'/></svg>",
         "tools": "<svg viewBox='0 0 24 24'><path d='m14.7 6.3 3 3L20 7l-3-3-2.3 2.3ZM13.3 7.7 4 17v3h3l9.3-9.3-3-3ZM20.7 13.3l-2-2a6 6 0 0 1-7.4 7.4l2 2A8 8 0 0 0 20.7 13.3ZM10.7 3.3 8.7 5.3A8 8 0 0 0 3.3 10.7l2 2a6 6 0 0 1 5.4-5.4Z'/></svg>",
         "refresh": "<svg viewBox='0 0 24 24'><path d='M12 5a7 7 0 0 1 6.2 3.8L16 11h6V5l-2.2 2.2A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7Z'/></svg>",
         "layers": "<svg viewBox='0 0 24 24'><path d='M12 2 1 8l11 6 9-4.9V17h2V8L12 2Zm0 14L4.2 11.8 1 13.5l11 6 11-6-3.2-1.7L12 16Z'/></svg>",
@@ -854,8 +856,8 @@ main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{positio
 .status{display:inline-flex;gap:7px;align-items:center}.dot{width:9px;height:9px;border-radius:999px;background:var(--bad)}.dot.ok{background:var(--good)}button{display:inline-flex;gap:8px;align-items:center;justify-content:center;background:#e7dcc9;color:#111418;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;transition:.16s ease}button:hover{background:#f1eadf}button.ghost,button.secondary{background:#1b1f26;color:var(--text);border:1px solid var(--line)}button.danger{color:#f0b7b7}
 .login{display:grid;place-items:center;min-height:100vh}.narrow{width:min(390px,calc(100vw - 40px))}.login .panel{padding:28px}.login h1{margin-bottom:18px}label{display:grid;gap:7px;margin:0 0 12px;color:#ddd5c8;font-weight:600}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;background:#0e1115;color:var(--text);font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#5a5346;box-shadow:0 0 0 3px rgba(215,200,170,.1)}textarea{min-height:620px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;resize:vertical}
 .toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:12px;margin:4px 0 16px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}.section-gap{margin-top:14px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#cfc6b8;background:#101318;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#181c22}.profile-link{color:#eadfcf;text-decoration:underline;text-decoration-color:#5b5549;text-underline-offset:3px}
-.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px}.check input{width:auto}.check span:first-of-type{flex:1}.check .help{margin-left:auto}
-.help{position:relative;display:grid;place-items:center;width:24px;height:24px;color:var(--accent);cursor:help}.help svg{width:16px;height:16px}.tooltip{position:absolute;right:0;bottom:30px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
+.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;overflow:visible}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px;overflow:visible}.check input{width:auto}.check span:first-of-type{flex:1}.check .help{margin-left:auto}
+.help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;border:1px solid #3f3a30;background:#15191f;color:var(--accent);cursor:help;flex:0 0 auto;outline:none}.help svg{width:14px;height:14px}.help:hover,.help:focus{background:#1c2128;border-color:#595142;color:#f1eadf}.tooltip{position:absolute;right:-6px;bottom:34px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;font-weight:500;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
 .collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none;min-height:76px}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px;min-height:60px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
 .two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.summary-gap{margin-top:6px}
 .head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}

@@ -34,10 +34,23 @@ services:
       WEB_USERS_PATH: /app/runtime/web_users.json
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
     command: ["uv", "run", "--frozen", "uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
-    ports:
-      - "8080:8080"
     volumes:
       - ./runtime:/app/runtime
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: misis-dashboard-nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+    environment:
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-dashboard.nekoty.ru}
+      NGINX_PUBLIC_PORT: ${NGINX_PUBLIC_PORT:-2443}
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-web:8080}
+    ports:
+      - "${NGINX_PUBLIC_PORT:-2443}:80"
+    volumes:
+      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
 
   rabbitmq:
     image: rabbitmq:3.13-management

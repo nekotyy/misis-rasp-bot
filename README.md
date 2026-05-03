@@ -266,6 +266,44 @@ RabbitMQ поднимается рядом с ботом. Если брокер 
 
 Суперпользователь задается через `WEB_SUPERUSER_LOGIN` и `WEB_SUPERUSER_PASSWORD`.
 
+### 7.1. nginx and public dashboard access
+
+Now `docker compose up -d --build` starts `bot`, `rabbitmq`, `web`, and `nginx`.
+
+Flow:
+
+- `web` stays inside the Docker network on `web:8080`
+- `nginx` accepts external traffic and proxies it to `web`
+- public port `2443` is exposed by default
+
+Public URL after deploy:
+
+```text
+http://dashboard.nekoty.ru:2443
+```
+
+Relevant `.env` values:
+
+```env
+NGINX_SERVER_NAME=dashboard.nekoty.ru
+NGINX_PUBLIC_PORT=2443
+WEB_UPSTREAM=web:8080
+```
+
+DNS setup:
+
+- use `CNAME` if `dashboard.nekoty.ru` should point to another hostname
+- use an `A` record if the subdomain should point directly to the VPS IP
+
+Post-deploy check:
+
+```bash
+docker compose ps
+docker compose logs -f nginx
+docker compose logs -f web
+```
+
+
 ---
 
 ## 7. Как работает парсинг расписания (подробно)
