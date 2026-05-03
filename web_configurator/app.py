@@ -27,9 +27,12 @@ load_dotenv(ENV_PATH)
 settings = Settings.from_env()
 started_at = datetime.now()
 auth_store = WebAuthStore(
-    Path(os.getenv("WEB_USERS_PATH", "storage/web_users.json")).resolve(),
+    settings.database_path,
     os.getenv("WEB_SUPERUSER_LOGIN", "admin"),
     os.getenv("WEB_SUPERUSER_PASSWORD", ""),
+    Path(
+        os.getenv("WEB_USERS_JSON_IMPORT_PATH", os.getenv("WEB_USERS_PATH", "storage/web_users.json"))
+    ).resolve(),
 )
 signer = SessionSigner(os.getenv("WEB_CONFIG_SECRET", "change-me"))
 
