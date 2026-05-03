@@ -43,7 +43,7 @@ PERMISSION_DESCRIPTIONS = {
     "stats_delivery": "Сколько сообщений доставлено сегодня и за все время: RabbitMQ, напрямую, Telegram и VK.",
     "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что учитывалось сегодня, текущий прогресс.",
     "config_lesson_counters": "Доступ к редактору счетчиков пар: группы, дисциплины, преподаватели, JSON-режим.",
-    "manage_bot_admin": "Рассылки, перепарсинг, сохранение эталона и управление редакторами бота прямо из вебки.",
+    "manage_bot_admin": "Рассылки, перепарсинг и сохранение эталона бота прямо из вебки.",
     "manage_web_users": "Создание, удаление и изменение прав пользователей веб-админки.",
 }
 
@@ -309,21 +309,6 @@ async def control_baseline(user: Annotated[WebUser, Depends(require("manage_bot_
     return layout("Управление ботом", await bot_control_html(action_report_html("Сохранение эталонов", rows, "эталон сохранен")), user)
 
 
-@app.post("/control/editors", response_class=HTMLResponse)
-async def control_editor_toggle(
-    user: Annotated[WebUser, Depends(require("manage_bot_admin"))],
-    platform: Annotated[str, Form()],
-    user_id: Annotated[int, Form()],
-) -> str:
-    db = await get_db()
-    target = await db.get_user(platform, user_id)
-    if target is None:
-        return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Пользователь не найден.</div>"), user)
-    await db.set_editor(platform, user_id, not target.is_editor)
-    label = "выдана" if not target.is_editor else "снята"
-    return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Роль редактора {label} для {html_escape(platform)}:{user_id}.</div>"), user)
-
-
 def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: str | None = None) -> str:
     groups = [item for item in payload.get("groups", []) if isinstance(item, dict)]
     group_cards = "\n".join(lesson_group_card(group) for group in groups)
@@ -586,20 +571,8 @@ def action_report_html(title: str, rows: list[tuple[str, str, str]], success_lab
 async def bot_control_html(report: str = "") -> str:
     db = await get_db()
     users = await db.list_users()
-    editors = [user for user in users if not user.is_admin]
-    group_rows = await db.get_group_user_stats()
-    changes = await db.get_daily_change_groups(datetime.now().date().isoformat())
     active_sources = await db.get_active_sources()
     delivery_stats = await db.get_delivery_stats()
-    group_table = "".join(
-        f"<tr><td>{index}</td><td>{html_escape(row['group_name'])}</td><td>{int(row['users_count'])}</td></tr>"
-        for index, row in enumerate(group_rows, start=1)
-    ) or "<tr><td colspan='3'>Пока нет пользователей с группами.</td></tr>"
-    change_table = "".join(
-        f"<tr><td>{html_escape(row['group_name'])}</td><td>{html_escape(row['created_at'])}</td></tr>"
-        for row in changes
-    ) or "<tr><td colspan='2'>За сегодня изменений пока не было.</td></tr>"
-    editor_cards = "\n".join(bot_editor_row(user) for user in editors) or "<div class='empty-state'>Пока нет пользователей бота для управления ролями.</div>"
     source_count = len(active_sources)
     teacher_count = sum(1 for item in active_sources if item.get("source_type") == "teacher")
     group_count = sum(1 for item in active_sources if item.get("source_type") == "group")
@@ -620,7 +593,7 @@ async def bot_control_html(report: str = "") -> str:
     <section class="dashboard-block">
       <div class="metric-grid compact">
         <div class="card"><span>Пользователей</span><b>{len(users)}</b><small>TG/VK вместе</small></div>
-        <div class="card"><span>Редакторов</span><b>{sum(1 for user in users if user.is_editor)}</b><small>без админов</small></div>
+        <div class="card"><span>Активных источников</span><b>{source_count}</b><small>группы и преподаватели</small></div>
         <div class="card"><span>Рассылок</span><b>{delivery_stats.get('admin_broadcast_sent', 0)}</b><small>успешно за все время</small></div>
         <div class="card"><span>Служебных уведомлений</span><b>{delivery_stats.get('admin_notify_sent', 0)}</b><small>админу</small></div>
       </div>
@@ -640,49 +613,7 @@ async def bot_control_html(report: str = "") -> str:
         <button type="submit">{icon('send')} Поставить в очередь</button>
       </form>
     </section>
-    <section class="panel">
-      <div class="panel-title"><span class="icon">{icon('users')}</span><h3>Редакторы бота</h3></div>
-      <div class="editor-grid">{editor_cards}</div>
-    </section>
-    <section class="two-col">
-      <div class="panel">
-        <div class="panel-title"><span class="icon">{icon('calendar')}</span><h3>Группы</h3></div>
-        <div class="table-wrap"><table><tr><th>#</th><th>Группа</th><th>Юзеров</th></tr>{group_table}</table></div>
-      </div>
-      <div class="panel">
-        <div class="panel-title"><span class="icon">{icon('alert')}</span><h3>Изменения за сегодня</h3></div>
-        <div class="table-wrap"><table><tr><th>Источник</th><th>Когда</th></tr>{change_table}</table></div>
-      </div>
-    </section>
     """
-
-
-def bot_editor_row(user: Any) -> str:
-    display_name = user.full_name or (f"@{user.username}" if user.username else f"{user.platform}:{user.user_id}")
-    profile_href = user_profile_link(user.platform, user.user_id, user.username)
-    status_chip = "<span class='chip chip-ok'>редактор</span>" if user.is_editor else "<span class='chip'>без роли</span>"
-    return f"""
-    <article class="editor-card-row">
-      <div>
-        <a class="profile-link strong" href="{html_escape(profile_href)}" target="_blank" rel="noreferrer">{html_escape(display_name)}</a>
-        <p class="muted">{html_escape(user.platform.upper())} · ID {user.user_id}</p>
-      </div>
-      <div class="chips">{status_chip}</div>
-      <form method="post" action="/control/editors">
-        <input type="hidden" name="platform" value="{html_escape(user.platform)}">
-        <input type="hidden" name="user_id" value="{user.user_id}">
-        <button class="secondary" type="submit">{icon('shield')} {"Снять роль" if user.is_editor else "Сделать редактором"}</button>
-      </form>
-    </article>
-    """
-
-
-def user_profile_link(platform: str, user_id: int, username: str | None) -> str:
-    if platform == "vk":
-        return f"https://vk.com/id{user_id}"
-    if username:
-        return f"https://t.me/{username.lstrip('@')}"
-    return f"tg://user?id={user_id}"
 
 
 def dashboard_html(user: WebUser) -> str:
@@ -821,11 +752,11 @@ def layout(title: str, content: str, user: WebUser) -> str:
 
 
 def base_page(title: str, body: str) -> str:
-    return f"<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html_escape(title)}</title>{STYLE}</head><body>{body}</body></html>"
+    return f"<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html_escape(title)}</title>{STYLE}</head><body>{body}{NAV_SCRIPT}</body></html>"
 
 
 def nav_link(href: str, label: str, icon_name: str) -> str:
-    return f"<a href='{href}'>{icon(icon_name)}<span>{label}</span></a>"
+    return f"<a href='{href}' data-nav-link='{href}'>{icon(icon_name)}<span>{label}</span></a>"
 
 
 def icon(name: str) -> str:
@@ -916,7 +847,7 @@ STYLE = """
 *{box-sizing:border-box} body{margin:0;font:14px/1.55 Montserrat,system-ui,sans-serif;background:var(--bg);color:var(--text)}
 svg{width:18px;height:18px;fill:currentColor;flex:0 0 auto;display:block} a{color:inherit;text-decoration:none} h1,h2,h3,p{margin:0} h1{font-size:28px;font-weight:700;letter-spacing:0} h2{font-size:25px;font-weight:700;letter-spacing:0} h3{font-size:16px;font-weight:700;letter-spacing:0}
 .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:22px;background:#101318;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:24px}.brand{display:flex;gap:12px;align-items:center}.brand b{display:block;font-size:16px}.brand small{display:block;color:var(--muted);font-size:12px}.brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:8px;background:#1d211f;border:1px solid #3b382f;color:var(--accent)}
-nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#d8d0c4;transition:.16s ease}.sidebar nav a:hover{background:#1a1e25;color:var(--text)}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#12161b;border-radius:999px;padding:9px 13px;color:#e4dccf}
+nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#d8d0c4;transition:.16s ease}.sidebar nav a:hover,.sidebar nav a.active{background:#1a1e25;color:var(--text);border:1px solid #343942}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#12161b;border-radius:999px;padding:9px 13px;color:#e4dccf}
 main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}.to-top{position:fixed;right:22px;bottom:22px;z-index:20;box-shadow:0 12px 35px rgba(0,0,0,.35)}.icon-only{width:46px;height:46px;padding:0;border-radius:999px}.dashboard-block{margin-bottom:18px}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 45px rgba(0,0,0,.18);animation:rise .18s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#1b1e22;border:1px solid #343942;flex:0 0 auto}
 @keyframes rise{from{opacity:.55;transform:translateY(5px)}to{opacity:1;transform:none}}.metric-grid,.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.metric-grid.compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card,.service-card{position:relative;overflow:hidden;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:16px;min-height:108px}.card span,.service-card span{color:var(--muted);display:block;font-size:12px;font-weight:600}.card b,.service-card b{font-size:26px;line-height:1.2;display:block;margin-top:8px;font-weight:800}.card small,.service-card small{color:var(--muted)}
@@ -926,10 +857,10 @@ main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{positio
 .editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px}.check input{width:auto}.check span:first-of-type{flex:1}.check .help{margin-left:auto}
 .help{position:relative;display:grid;place-items:center;width:24px;height:24px;color:var(--accent);cursor:help}.help svg{width:16px;height:16px}.tooltip{position:absolute;right:0;bottom:30px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
 .collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none;min-height:76px}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px;min-height:60px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
-.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.editor-grid{display:grid;gap:12px}.editor-card-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:8px;background:#101318}.profile-link.strong{font-weight:700}.chip-ok{border-color:#304a36;color:#bbf7d0}.summary-gap{margin-top:6px}
+.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.summary-gap{margin-top:6px}
 .head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
-@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head,.two-col,.action-grid,.editor-card-row{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
+@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head,.two-col,.action-grid{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
 </style>
 """
 
@@ -970,5 +901,17 @@ async function load(){
 }
 document.addEventListener('input',e=>{if(['userSearch','platformFilter','kindFilter'].includes(e.target.id)&&metrics)renderUsers(metrics.user_rows||[])});
 load(); setInterval(load,30000);
+</script>
+"""
+
+NAV_SCRIPT = """
+<script>
+const currentPath = window.location.pathname || "/";
+document.querySelectorAll("[data-nav-link]").forEach(link => {
+  const href = link.getAttribute("data-nav-link");
+  if (href === currentPath) {
+    link.classList.add("active");
+  }
+});
 </script>
 """
