@@ -160,18 +160,59 @@ docker compose up -d --build
 - `bot`
 - `rabbitmq`
 - `web`
+
+По умолчанию `nginx` теперь не обязателен и не стартует автоматически.
+
+Если нужен только рабочий бот и вебка без reverse proxy, этого достаточно:
+
+```bash
+docker compose up -d --build
+```
+
+Тогда дашборд будет доступен напрямую:
+
+```text
+http://server-ip:8080
+```
+
+Если нужен публичный reverse proxy через nginx, включается профиль `nginx`.
+
+Вариант через `.env`:
+
+```env
+COMPOSE_PROFILES=nginx
+```
+
+После этого обычная команда:
+
+```bash
+docker compose up -d --build
+```
+
+поднимет уже:
+
+- `bot`
+- `rabbitmq`
+- `web`
 - `nginx`
+
+Можно включить профиль и без `.env`:
+
+```bash
+docker compose --profile nginx up -d --build
+```
 
 Что важно:
 
 - если RabbitMQ недоступен, бот продолжает работать с direct fallback;
 - если не задан один из токенов, соответствующий бот просто не стартует;
 - если не поднялся веб, основной бот все равно может продолжать работать;
+- если `nginx` не поднят, вебка все равно доступна напрямую через `WEB_PORT`;
 - основная рабочая БД в Docker лежит в `runtime/bot.db`.
 
 ### Nginx
 
-Публичная схема такая:
+Когда профиль `nginx` включен, публичная схема такая:
 
 - `http://dashboard.nekoty.ru` — HTTP на порту `80`
 - `https://dashboard.nekoty.ru:2443` — HTTPS на порту `2443`
@@ -200,6 +241,8 @@ deploy/certs/live/dashboard.nekoty.ru/privkey.pem
 ```bash
 docker compose restart nginx
 ```
+
+Если `nginx` отключен, этот раздел можно просто игнорировать: бот, RabbitMQ и сам веб-дашборд от него не зависят.
 
 ## Переменные окружения
 
@@ -231,9 +274,11 @@ docker compose restart nginx
 - `WEB_SUPERUSER_LOGIN` — логин суперпользователя вебки.
 - `WEB_SUPERUSER_PASSWORD` — пароль суперпользователя вебки.
 - `WEB_USERS_JSON_IMPORT_PATH` — optional путь к старому JSON для одноразового импорта в SQLite.
+- `WEB_PORT` — прямой внешний порт FastAPI-дашборда без nginx.
 
 ### Nginx
 
+- `COMPOSE_PROFILES` — если выставить `nginx`, compose поднимет optional nginx-профиль.
 - `NGINX_SERVER_NAME`
 - `NGINX_HTTP_PORT`
 - `NGINX_HTTPS_PORT`
@@ -665,6 +710,51 @@ Payload:
 - меньше дублирования;
 - одна и та же бизнес-логика используется и ботом, и вебкой;
 - меньше шансов, что вебка и бот “понимают” проект по-разному.
+
+### Запуск по сценариям
+
+#### 1. Только бот и очередь
+
+Если вебка вообще не нужна:
+
+```bash
+docker compose up -d --build bot rabbitmq
+```
+
+#### 2. Бот, очередь и вебка без nginx
+
+Самый простой и удобный режим:
+
+```bash
+docker compose up -d --build
+```
+
+Доступ к вебке:
+
+```text
+http://server-ip:8080
+```
+
+#### 3. Полный публичный контур с nginx
+
+В `.env`:
+
+```env
+COMPOSE_PROFILES=nginx
+```
+
+Дальше:
+
+```bash
+docker compose up -d --build
+```
+
+Доступ:
+
+```text
+http://dashboard.nekoty.ru
+https://dashboard.nekoty.ru:2443
+```
 
 ### Миграции и совместимость
 

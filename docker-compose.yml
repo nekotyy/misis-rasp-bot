@@ -34,6 +34,8 @@ services:
       WEB_USERS_JSON_IMPORT_PATH: /app/runtime/web_users.json
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
     command: ["uv", "run", "--frozen", "uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "${WEB_PORT:-8080}:8080"
     volumes:
       - ./runtime:/app/runtime
 
@@ -41,6 +43,8 @@ services:
     image: nginx:1.27-alpine
     container_name: misis-dashboard-nginx
     restart: unless-stopped
+    profiles:
+      - nginx
     depends_on:
       - web
     environment:
