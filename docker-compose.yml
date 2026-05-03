@@ -14,6 +14,25 @@ services:
     volumes:
       - ./runtime:/app/runtime
 
+  web:
+    build: .
+    container_name: misis-web-configurator
+    restart: unless-stopped
+    depends_on:
+      - rabbitmq
+    env_file:
+      - .env
+    environment:
+      TZ: ${APP_TIMEZONE:-Europe/Moscow}
+      DATABASE_PATH: /app/runtime/bot.db
+      LESSON_COUNTERS_PATH: /app/runtime/lesson_counters.json
+      WEB_USERS_PATH: /app/runtime/web_users.json
+    command: ["uv", "run", "--frozen", "uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./runtime:/app/runtime
+
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: misis-rabbitmq

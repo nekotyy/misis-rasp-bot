@@ -169,6 +169,10 @@ docker compose exec bot uv run --frozen alembic heads
 - `LESSON_COUNTERS_ENABLED` — глобальный выключатель счетчиков пройденных пар
 - `LESSON_COUNTERS_PATH` — путь к JSON со счетчиками по группам
 - `LESSON_COUNTERS_QUEUE` — отдельная RabbitMQ-очередь задач подсчета пар
+- `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий веб-конфигуратора
+- `WEB_SUPERUSER_LOGIN` — логин суперпользователя веб-конфигуратора
+- `WEB_SUPERUSER_PASSWORD` — пароль суперпользователя веб-конфигуратора
+- `WEB_USERS_PATH` — JSON-хранилище веб-пользователей и прав
 
 Рекомендуемый блок для Docker/VPS:
 
@@ -190,6 +194,10 @@ RABBITMQ_PREFETCH_COUNT=20
 LESSON_COUNTERS_ENABLED=false
 LESSON_COUNTERS_PATH=/app/runtime/lesson_counters.json
 LESSON_COUNTERS_QUEUE=misis_lesson_counters
+WEB_CONFIG_SECRET=change-me-long-random-secret
+WEB_SUPERUSER_LOGIN=admin
+WEB_SUPERUSER_PASSWORD=change-me
+WEB_USERS_PATH=/app/runtime/web_users.json
 ```
 
 Пояснение по RabbitMQ-переменным:
@@ -228,6 +236,28 @@ LESSON_COUNTERS_QUEUE=misis_lesson_counters
   ]
 }
 ```
+
+---
+
+## 7. Веб-конфигуратор
+
+Веб-модуль лежит отдельно в `web_configurator/` и запускается независимо от бота:
+
+```bash
+uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
+```
+
+В Docker Compose доступен сервис `web` на порту `8080`.
+
+Возможности:
+
+- метрики аптайма, пользователей TG/VK, сервисов, парсинга, изменений расписания, активных групп и доставки сообщений
+- список пользователей с фильтрами: TG/VK, преподаватели/группы, новые/старые
+- редактор безопасных `.env`-настроек без токенов и админ-ID
+- редактор `lesson_counters.json` с валидацией дисциплин по расписанию группы
+- управление веб-пользователями и правами по разделам
+
+Суперпользователь задается через `WEB_SUPERUSER_LOGIN` и `WEB_SUPERUSER_PASSWORD`.
 
 ---
 
