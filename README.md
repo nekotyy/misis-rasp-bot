@@ -247,16 +247,15 @@ WEB_USERS_PATH=/app/runtime/web_users.json
 uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 ```
 
-В Docker Compose обычный запуск поднимает обязательные сервисы `bot` и `rabbitmq`.
-Вебка опциональна и вынесена в profile:
+В Docker Compose обычный запуск поднимает все сервисы: `bot`, `rabbitmq` и `web`.
 
 ```bash
-docker compose --profile web up -d --build
+docker compose up -d --build
 ```
 
 Если вебка не нужна или не поднялась, основной сервис `bot` продолжает работать отдельно.
 
-RabbitMQ обязателен: `bot` ждет healthy-состояние `rabbitmq` перед стартом. Также в `.env` должен быть задан хотя бы один токен: `TELEGRAM_BOT_TOKEN` или `VK_BOT_TOKEN`.
+RabbitMQ поднимается рядом с ботом. Если брокер временно недоступен, бот не падает: RabbitMQ-consumer не стартует, а отправка продолжает работать через прямой fallback.
 
 Возможности:
 

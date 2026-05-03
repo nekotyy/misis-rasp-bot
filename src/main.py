@@ -111,9 +111,9 @@ def start_vk_polling(
 async def main() -> None:
     settings = Settings.from_env()
     if not settings.rabbitmq_url:
-        raise RuntimeError("RABBITMQ_URL is required. RabbitMQ is mandatory for this deployment.")
+        logging.error("RABBITMQ_URL is not set. RabbitMQ consumers are disabled; direct delivery fallback remains available.")
     if not settings.telegram_bot_token and not settings.vk_bot_token:
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN or VK_BOT_TOKEN. At least one bot must be configured.")
+        logging.error("Neither TELEGRAM_BOT_TOKEN nor VK_BOT_TOKEN is set. Bot polling is disabled, background jobs keep running.")
 
     apply_migrations(settings.database_path)
     db = Database(settings.database_path)

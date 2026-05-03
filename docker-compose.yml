@@ -4,8 +4,7 @@ services:
     container_name: misis-rasp-bot
     restart: unless-stopped
     depends_on:
-      rabbitmq:
-        condition: service_healthy
+      - rabbitmq
     env_file:
       - .env
     environment:
@@ -24,10 +23,10 @@ services:
     build: .
     container_name: misis-web-configurator
     restart: unless-stopped
-    profiles:
-      - web
     env_file:
       - .env
+    depends_on:
+      - rabbitmq
     environment:
       TZ: ${APP_TIMEZONE:-Europe/Moscow}
       DATABASE_PATH: /app/runtime/bot.db

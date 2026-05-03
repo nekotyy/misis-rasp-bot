@@ -15,7 +15,7 @@ from src.group_catalog import GroupCatalog
 from src.parser import ScheduleParser
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 from web_configurator.metrics import collect_metrics
-from web_configurator.security import PERMISSION_LABELS, SessionSigner, WebAuthStore, WebUser
+from web_configurator.security import ALL_PERMISSIONS, PERMISSION_LABELS, SessionSigner, WebAuthStore, WebUser
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +32,17 @@ auth_store = WebAuthStore(
 signer = SessionSigner(os.getenv("WEB_CONFIG_SECRET", "change-me"))
 
 app = FastAPI(title="MISIS bot configurator")
+
+PERMISSION_DESCRIPTIONS = {
+    "stats_overview": "Главные цифры на первой строке дашборда: аптайм, аудитория, новые пользователи и общая активность.",
+    "stats_users": "Таблица пользователей Telegram/VK, фильтры по платформе, подписке и свежести регистрации.",
+    "stats_services": "Состояние Telegram, VK и RabbitMQ без технических деталей ошибок.",
+    "stats_schedule": "Последний парсинг, активные группы и журнал изменений расписания.",
+    "stats_delivery": "Сколько сообщений доставлено сегодня и за все время: RabbitMQ, напрямую, Telegram и VK.",
+    "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что учитывалось сегодня, текущий прогресс.",
+    "config_lesson_counters": "Доступ к редактору счетчиков пар: группы, дисциплины, преподаватели, JSON-режим.",
+    "manage_web_users": "Создание, удаление и изменение прав пользователей веб-админки.",
+}
 
 
 def current_user(request: Request) -> WebUser:
@@ -399,6 +410,7 @@ def dashboard_html(user: WebUser) -> str:
     if can(user, "stats_overview"):
         cards.append(
             """
+            <button class="to-top" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})">Наверх</button>
             <section class="hero">
               <div>
                 <p class="eyebrow">Системный монитор</p>
@@ -414,19 +426,19 @@ def dashboard_html(user: WebUser) -> str:
     if can(user, "stats_users"):
         cards.append(
             f"""
-            <section class="panel">
-              <div class="panel-title"><span class="icon">{icon('users')}</span><h3>Пользователи</h3></div>
+            <details class="panel collapsible">
+              <summary class="collapse-title"><span class="icon">{icon('users')}</span><h3>Пользователи</h3><span class="collapse-hint">Развернуть</span></summary>
               <div class="toolbar">
                 <label class="search">{icon('search')}<input id="userSearch" placeholder="Имя, ID, группа, преподаватель"></label>
                 <select id="platformFilter"><option value="">Все платформы</option><option value="telegram">Telegram</option><option value="vk">VK</option></select>
                 <select id="kindFilter"><option value="">Все подписки</option><option value="teacher">Преподаватели</option><option value="group">Группы</option><option value="new">Новые</option><option value="old">Старые</option></select>
               </div>
               <div class="table-wrap"><table id="usersTable"></table></div>
-            </section>
+            </details>
             """
         )
     if can(user, "stats_schedule"):
-        cards.append(f"<section class='panel'><div class='panel-title'><span class='icon'>{icon('calendar')}</span><h3>Расписание и изменения</h3></div><div id='schedule'></div></section>")
+        cards.append(f"<details class='panel collapsible'><summary class='collapse-title'><span class='icon'>{icon('calendar')}</span><h3>Расписание и изменения</h3><span class='collapse-hint'>Развернуть</span></summary><div id='schedule'></div></details>")
     if can(user, "stats_delivery"):
         cards.append(f"<section class='panel'><div class='panel-title'><span class='icon'>{icon('send')}</span><h3>Доставка сообщений</h3></div><div id='delivery' class='metric-grid compact'></div></section>")
     if can(user, "stats_lesson_counters"):
@@ -435,14 +447,8 @@ def dashboard_html(user: WebUser) -> str:
 
 
 def web_users_html() -> str:
-    permissions = "\n".join(
-        f"<label class='check'><input type='checkbox' name='permissions' value='{permission}'> {label}</label>"
-        for permission, label in PERMISSION_LABELS.items()
-    )
-    rows = "\n".join(
-        f"<tr><td>{html_escape(user['login'])}</td><td>{'суперюзер' if user['is_superuser'] else ', '.join(user['permissions'])}</td><td>{'' if user['is_superuser'] else delete_form(user['login'])}</td></tr>"
-        for user in auth_store.list_users()
-    )
+    permissions = permission_checklist([])
+    rows = "\n".join(web_user_row(user) for user in auth_store.list_users())
     return f"""
     <section class="panel">
       <div class="panel-title"><span class="icon">{icon('shield')}</span><h3>Создать / обновить пользователя</h3></div>
@@ -453,12 +459,52 @@ def web_users_html() -> str:
         <button>{icon('save')} Сохранить</button>
       </form>
     </section>
-    <section class="panel"><div class="panel-title"><span class="icon">{icon('users')}</span><h3>Пользователи</h3></div><table><tr><th>Логин</th><th>Права</th><th></th></tr>{rows}</table></section>
+    <section class="panel"><div class="panel-title"><span class="icon">{icon('users')}</span><h3>Пользователи</h3></div><div class="user-admin-list">{rows}</div></section>
     """
 
 
+def web_user_row(user: dict[str, Any]) -> str:
+    login = html_escape(user["login"])
+    if user["is_superuser"]:
+        return f"""
+        <article class="admin-user-card">
+          <div><h3>{login}</h3><div class="chips"><span class="chip">суперюзер</span><span class="chip">все права</span></div></div>
+        </article>
+        """
+    return f"""
+    <article class="admin-user-card">
+      <form method="post" class="admin-user-form">
+        <input type="hidden" name="login" value="{login}">
+        <div class="admin-user-head">
+          <div><h3>{login}</h3><p class="muted">Пароль можно оставить пустым, тогда изменятся только права.</p></div>
+          <label class="password-inline">Новый пароль <input name="password" type="password" placeholder="не менять"></label>
+        </div>
+        <div class="checks">{permission_checklist(user["permissions"])}</div>
+        <div class="actions">
+          <button>{icon('save')} Сохранить права</button>
+          {delete_form(user["login"])}
+        </div>
+      </form>
+    </article>
+    """
+
+
+def permission_checklist(selected: list[str]) -> str:
+    selected_set = set(selected)
+    return "\n".join(
+        f"""
+        <label class='check'>
+          <input type='checkbox' name='permissions' value='{permission}' {'checked' if permission in selected_set else ''}>
+          <span>{html_escape(PERMISSION_LABELS[permission])}</span>
+          <span class='help' tabindex='0'>{icon('help')}<span class='tooltip'>{html_escape(PERMISSION_DESCRIPTIONS[permission])}</span></span>
+        </label>
+        """
+        for permission in ALL_PERMISSIONS
+    )
+
+
 def delete_form(login: str) -> str:
-    return f"<form method='post' action='/web-users/delete'><input type='hidden' name='login' value='{html_escape(login)}'><button class='ghost danger'>{icon('trash')} Удалить</button></form>"
+    return f"<button class='ghost danger' type='submit' formaction='/web-users/delete'>{icon('trash')} Удалить</button>"
 
 
 def layout(title: str, content: str, user: WebUser) -> str:
@@ -515,6 +561,7 @@ def icon(name: str) -> str:
         "spark": "<svg viewBox='0 0 24 24'><path d='m12 2 2.2 6.8H21l-5.5 4 2.1 6.8-5.6-4.2-5.6 4.2 2.1-6.8-5.5-4h6.8L12 2Z'/></svg>",
         "alert": "<svg viewBox='0 0 24 24'><path d='M1 21h22L12 2 1 21Zm12-3h-2v-2h2v2Zm0-4h-2v-4h2v4Z'/></svg>",
         "trash": "<svg viewBox='0 0 24 24'><path d='M7 21h10l1-13H6l1 13ZM9 4l1-2h4l1 2h5v2H4V4h5Z'/></svg>",
+        "help": "<svg viewBox='0 0 24 24'><path d='M11 18h2v-2h-2v2Zm1-16a7 7 0 0 0-7 7h2a5 5 0 1 1 8.6 3.5c-1.7 1.6-2.6 2.4-2.6 4.5h-2c0-3 1.4-4.3 3.2-5.9A3 3 0 0 0 12 4Z'/></svg>",
     }
     return icons.get(name, icons["spark"])
 
@@ -579,16 +626,18 @@ STYLE = """
 svg{width:18px;height:18px;fill:currentColor;flex:0 0 auto;display:block} a{color:inherit;text-decoration:none} h1,h2,h3,p{margin:0} h1{font-size:28px;font-weight:700;letter-spacing:0} h2{font-size:25px;font-weight:700;letter-spacing:0} h3{font-size:16px;font-weight:700;letter-spacing:0}
 .shell{display:grid;grid-template-columns:280px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:22px;background:#101318;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:24px}.brand{display:flex;gap:12px;align-items:center}.brand b{display:block;font-size:16px}.brand small{display:block;color:var(--muted);font-size:12px}.brand-mark{display:grid;place-items:center;width:40px;height:40px;border-radius:8px;background:#1d211f;border:1px solid #3b382f;color:var(--accent)}
 nav{display:grid;gap:8px}.sidebar nav a{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:8px;color:#d8d0c4;transition:.16s ease}.sidebar nav a:hover{background:#1a1e25;color:var(--text)}.logout{margin-top:auto}.workspace{min-width:0}.topbar{display:flex;justify-content:space-between;align-items:center;padding:26px 32px}.eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-size:11px;font-weight:800}.user-pill{display:flex;gap:8px;align-items:center;border:1px solid var(--line);background:#12161b;border-radius:999px;padding:9px 13px;color:#e4dccf}
-main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}
+main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{position:relative;overflow:hidden;display:flex;justify-content:space-between;gap:24px;min-height:150px;padding:26px;border:1px solid var(--line);border-radius:8px;background:#12161b;box-shadow:0 18px 55px rgba(0,0,0,.22);margin-bottom:18px}.compact-head{min-height:auto}.hero p,.page-head p{max-width:760px;color:var(--muted);margin-top:10px}.to-top{position:fixed;right:22px;bottom:22px;z-index:20;box-shadow:0 12px 35px rgba(0,0,0,.35)}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px;box-shadow:0 14px 45px rgba(0,0,0,.18);animation:rise .18s ease-out}.panel-title{display:flex;gap:10px;align-items:center;margin-bottom:14px}.icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;color:var(--accent);background:#1b1e22;border:1px solid #343942}
 @keyframes rise{from{opacity:.55;transform:translateY(5px)}to{opacity:1;transform:none}}.metric-grid,.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.metric-grid.compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}.card,.service-card{position:relative;overflow:hidden;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:16px;min-height:108px}.card span,.service-card span{color:var(--muted);display:block;font-size:12px;font-weight:600}.card b,.service-card b{font-size:26px;line-height:1.2;display:block;margin-top:8px;font-weight:800}.card small,.service-card small{color:var(--muted)}
 .status{display:inline-flex;gap:7px;align-items:center}.dot{width:9px;height:9px;border-radius:999px;background:var(--bad)}.dot.ok{background:var(--good)}button{display:inline-flex;gap:8px;align-items:center;justify-content:center;background:#e7dcc9;color:#111418;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;font-weight:700;transition:.16s ease}button:hover{background:#f1eadf}button.ghost,button.secondary{background:#1b1f26;color:var(--text);border:1px solid var(--line)}button.danger{color:#f0b7b7}
 .login{display:grid;place-items:center;min-height:100vh}.narrow{width:min(390px,calc(100vw - 40px))}.login .panel{padding:28px}.login h1{margin-bottom:18px}label{display:grid;gap:7px;margin:0 0 12px;color:#ddd5c8;font-weight:600}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;background:#0e1115;color:var(--text);font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#5a5346;box-shadow:0 0 0 3px rgba(215,200,170,.1)}textarea{min-height:620px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.45;resize:vertical}
-.toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:10px;margin-bottom:14px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#cfc6b8;background:#101318;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#181c22}
-.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px}.guide-list{display:grid;gap:12px;padding-left:18px;color:#c9d6e7}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#d7e2f3}.check input{width:auto}
+.toolbar{display:grid;grid-template-columns:minmax(240px,1fr) 180px 190px;gap:12px;margin:4px 0 16px}.search{position:relative;margin:0}.search svg{position:absolute;left:11px;top:12px;color:var(--muted)}.search input{padding-left:38px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px}.section-gap{margin-top:14px}table{width:100%;border-collapse:collapse;min-width:720px}td,th{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:#cfc6b8;background:#101318;font-size:12px;text-transform:uppercase;letter-spacing:.08em}tr:hover td{background:#181c22}.profile-link{color:#eadfcf;text-decoration:underline;text-decoration-color:#5b5549;text-underline-offset:3px}
+.editor-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px}.editor-card,.guide-card{margin-bottom:0}.actions{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}.guide-list{display:grid;gap:12px;padding-left:18px;color:#d8d0c4}.muted{color:var(--muted)}.grid-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.grid-form button,.checks{grid-column:1/-1}.checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}.check{display:flex;gap:8px;align-items:center;margin:0;color:#ddd5c8;background:#101318;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:46px}.check input{width:auto}.check span:first-of-type{flex:1}
+.help{position:relative;display:grid;place-items:center;width:24px;height:24px;color:var(--accent);cursor:help}.help svg{width:16px;height:16px}.tooltip{position:absolute;right:0;bottom:30px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
+.collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
 .head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
-@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}}
+@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
 </style>
 """
 
@@ -598,7 +647,13 @@ let metrics=null;
 const fmt=n=>Number(n||0).toLocaleString('ru-RU');
 const uptime=s=>{s=Number(s||0);const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return `${h}ч ${m}м`};
 function card(name,value,extra=''){return `<div class="card"><span>${name}</span><b>${value}</b><small>${extra}</small></div>`}
-function serviceCard(name,v){return `<div class="service-card"><span>${name}</span><b class="status"><i class="dot ${v.ok?'ok':''}"></i>${v.ok?'OK':'Сбой'}</b><small>${v.label||''}</small></div>`}
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function profileUrl(u){
+  if(u.platform==='vk') return `https://vk.com/id${u.user_id}`;
+  if(u.username) return `https://t.me/${String(u.username).replace(/^@/,'')}`;
+  return `tg://user?id=${u.user_id}`;
+}
+function serviceCard(name,v){return `<div class="service-card"><span>${name}</span><b class="status"><i class="dot ${v.ok?'ok':''}"></i>${v.ok?'OK':'Недоступен'}</b></div>`}
 function renderUsers(rows){
   const q=(document.querySelector('#userSearch')?.value||'').toLowerCase();
   const p=document.querySelector('#platformFilter')?.value||'', k=document.querySelector('#kindFilter')?.value||'';
@@ -608,16 +663,16 @@ function renderUsers(rows){
   if(k==='new') filtered=filtered.filter(u=>u.is_new);
   if(k==='old') filtered=filtered.filter(u=>!u.is_new);
   const table=document.querySelector('#usersTable'); if(!table) return;
-  table.innerHTML='<tr><th>Платформа</th><th>ID</th><th>Имя</th><th>Подписка</th><th>Создан</th><th>Последний визит</th></tr>'+filtered.map(u=>`<tr><td><b>${u.platform==='telegram'?'TG':'VK'}</b></td><td>${u.user_id}</td><td>${u.full_name||u.username||''}</td><td>${u.subscription_title||'-'}<br><small>${u.subscription_type||''}</small></td><td>${u.created_at}</td><td>${u.last_seen_at}</td></tr>`).join('');
+  table.innerHTML='<tr><th>Платформа</th><th>ID</th><th>Имя</th><th>Подписка</th><th>Создан</th><th>Последний визит</th></tr>'+filtered.map(u=>`<tr><td><b>${u.platform==='telegram'?'TG':'VK'}</b></td><td><a class="profile-link" href="${profileUrl(u)}" target="_blank" rel="noreferrer">${u.user_id}</a></td><td><a class="profile-link" href="${profileUrl(u)}" target="_blank" rel="noreferrer">${esc(u.full_name||u.username||'профиль')}</a></td><td>${esc(u.subscription_title||'-')}<br><small>${esc(u.subscription_type||'')}</small></td><td>${esc(u.created_at)}</td><td>${esc(u.last_seen_at)}</td></tr>`).join('');
 }
 async function load(){
   const r=await fetch('/api/metrics'); metrics=await r.json();
   const o=document.querySelector('#overview'); if(o) o.innerHTML=[
-    card('Аптайм',uptime(metrics.uptime_seconds),'текущая сессия вебки'),card('Юзеров',fmt(metrics.users.total),`TG ${fmt(metrics.users.telegram)} / VK ${fmt(metrics.users.vk)}`),card('Новых за 7 дней',fmt(metrics.users.new_7d),`старых ${fmt(metrics.users.old)}`),card('Подписок на преподов',fmt(metrics.users.teachers),`на группы ${fmt(metrics.users.groups)}`),card('Тихих 30+ дней',fmt(metrics.extra.quiet_users),'моя доп. метрика')
+    card('Аптайм',uptime(metrics.uptime_seconds),'с момента запуска'),card('Юзеров',fmt(metrics.users.total),`TG ${fmt(metrics.users.telegram)} / VK ${fmt(metrics.users.vk)}`),card('Новых за 7 дней',fmt(metrics.users.new_7d),`старых ${fmt(metrics.users.old)}`),card('Подписок на преподов',fmt(metrics.users.teachers),`на группы ${fmt(metrics.users.groups)}`),card('Тихих 30+ дней',fmt(metrics.extra.quiet_users),'без активности')
   ].join('');
   const s=document.querySelector('#services'); if(s) s.innerHTML=Object.entries(metrics.services).map(([k,v])=>serviceCard(k, v)).join('');
   renderUsers(metrics.user_rows||[]);
-  const sch=document.querySelector('#schedule'); if(sch){sch.innerHTML=`<div class="metric-grid compact">${card('Последний парс',metrics.schedule.latest_parse?.created_at||'-',metrics.schedule.latest_parse?.source_title||'-')}${card('Последнее изменение',metrics.schedule.latest_change?.created_at||'-',metrics.schedule.latest_change?.source_title||'-')}${card('Активных групп',fmt(metrics.schedule.active_groups_total),'с подписчиками')}</div><div class="table-wrap" style="margin-top:14px"><table><tr><th>Группа</th><th>Юзеров</th></tr>${metrics.schedule.active_groups.map(g=>`<tr><td>${g.subscription_title}</td><td>${g.users_count}</td></tr>`).join('')}</table></div><div class="panel-title" style="margin-top:18px"><h3>Последние изменения</h3></div><div class="table-wrap"><table><tr><th>Когда</th><th>Источник</th><th>Сообщение</th></tr>${metrics.schedule.changes.map(c=>`<tr><td>${c.created_at}</td><td>${c.source_title||''}</td><td>${(c.message||'').slice(0,240)}</td></tr>`).join('')}</table></div>`}
+  const sch=document.querySelector('#schedule'); if(sch){sch.innerHTML=`<div class="metric-grid compact">${card('Последний парс',esc(metrics.schedule.latest_parse?.created_at||'-'),esc(metrics.schedule.latest_parse?.source_title||'-'))}${card('Последнее изменение',esc(metrics.schedule.latest_change?.created_at||'-'),esc(metrics.schedule.latest_change?.source_title||'-'))}${card('Активных групп',fmt(metrics.schedule.active_groups_total),'с подписчиками')}</div><div class="table-wrap section-gap"><table><tr><th>Группа</th><th>Юзеров</th></tr>${metrics.schedule.active_groups.map(g=>`<tr><td>${esc(g.subscription_title)}</td><td>${g.users_count}</td></tr>`).join('')}</table></div><details class="nested-details"><summary class="collapse-title"><h3>Последние изменения</h3><span class="collapse-hint">Развернуть</span></summary><div class="table-wrap"><table><tr><th>Когда</th><th>Источник</th><th>Сообщение</th></tr>${metrics.schedule.changes.map(c=>`<tr><td>${esc(c.created_at)}</td><td>${esc(c.source_title||'')}</td><td>${esc((c.message||'').slice(0,240))}</td></tr>`).join('')}</table></div></details>`}
   const d=document.querySelector('#delivery'); if(d){const t=metrics.delivery.today,a=metrics.delivery.total;d.innerHTML=[card('Сегодня доставлено',fmt(t.sent),`Rabbit ${fmt(t.via_broker)} / direct ${fmt(t.direct)}`),card('Сегодня TG/VK',`${fmt(t.telegram)} / ${fmt(t.vk)}`,`ошибок ${fmt(t.failed)}`),card('Всего доставлено',fmt(a.sent),`Rabbit ${fmt(a.via_broker)} / direct ${fmt(a.direct)}`),card('Всего TG/VK',`${fmt(a.telegram)} / ${fmt(a.vk)}`,`ошибок ${fmt(a.failed)}`)].join('')}
   const l=document.querySelector('#lessonsStats'); if(l){const lc=metrics.lesson_counters;l.innerHTML=`<div class="metric-grid compact">${card('Счетчиков',fmt(lc.configured),`групп ${fmt(lc.groups)}`)}${card('Учтено сегодня',fmt(lc.counted_today),'после ночной проверки')}${card('Последний учет',lc.last_event?.created_at||'-',lc.last_event?.subject||'')}</div><div class="table-wrap" style="margin-top:14px"><table><tr><th>Группа</th><th>Предмет</th><th>Преподаватель</th><th>Прогресс</th></tr>${lc.counters.map(c=>`<tr><td>${c.schedule_id}</td><td>${c.subject}</td><td>${c.teacher}</td><td><b>${c.passed_count}/${c.total_count}</b></td></tr>`).join('')}</table></div>`}
 }
