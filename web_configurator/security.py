@@ -19,7 +19,6 @@ ALL_PERMISSIONS = [
     "stats_schedule",
     "stats_delivery",
     "stats_lesson_counters",
-    "config_bot",
     "config_lesson_counters",
     "manage_web_users",
 ]
@@ -31,7 +30,6 @@ PERMISSION_LABELS = {
     "stats_schedule": "Парсинг и изменения",
     "stats_delivery": "Доставка сообщений",
     "stats_lesson_counters": "Подсчет пар",
-    "config_bot": "Конфиг бота",
     "config_lesson_counters": "Редактор пар",
     "manage_web_users": "Веб-пользователи",
 }
