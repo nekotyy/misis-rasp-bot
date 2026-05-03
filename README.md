@@ -274,26 +274,36 @@ Flow:
 
 - `web` stays inside the Docker network on `web:8080`
 - `nginx` accepts external traffic and proxies it to `web`
-- public port `2443` is exposed by default
+- HTTP is exposed on `80`
+- HTTPS is exposed on `2443`
 
 Public URL after deploy:
 
 ```text
-http://dashboard.nekoty.ru:2443
+http://dashboard.nekoty.ru
+https://dashboard.nekoty.ru:2443
 ```
 
 Relevant `.env` values:
 
 ```env
 NGINX_SERVER_NAME=dashboard.nekoty.ru
-NGINX_PUBLIC_PORT=2443
+NGINX_HTTP_PORT=80
+NGINX_HTTPS_PORT=2443
 WEB_UPSTREAM=web:8080
+NGINX_SSL_CERT_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/fullchain.pem
+NGINX_SSL_KEY_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/privkey.pem
 ```
 
 DNS setup:
 
 - use `CNAME` if `dashboard.nekoty.ru` should point to another hostname
 - use an `A` record if the subdomain should point directly to the VPS IP
+
+Certificate note:
+
+- put certbot certificates into `./deploy/certs`, they are mounted into the container as `/etc/letsencrypt`
+- after certificate renewal, restart nginx: `docker compose restart nginx`
 
 Post-deploy check:
 
