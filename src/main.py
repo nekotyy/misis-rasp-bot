@@ -110,6 +110,11 @@ def start_vk_polling(
 
 async def main() -> None:
     settings = Settings.from_env()
+    if not settings.rabbitmq_url:
+        raise RuntimeError("RABBITMQ_URL is required. RabbitMQ is mandatory for this deployment.")
+    if not settings.telegram_bot_token and not settings.vk_bot_token:
+        raise RuntimeError("Set TELEGRAM_BOT_TOKEN or VK_BOT_TOKEN. At least one bot must be configured.")
+
     apply_migrations(settings.database_path)
     db = Database(settings.database_path)
     await db.initialize()
@@ -139,9 +144,6 @@ async def main() -> None:
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
     )
-    if not settings.telegram_bot_token and not settings.vk_bot_token:
-        logging.error("Не задан ни TELEGRAM_BOT_TOKEN, ни VK_BOT_TOKEN. Контейнер продолжит фоновые задачи, но боты не запущены.")
-
     start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
     start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
 
