@@ -3,8 +3,6 @@ services:
     build: .
     container_name: misis-rasp-bot
     restart: unless-stopped
-    depends_on:
-      - rabbitmq
     env_file:
       - .env
     environment:
@@ -18,8 +16,8 @@ services:
     build: .
     container_name: misis-web-configurator
     restart: unless-stopped
-    depends_on:
-      - rabbitmq
+    profiles:
+      - web
     env_file:
       - .env
     environment:
@@ -37,6 +35,8 @@ services:
     image: rabbitmq:3.13-management
     container_name: misis-rabbitmq
     restart: unless-stopped
+    profiles:
+      - rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"

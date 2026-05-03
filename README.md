@@ -247,7 +247,21 @@ WEB_USERS_PATH=/app/runtime/web_users.json
 uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 ```
 
-В Docker Compose доступен сервис `web` на порту `8080`.
+В Docker Compose вебка опциональна и вынесена в profile:
+
+```bash
+docker compose --profile web up -d --build
+```
+
+Если вебка не нужна или не поднялась, основной сервис `bot` продолжает работать отдельно.
+
+RabbitMQ тоже вынесен в отдельный profile, чтобы проблемы со скачиванием образа не блокировали запуск бота:
+
+```bash
+docker compose --profile rabbitmq up -d --build
+```
+
+Без RabbitMQ бот пытается отправлять сообщения напрямую.
 
 Возможности:
 

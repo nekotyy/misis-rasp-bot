@@ -119,7 +119,17 @@ class ScheduleJobs:
             broker_enabled = self.lesson_counter_broker is not None and self.lesson_counter_broker.enabled
             for index, schedule_id in enumerate(schedule_ids):
                 if broker_enabled:
-                    await self.lesson_counter_broker.publish(LessonCounterJob(schedule_id=schedule_id))
+                    try:
+                        await self.lesson_counter_broker.publish(LessonCounterJob(schedule_id=schedule_id))
+                        continue
+                    except Exception:
+                        logger.exception(
+                            "Lesson counter RabbitMQ publish failed for schedule_id=%s. Counting directly.",
+                            schedule_id,
+                        )
+                        if index:
+                            await self._sleep_between_sources("lesson-counters", str(schedule_id))
+                        await self.handle_lesson_counter_job(LessonCounterJob(schedule_id=schedule_id))
                 else:
                     if index:
                         await self._sleep_between_sources("lesson-counters", str(schedule_id))
