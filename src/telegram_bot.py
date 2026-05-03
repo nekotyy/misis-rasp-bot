@@ -162,6 +162,7 @@ def build_dispatcher(
     awaiting_schedule_search: set[int] = set()
     awaiting_group_subscription_input: set[int] = set()
     awaiting_admin_broadcast_text: set[int] = set()
+    awaiting_admin_user_search: set[int] = set()
     admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
@@ -502,6 +503,88 @@ def build_dispatcher(
         next_kind_mode = "kind_teacher" if kind_mode == "kind_group" else "kind_group"
         return next_kind_mode, next_platform_mode
 
+    def user_search_haystack(user: object) -> str:
+        parts = [
+            getattr(user, "platform", None),
+            getattr(user, "username", None),
+            getattr(user, "full_name", None),
+            getattr(user, "subscription_title", None),
+            getattr(user, "group_name", None),
+            str(getattr(user, "user_id", "")),
+        ]
+        return " ".join(str(part or "").casefold() for part in parts)
+
+    def filter_admin_users(users: list, query: str) -> list:
+        normalized = query.strip().casefold()
+        if not normalized:
+            return users
+        return [user for user in users if normalized in user_search_haystack(user)]
+
+    def telegram_profile_link(user: object) -> str:
+        username = getattr(user, "username", None)
+        if username:
+            return f"https://t.me/{username}"
+        return f"tg://user?id={getattr(user, 'user_id')}"
+
+    def external_profile_link(user: object) -> str:
+        if getattr(user, "platform", None) == "vk":
+            return f"https://vk.com/id{getattr(user, 'user_id')}"
+        return telegram_profile_link(user)
+
+    def format_admin_user_row(user: object) -> str:
+        platform_label = "tg" if getattr(user, "platform", None) == "telegram" else getattr(user, "platform", None)
+        profile_link = external_profile_link(user)
+        user_label = getattr(user, "full_name", None) or "Без имени"
+        username = getattr(user, "username", None)
+        nick_or_name = (
+            getattr(user, "full_name", None)
+            if getattr(user, "platform", None) == "vk"
+            else (f"@{username}" if username else (getattr(user, "full_name", None) or "-"))
+        )
+        nick_link = f"<a href=\"{escape(profile_link, quote=True)}\">{escape(nick_or_name)}</a>" if nick_or_name != "-" else "-"
+        id_link = f"<a href=\"{escape(profile_link, quote=True)}\">{getattr(user, 'user_id')}</a>"
+        group_label = getattr(user, "subscription_title", None) or getattr(user, "group_name", None) or "-"
+        role_flags: list[str] = []
+        if getattr(user, "is_admin", False):
+            role_flags.append("админ")
+        if getattr(user, "is_editor", False):
+            role_flags.append("редактор")
+        role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
+        return (
+            "- "
+            f"{escape(str(platform_label or '-'))} | "
+            f"{escape(user_label)} | "
+            f"{nick_link} | "
+            f"{id_link} | "
+            f"{escape(group_label)}{escape(role_suffix)}"
+        )
+
+    def format_admin_users_list(
+        users: list,
+        *,
+        sort_mode: str,
+        page: int,
+        title: str,
+        summary: str | None = None,
+    ) -> tuple[str, InlineKeyboardMarkup]:
+        sorted_users = sort_admin_users(users, sort_mode)
+        user_rows = [format_admin_user_row(user) for user in sorted_users]
+        page_size = 20
+        total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * page_size
+        end = start + page_size
+        lines = [
+            f"<b>{title}</b>",
+            "",
+            "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
+        ]
+        if summary:
+            lines.extend(["", summary])
+        lines.extend(["", f"Страница {page + 1}/{total_pages}", ""])
+        lines.extend(user_rows[start:end] or ["Ничего не найдено."])
+        return "\n".join(lines), build_admin_users_keyboard(page=page, total_pages=total_pages, sort_mode=sort_mode)
+
     def build_admin_users_keyboard(page: int, total_pages: int, sort_mode: str) -> InlineKeyboardMarkup:
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
@@ -516,6 +599,7 @@ def build_dispatcher(
         rows: list[list[InlineKeyboardButton]] = []
         if nav_row:
             rows.append(nav_row)
+        rows.append([InlineKeyboardButton(text="Поиск", callback_data=f"admin:users_search:{sort_mode}")])
         rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"admin:users:{next_kind_mode}:0")])
         rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"admin:users:{next_platform_mode}:0")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
@@ -1523,6 +1607,7 @@ def build_dispatcher(
             return
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
+            awaiting_admin_user_search.discard(callback.from_user.id)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
@@ -1531,6 +1616,7 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         if action == "back":
+            awaiting_admin_user_search.discard(callback.from_user.id)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
@@ -1549,6 +1635,7 @@ def build_dispatcher(
             )
             reply_markup = ADMIN_KEYBOARD
         elif action == "users" or action.startswith("users:"):
+            awaiting_admin_user_search.discard(callback.from_user.id)
             users = await db.list_users()
             sort_mode = "kind_group"
             if not users:
@@ -1569,28 +1656,7 @@ def build_dispatcher(
 
                 user_rows: list[str] = []
                 for user in users:
-                    platform_label = "tg" if user.platform == "telegram" else user.platform
-                    user_label = user.full_name or "Без имени"
-                    nick_or_name = (
-                        user.full_name
-                        if user.platform == "vk"
-                        else (f"@{user.username}" if user.username else (user.full_name or "-"))
-                    )
-                    group_label = user.subscription_title or user.group_name or "-"
-                    role_flags = []
-                    if user.is_admin:
-                        role_flags.append("админ")
-                    if user.is_editor:
-                        role_flags.append("редактор")
-                    role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-                    user_rows.append(
-                        "- "
-                        f"{escape(platform_label)} | "
-                        f"{escape(user_label)} | "
-                        f"{escape(nick_or_name)} | "
-                        f"<b>{user.user_id}</b> | "
-                        f"{escape(group_label)}{escape(role_suffix)}"
-                    )
+                    user_rows.append(format_admin_user_row(user))
 
                 page_size = 20
                 total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
@@ -1611,6 +1677,20 @@ def build_dispatcher(
 
                 text = "\n".join(lines)
                 reply_markup = build_admin_users_keyboard(page=page, total_pages=total_pages, sort_mode=sort_mode)
+        elif action.startswith("users_search:"):
+            sort_mode = action.split(":", 1)[1] if ":" in action else "kind_group"
+            awaiting_admin_user_search.add(callback.from_user.id)
+            text = (
+                "<b>Поиск пользователя</b>\n\n"
+                "Пришли запрос одним сообщением.\n"
+                "Поддерживается поиск по айди, @username, имени, фамилии и названию группы."
+            )
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Назад к списку", callback_data=f"admin:users:{sort_mode}:0")],
+                    [InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")],
+                ]
+            )
         elif action == "editors":
             users = [user for user in await db.list_users("telegram")]
             text = "<b>Управление редакторами</b>\n\nНажми на пользователя, чтобы выдать или снять роль редактора."
@@ -1762,6 +1842,43 @@ def build_dispatcher(
                 "admin_broadcast",
                 format_admin_broadcast_preview(draft_text),
                 reply_markup=ADMIN_BROADCAST_PREVIEW_KEYBOARD,
+            )
+            return
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_user_search:
+            query = message.text.strip()
+            users = await db.list_users()
+            matches = filter_admin_users(users, query)
+            awaiting_admin_user_search.discard(message.from_user.id)
+            if not matches:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin",
+                    (
+                        "<b>Поиск пользователя</b>\n\n"
+                        f"По запросу <b>{escape(query)}</b> ничего не найдено."
+                    ),
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="Искать снова", callback_data="admin:users_search:kind_group")],
+                            [InlineKeyboardButton(text="Все пользователи", callback_data="admin:users:kind_group:0")],
+                        ]
+                    ),
+                )
+                return
+            text, reply_markup = format_admin_users_list(
+                matches,
+                sort_mode="kind_group",
+                page=0,
+                title=f"Результаты поиска: {escape(query)}",
+                summary=f"Найдено пользователей: {len(matches)}",
+            )
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin",
+                text,
+                reply_markup=reply_markup,
             )
             return
         user = await get_user_record(message.from_user.id)
