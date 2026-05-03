@@ -10,6 +10,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.db import Database
+from src.lesson_counters import LessonCounterService
+from src.message_broker import LessonCounterJob, LessonCounterJobBroker
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleComparator
@@ -29,6 +31,9 @@ class ScheduleJobs:
         timezone: str,
         request_delay_seconds: float = 8.0,
         request_jitter_seconds: float = 4.0,
+        lesson_counters_enabled: bool = False,
+        lesson_counter_service: LessonCounterService | None = None,
+        lesson_counter_broker: LessonCounterJobBroker | None = None,
     ) -> None:
         self.db = db
         self.parser = parser
@@ -36,8 +41,12 @@ class ScheduleJobs:
         self.scheduler = AsyncIOScheduler(timezone=timezone)
         self.request_delay_seconds = max(0.0, request_delay_seconds)
         self.request_jitter_seconds = max(0.0, request_jitter_seconds)
+        self.lesson_counters_enabled = lesson_counters_enabled
+        self.lesson_counter_service = lesson_counter_service
+        self.lesson_counter_broker = lesson_counter_broker
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
+        self._lesson_counter_lock = asyncio.Lock()
 
     def configure(self) -> None:
         self.scheduler.add_job(self.save_daily_baseline, CronTrigger(hour=0, minute=0), max_instances=1, coalesce=True)
@@ -54,10 +63,20 @@ class ScheduleJobs:
             max_instances=1,
             coalesce=True,
         )
+        if self.lesson_counters_enabled and self.lesson_counter_service is not None:
+            self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=0), max_instances=1, coalesce=True)
+            self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=40), max_instances=1, coalesce=True)
 
     def start(self) -> None:
         self.configure()
         self.scheduler.start()
+
+    async def start_lesson_counter_consumer(self) -> None:
+        if not self.lesson_counters_enabled or self.lesson_counter_service is None:
+            return
+        if self.lesson_counter_broker is None or not self.lesson_counter_broker.enabled:
+            return
+        await self.lesson_counter_broker.start_consumer(self.handle_lesson_counter_job)
 
     async def save_daily_baseline(self) -> None:
         if self._baseline_lock.locked():
@@ -84,6 +103,34 @@ class ScheduleJobs:
             return
         async with self._sync_lock:
             await self._run_for_active_sources("sync", self._sync_source)
+
+    async def count_today_lessons(self) -> None:
+        if not self.lesson_counters_enabled or self.lesson_counter_service is None:
+            logger.info("Lesson counters task skipped because feature is disabled.")
+            return
+        if self._lesson_counter_lock.locked():
+            logger.info("Lesson counters task skipped because previous run is still active.")
+            return
+        schedule_ids = await self.lesson_counter_service.configured_schedule_ids()
+        if not schedule_ids:
+            logger.info("Lesson counters task skipped because no groups are configured.")
+            return
+        async with self._lesson_counter_lock:
+            broker_enabled = self.lesson_counter_broker is not None and self.lesson_counter_broker.enabled
+            for index, schedule_id in enumerate(schedule_ids):
+                if broker_enabled:
+                    await self.lesson_counter_broker.publish(LessonCounterJob(schedule_id=schedule_id))
+                else:
+                    if index:
+                        await self._sleep_between_sources("lesson-counters", str(schedule_id))
+                    await self.handle_lesson_counter_job(LessonCounterJob(schedule_id=schedule_id))
+            if broker_enabled:
+                logger.info("Lesson counters: enqueued %s group job(s).", len(schedule_ids))
+
+    async def handle_lesson_counter_job(self, job: LessonCounterJob) -> None:
+        if not self.lesson_counters_enabled or self.lesson_counter_service is None:
+            return
+        await self._count_lessons_for_schedule_id(job.schedule_id)
 
     async def _run_for_active_sources(self, job_name: str, worker: SourceWorker, **kwargs: Any) -> None:
         sources = await self.db.get_active_sources()
@@ -226,3 +273,18 @@ class ScheduleJobs:
             source_title=source["source_title"],
             source_url=source["source_url"],
         )
+
+    async def _count_lessons_for_schedule_id(self, schedule_id: int) -> None:
+        snapshot, snapshot_hash = await self.parser.parse(schedule_id)
+        await self.db.save_snapshot(
+            "current",
+            snapshot_hash,
+            snapshot,
+            schedule_id=schedule_id,
+            group_name=snapshot.group_name,
+            source_type="group",
+            source_key=f"group:{schedule_id}",
+            source_title=snapshot.group_name,
+            source_url=f"rasp:{schedule_id}",
+        )
+        await self.lesson_counter_service.count_today_for_snapshot(schedule_id, snapshot)

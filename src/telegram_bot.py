@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboard
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
+from src.lesson_counters import LessonCounterService
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -88,7 +89,7 @@ SATURDAY_BELLS_TEXT = "\n".join(
 START_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
-        [InlineKeyboardButton(text="Настройки", callback_data="menu:settings")],
+        [InlineKeyboardButton(text="Дополнительно", callback_data="menu:settings")],
     ]
 )
 
@@ -166,6 +167,7 @@ def build_dispatcher(
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     callback_rate_locks: dict[int, asyncio.Lock] = {}
+    lesson_counter_service = LessonCounterService(db)
 
     def is_rate_limited(bucket: dict[int, float], key: int, cooldown: float) -> bool:
         now = monotonic()
@@ -982,13 +984,13 @@ def build_dispatcher(
                 lines.extend(escape(part) for part in value_lines[1:])
             else:
                 lines.extend(["", f"{escape(label)}: <b>-</b>"])
-        lines.extend(["", "/rasp — посмотреть расписание", "/settings — настройки"])
+        lines.extend(["", "/rasp — посмотреть расписание", "/settings — дополнительно"])
         return "\n".join(lines)
 
     async def format_subscription_settings_text(user_id: int) -> str:
         user = await db.get_user("telegram", user_id)
         notifications_enabled = user.homework_notifications_enabled if user else True
-        lines = ["<b>Настройки</b>", ""]
+        lines = ["<b>Дополнительно</b>", ""]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
@@ -1010,6 +1012,7 @@ def build_dispatcher(
         user = await db.get_user("telegram", user_id)
         notifications_enabled = user.homework_notifications_enabled if user else True
         rows: list[list[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text="Пройденные пары", callback_data="settings:lesson_counters")],
             [
                 InlineKeyboardButton(
                     text="Отключить уведомления" if notifications_enabled else "Включить уведомления",
@@ -1021,6 +1024,14 @@ def build_dispatcher(
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    async def format_lesson_counters_text(user_id: int) -> str:
+        if not settings.lesson_counters_enabled:
+            return "Сейчас данный функционал глобально выключен."
+        user = await db.get_user("telegram", user_id)
+        if not user or user.subscription_type != "group" or user.schedule_id is None:
+            return "Счетчики пар доступны после выбора группы."
+        return await lesson_counter_service.format_counters_text(user.schedule_id, html=True)
 
     async def handle_subscription_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
         subscription_data, error_text = await resolve_subscription_input(raw_text)
@@ -1367,6 +1378,14 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
+        if action == "lesson_counters":
+            await safe_edit_message_text(
+                callback.message,
+                await format_lesson_counters_text(callback.from_user.id),
+                reply_markup=await build_subscription_settings_keyboard(callback.from_user.id),
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "toggle_notifications":
             user = await db.get_user("telegram", callback.from_user.id)
             enabled = not (user.homework_notifications_enabled if user else True)

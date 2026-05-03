@@ -1,0 +1,22 @@
+{
+  "groups": [
+    {
+      "schedule_id": 600,
+      "group_name": "ИСП-25-1",
+      "subjects": [
+        {
+          "subject": "Литература",
+          "teacher": "Волошина Н. В.",
+          "passed": 10,
+          "total": 62
+        },
+        {
+          "subject": "Иностранный язык",
+          "teacher": "Травкина Е. А.",
+          "passed": 4,
+          "total": 43
+        }
+      ]
+    }
+  ]
+}
