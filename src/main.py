@@ -11,7 +11,8 @@ from src.config import Settings
 from src.db import Database
 from src.db_migrations import apply_migrations
 from src.group_catalog import GroupCatalog
-from src.message_broker import RabbitMQBroker
+from src.lesson_counters import LessonCounterService
+from src.message_broker import LessonCounterJobBroker, RabbitMQBroker
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
@@ -71,10 +72,19 @@ async def main() -> None:
     await group_catalog.ensure_loaded()
     search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog)
     parser = ScheduleParser(settings.schedule_url)
+    lesson_counter_service = LessonCounterService(db)
+    if settings.lesson_counters_enabled:
+        lesson_counter_config = await lesson_counter_service.load_config_file(settings.lesson_counters_path, group_catalog)
+        await lesson_counter_service.sync_config(lesson_counter_config)
     broker = RabbitMQBroker(
         url=settings.rabbitmq_url,
         queue_name=settings.rabbitmq_queue,
         prefetch_count=settings.rabbitmq_prefetch_count,
+    )
+    lesson_counter_broker = LessonCounterJobBroker(
+        url=settings.rabbitmq_url,
+        queue_name=settings.lesson_counters_queue,
+        prefetch_count=1,
     )
     broadcaster = Broadcaster(
         db=db,
@@ -97,8 +107,12 @@ async def main() -> None:
         timezone=settings.app_timezone,
         request_delay_seconds=settings.schedule_request_delay_seconds,
         request_jitter_seconds=settings.schedule_request_jitter_seconds,
+        lesson_counters_enabled=settings.lesson_counters_enabled,
+        lesson_counter_service=lesson_counter_service,
+        lesson_counter_broker=lesson_counter_broker,
     )
     jobs.start()
+    await jobs.start_lesson_counter_consumer()
     await jobs.sync_current_snapshot()
 
     await asyncio.Event().wait()

@@ -17,6 +17,7 @@ from vkbottle.http import AiohttpClient
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
+from src.lesson_counters import LessonCounterService
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -98,6 +99,7 @@ def build_vk_bot(
     admin_broadcast_drafts: dict[int, str] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
+    lesson_counter_service = LessonCounterService(db)
 
     def make_keyboard(rows: list[list[str]]) -> str:
         keyboard = Keyboard(one_time=False, inline=False)
@@ -256,7 +258,7 @@ def build_vk_bot(
             random_id=0,
         )
     def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
-        rows = [["Расписание"], ["Настройки"]]
+        rows = [["Расписание"], ["Дополнительно"]]
         if is_admin:
             rows.append(["Админка"])
         return make_keyboard(rows)
@@ -331,6 +333,7 @@ def build_vk_bot(
         )
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
         rows: list[list[str]] = [
+            ["Пройденные пары"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
         ]
         if has_group:
@@ -368,7 +371,7 @@ def build_vk_bot(
         user = await db.get_user("vk", user_id)
         notifications_enabled = user.homework_notifications_enabled if user else True
         lines = [
-            "Настройки",
+            "Дополнительно",
             "",
             f"Группа: {user.group_name if user and user.group_name else 'не выбрана'}",
             f"Уведомления: {'включены' if notifications_enabled else 'выключены'}",
@@ -392,7 +395,7 @@ def build_vk_bot(
     async def build_settings_text(user_id: int, extra: str | None = None) -> str:
         user = await db.get_user("vk", user_id)
         notifications_enabled = user.homework_notifications_enabled if user else True
-        lines = ["Настройки", ""]
+        lines = ["Дополнительно", ""]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
@@ -404,11 +407,22 @@ def build_vk_bot(
         return "\n".join(lines)
 
     def build_subscription_settings_keyboard(notifications_enabled: bool, has_subscription: bool) -> str:
-        rows: list[list[str]] = [["Отключить уведомления" if notifications_enabled else "Включить уведомления"]]
+        rows: list[list[str]] = [
+            ["Пройденные пары"],
+            ["Отключить уведомления" if notifications_enabled else "Включить уведомления"],
+        ]
         if has_subscription:
             rows.append(["Отписаться от группы"])
         rows.append(["Назад в меню"])
         return make_keyboard(rows)
+
+    async def lesson_counters_text(user_id: int) -> str:
+        if not settings.lesson_counters_enabled:
+            return "Сейчас данный функционал глобально выключен."
+        user = await db.get_user("vk", user_id)
+        if not user or user.subscription_type != "group" or user.schedule_id is None:
+            return "Счетчики пар доступны после выбора группы."
+        return await lesson_counter_service.format_counters_text(user.schedule_id)
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [title, ""]
@@ -437,6 +451,10 @@ def build_vk_bot(
         if not rows:
             lines.append("Пока нет пользователей с выбранной учебной группой.")
             return "\n".join(lines)
+        total_users = sum(int(row["users_count"]) for row in rows)
+        lines.append(f"Групп найдено: {len(rows)}")
+        lines.append(f"Всего пользователей с группой: {total_users}")
+        lines.append("")
         lines.append("№ | группа | кол-во юзеров")
         lines.append("")
         for index, row in enumerate(rows, start=1):
@@ -916,7 +934,7 @@ def build_vk_bot(
         if user is None or not user.subscription_key or not user.subscription_title:
             if text in {"/admin", "Админка"}:
                 pass
-            elif text.startswith("/") or text in {"Настройки", "Расписание"}:
+            elif text.startswith("/") or text in {"Дополнительно", "Настройки", "Расписание"}:
                 await prompt_group_selection(peer_id)
                 return
             else:
@@ -929,8 +947,20 @@ def build_vk_bot(
             await show_main_menu(peer_id, user_id)
             return
 
-        if text == "Настройки":
+        if text in {"Дополнительно", "Настройки"}:
             await show_settings(peer_id, user_id)
+            return
+
+        if text == "Пройденные пары":
+            user = await db.get_user("vk", user_id)
+            await show_screen(
+                peer_id,
+                await lesson_counters_text(user_id),
+                keyboard=build_subscription_settings_keyboard(
+                    user.homework_notifications_enabled if user else True,
+                    bool(user and user.subscription_key),
+                ),
+            )
             return
 
         if text == "Отключить уведомления":
@@ -941,10 +971,6 @@ def build_vk_bot(
         if text == "Включить уведомления":
             await db.set_notifications_enabled("vk", user_id, True)
             await show_settings(peer_id, user_id, extra="Уведомления включены.")
-            return
-
-        if text in {"Выключить уведомления о ДЗ", "Включить уведомления о ДЗ"}:
-            await show_screen(peer_id, "Модуль ДЗ отключен.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
             return
 
         if text == "Отписаться от группы":

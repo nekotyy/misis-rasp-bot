@@ -81,6 +81,34 @@ class Database:
                     error_text TEXT,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS lesson_counters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schedule_id INTEGER,
+                    subject TEXT NOT NULL,
+                    teacher TEXT NOT NULL,
+                    subject_norm TEXT NOT NULL,
+                    teacher_norm TEXT NOT NULL,
+                    passed_count INTEGER NOT NULL DEFAULT 0,
+                    total_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(schedule_id, subject_norm, teacher_norm)
+                );
+
+                CREATE TABLE IF NOT EXISTS lesson_counter_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    counter_id INTEGER NOT NULL,
+                    schedule_id INTEGER,
+                    date_iso TEXT NOT NULL,
+                    lesson_number INTEGER NOT NULL,
+                    subject TEXT NOT NULL,
+                    teacher TEXT NOT NULL,
+                    classroom TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(counter_id, date_iso, lesson_number),
+                    FOREIGN KEY(counter_id) REFERENCES lesson_counters(id) ON DELETE CASCADE
+                );
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -113,6 +141,23 @@ class Database:
             await self._ensure_column(db, "delivery_events", "attempt", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "delivery_events", "error_text", "TEXT")
             await self._ensure_column(db, "delivery_events", "created_at", "TEXT")
+            await self._ensure_column(db, "lesson_counters", "schedule_id", "INTEGER")
+            await self._ensure_column(db, "lesson_counters", "subject", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counters", "teacher", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counters", "subject_norm", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counters", "teacher_norm", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counters", "passed_count", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "lesson_counters", "total_count", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "lesson_counters", "created_at", "TEXT")
+            await self._ensure_column(db, "lesson_counters", "updated_at", "TEXT")
+            await self._ensure_column(db, "lesson_counter_events", "counter_id", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "lesson_counter_events", "schedule_id", "INTEGER")
+            await self._ensure_column(db, "lesson_counter_events", "date_iso", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counter_events", "lesson_number", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "lesson_counter_events", "subject", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counter_events", "teacher", "TEXT NOT NULL DEFAULT ''")
+            await self._ensure_column(db, "lesson_counter_events", "classroom", "TEXT")
+            await self._ensure_column(db, "lesson_counter_events", "created_at", "TEXT")
             await db.execute(
                 """
                 UPDATE users
@@ -184,6 +229,18 @@ class Database:
                 """
                 CREATE INDEX IF NOT EXISTS idx_delivery_events_status_broker
                 ON delivery_events(status, via_broker)
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_counters_source
+                ON lesson_counters(schedule_id, subject_norm, teacher_norm)
+                """
+            )
+            await db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_counter_events_once
+                ON lesson_counter_events(counter_id, date_iso, lesson_number)
                 """
             )
             await db.commit()
@@ -1031,6 +1088,132 @@ class Database:
                 )
             row = await cursor.fetchone()
         return row is not None
+
+    async def upsert_lesson_counter_seed(
+        self,
+        *,
+        schedule_id: int | None,
+        subject: str,
+        teacher: str,
+        subject_norm: str,
+        teacher_norm: str,
+        passed_count: int,
+        total_count: int,
+    ) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO lesson_counters (
+                    schedule_id, subject, teacher, subject_norm, teacher_norm, passed_count, total_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(schedule_id, subject_norm, teacher_norm) DO UPDATE SET
+                    subject = excluded.subject,
+                    teacher = excluded.teacher,
+                    total_count = excluded.total_count,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    schedule_id,
+                    subject,
+                    teacher,
+                    subject_norm,
+                    teacher_norm,
+                    max(0, passed_count),
+                    max(0, total_count),
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def list_lesson_counters(self, schedule_id: int | None = None) -> list[dict]:
+        async with aiosqlite.connect(self.path) as db:
+            if schedule_id is None:
+                cursor = await db.execute(
+                    """
+                    SELECT id, schedule_id, subject, teacher, subject_norm, teacher_norm, passed_count, total_count, updated_at
+                    FROM lesson_counters
+                    ORDER BY subject COLLATE NOCASE, teacher COLLATE NOCASE
+                    """
+                )
+            else:
+                cursor = await db.execute(
+                    """
+                    SELECT id, schedule_id, subject, teacher, subject_norm, teacher_norm, passed_count, total_count, updated_at
+                    FROM lesson_counters
+                    WHERE schedule_id = ?
+                    ORDER BY subject COLLATE NOCASE, teacher COLLATE NOCASE
+                    """,
+                    (schedule_id,),
+                )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "schedule_id": row[1],
+                "subject": row[2],
+                "teacher": row[3],
+                "subject_norm": row[4],
+                "teacher_norm": row[5],
+                "passed_count": row[6],
+                "total_count": row[7],
+                "updated_at": row[8],
+            }
+            for row in rows
+        ]
+
+    async def record_lesson_counter_event(
+        self,
+        *,
+        counter_id: int,
+        schedule_id: int | None,
+        date_iso: str,
+        lesson_number: int,
+        subject: str,
+        teacher: str,
+        classroom: str,
+    ) -> bool:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO lesson_counter_events (
+                    counter_id, schedule_id, date_iso, lesson_number, subject, teacher, classroom, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (counter_id, schedule_id, date_iso, lesson_number, subject, teacher, classroom, now),
+            )
+            inserted = cursor.rowcount > 0
+            if inserted:
+                await db.execute(
+                    """
+                    UPDATE lesson_counters
+                    SET passed_count = passed_count + 1,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, counter_id),
+                )
+            await db.commit()
+        return inserted
+
+    async def delete_lesson_counters_not_in(self, keys: set[tuple[int | None, str, str]]) -> int:
+        existing = await self.list_lesson_counters()
+        ids_to_delete = [
+            int(counter["id"])
+            for counter in existing
+            if (counter["schedule_id"], counter["subject_norm"], counter["teacher_norm"]) not in keys
+        ]
+        if not ids_to_delete:
+            return 0
+        placeholders = ",".join("?" for _ in ids_to_delete)
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(f"DELETE FROM lesson_counters WHERE id IN ({placeholders})", ids_to_delete)
+            await db.commit()
+        return len(ids_to_delete)
 
     def _snapshot_to_dict(self, snapshot: ScheduleSnapshot) -> dict:
         return {
