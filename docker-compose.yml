@@ -48,12 +48,12 @@ services:
     depends_on:
       - web
     environment:
-      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-dashboard.nekoty.ru}
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-dashboard.example.com}
       NGINX_HTTP_PORT: ${NGINX_HTTP_PORT:-80}
       NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-2443}
       WEB_UPSTREAM: ${WEB_UPSTREAM:-web:8080}
-      NGINX_SSL_CERT_PATH: ${NGINX_SSL_CERT_PATH:-/etc/letsencrypt/live/dashboard.nekoty.ru/fullchain.pem}
-      NGINX_SSL_KEY_PATH: ${NGINX_SSL_KEY_PATH:-/etc/letsencrypt/live/dashboard.nekoty.ru/privkey.pem}
+      NGINX_SSL_CERT_PATH: ${NGINX_SSL_CERT_PATH:-/etc/letsencrypt/live/dashboard.example.com/fullchain.pem}
+      NGINX_SSL_KEY_PATH: ${NGINX_SSL_KEY_PATH:-/etc/letsencrypt/live/dashboard.example.com/privkey.pem}
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
       - "${NGINX_HTTPS_PORT:-2443}:2443"
