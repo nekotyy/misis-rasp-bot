@@ -22,7 +22,12 @@ from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
-from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
+from src.subscription_utils import (
+    make_audience_subscription,
+    make_group_subscription,
+    make_teacher_subscription,
+    subscription_caption,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +166,7 @@ def build_dispatcher(
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
     awaiting_group_subscription_input: set[int] = set()
+    awaiting_audience_subscription_input: set[int] = set()
     awaiting_admin_broadcast_text: set[int] = set()
     awaiting_admin_user_search: set[int] = set()
     admin_broadcast_drafts: dict[int, str] = {}
@@ -277,6 +283,17 @@ def build_dispatcher(
             return None, "Ничего не найдено. Проверь написание и попробуй еще раз."
         return make_teacher_subscription(target), None
 
+    async def resolve_audience_input(raw_text: str) -> tuple[dict | None, str | None]:
+        if search_catalog is None:
+            return None, "Справочник сейчас недоступен. Попробуй позже."
+        try:
+            target = await search_catalog.find(raw_text)
+        except httpx.HTTPError:
+            return None, "Сайт расписания временно недоступен. Попробуй еще раз через минуту."
+        if target is None or target.kind != "audience":
+            return None, "Кабинет не найден. Проверь написание и попробуй еще раз."
+        return make_audience_subscription(target), None
+
     def format_group_subscription_status(subscription_type: str | None, subscription_title: str | None) -> str:
         lines = ["<b>Настройка уведомлений для этой группы</b>", ""]
         subscription_line = subscription_caption(subscription_type, subscription_title)
@@ -372,6 +389,24 @@ def build_dispatcher(
                 [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
             ]
         )
+
+    async def build_start_keyboard(user_id: int | None) -> InlineKeyboardMarkup:
+        user = await get_user_record(user_id)
+        rows: list[list[InlineKeyboardButton]] = [
+            [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
+            [InlineKeyboardButton(text="Дополнительно", callback_data="menu:settings")],
+        ]
+        if user and user.subscription_type == "teacher":
+            rows.insert(
+                1,
+                [
+                    InlineKeyboardButton(
+                        text="Изменить кабинет" if user.audience_subscription_key else "Подписаться на кабинет",
+                        callback_data="settings:audience_setup",
+                    )
+                ],
+            )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
         class _WelcomeUser:
@@ -978,6 +1013,20 @@ def build_dispatcher(
             ),
         )
 
+    async def prompt_audience_selection(bot: Bot, chat_id: int, user_id: int, error_text: str | None = None) -> None:
+        awaiting_audience_subscription_input.add(user_id)
+        lines = [
+            "<b>Укажи кабинет</b>",
+            "",
+            "Напиши аудиторию в формате, как на сайте расписания.",
+            "Например: <b>312</b>, <b>305/2</b> или <b>спортзал</b>.",
+            "",
+            "Эта подписка работает вместе с преподавателем и помогает быстрее замечать изменения по кабинету.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        await send_new_context_message(bot, chat_id, "settings", "\n".join(lines))
+
     async def ensure_group_selected(bot: Bot, chat_id: int, user_id: int | None) -> bool:
         user = await get_user_record(user_id)
         if user is not None and user.subscription_key and user.subscription_title:
@@ -1059,6 +1108,7 @@ def build_dispatcher(
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
+            user.audience_subscription_title if user else None,
         )
         if subscription_line:
             label, value = subscription_line.split(":", 1)
@@ -1068,6 +1118,8 @@ def build_dispatcher(
                 lines.extend(escape(part) for part in value_lines[1:])
             else:
                 lines.extend(["", f"{escape(label)}: <b>-</b>"])
+        if user and user.subscription_type == "teacher" and not user.audience_subscription_key:
+            lines.extend(["", "Ниже можно быстро привязать кабинет, чтобы следить за обновлениями аудитории отдельно."])
         lines.extend(["", "/rasp — посмотреть расписание", "/settings — дополнительно"])
         return "\n".join(lines)
 
@@ -1078,6 +1130,7 @@ def build_dispatcher(
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
+            user.audience_subscription_title if user else None,
         )
         if subscription_line:
             label, value = subscription_line.split(":", 1)
@@ -1104,6 +1157,17 @@ def build_dispatcher(
                 )
             ]
         ]
+        if user and user.subscription_type == "teacher":
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="Изменить кабинет" if user.audience_subscription_key else "Подписаться на кабинет",
+                        callback_data="settings:audience_setup",
+                    )
+                ]
+            )
+            if user.audience_subscription_key:
+                rows.append([InlineKeyboardButton(text="Убрать кабинет", callback_data="settings:audience_clear")])
         if user and user.subscription_key:
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
@@ -1122,7 +1186,20 @@ def build_dispatcher(
         if subscription_data is None:
             await prompt_group_selection(bot, chat_id, error_text)
             return False
+        existing_user = await db.get_user("telegram", user_id)
         await db.set_user_subscription("telegram", user_id, **subscription_data)
+        should_clear_audience = subscription_data.get("subscription_type") != "teacher"
+        if (
+            not should_clear_audience
+            and existing_user is not None
+            and (
+                existing_user.subscription_type != "teacher"
+                or existing_user.subscription_key != subscription_data.get("subscription_key")
+            )
+        ):
+            should_clear_audience = True
+        if should_clear_audience:
+            await db.clear_user_audience_subscription("telegram", user_id)
         editor = await user_is_editor(user_id)
         user = await get_user_record(user_id)
         await clear_context_messages(bot, chat_id, "group_select")
@@ -1131,7 +1208,7 @@ def build_dispatcher(
             chat_id,
             "menu",
             build_welcome_text(user, is_editor=editor),
-            reply_markup=START_KEYBOARD,
+            reply_markup=await build_start_keyboard(user_id),
         )
         return True
 
@@ -1225,6 +1302,7 @@ def build_dispatcher(
         search_results.pop(message.from_user.id if message.from_user else 0, None)
         if message.from_user:
             awaiting_schedule_search.discard(message.from_user.id)
+            awaiting_audience_subscription_input.discard(message.from_user.id)
         user = await get_user_record(message.from_user.id if message.from_user else None)
         if user is None or not user.subscription_key or not user.subscription_title:
             await prompt_group_selection(message.bot, message.chat.id)
@@ -1235,7 +1313,7 @@ def build_dispatcher(
             message.chat.id,
             "menu",
             build_welcome_text(user, is_editor=editor),
-            reply_markup=START_KEYBOARD,
+            reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
     @dispatcher.message(Command("settings"))
@@ -1275,6 +1353,7 @@ def build_dispatcher(
         if message.from_user:
             awaiting_admin_broadcast_text.discard(message.from_user.id)
             admin_broadcast_drafts.pop(message.from_user.id, None)
+            awaiting_audience_subscription_input.discard(message.from_user.id)
         await clear_context_messages(message.bot, message.chat.id, "dz")
         await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
         search_results.pop(message.from_user.id, None)
@@ -1287,7 +1366,7 @@ def build_dispatcher(
                 await get_user_record(message.from_user.id if message.from_user else None),
                 is_editor=await user_is_editor(message.from_user.id if message.from_user else None),
             ),
-            reply_markup=START_KEYBOARD,
+            reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
     @dispatcher.message(Command("admin"))
@@ -1393,6 +1472,7 @@ def build_dispatcher(
         search_results.pop(callback.from_user.id, None)
         awaiting_schedule_search.discard(callback.from_user.id)
         awaiting_admin_broadcast_text.discard(callback.from_user.id)
+        awaiting_audience_subscription_input.discard(callback.from_user.id)
         admin_broadcast_drafts.pop(callback.from_user.id, None)
         editor = await user_is_editor(callback.from_user.id)
         user = await get_user_record(callback.from_user.id)
@@ -1403,7 +1483,7 @@ def build_dispatcher(
                 callback.message.chat.id,
                 "menu",
                 build_welcome_text(user, is_editor=editor),
-                reply_markup=START_KEYBOARD,
+                reply_markup=await build_start_keyboard(callback.from_user.id),
             )
         await safe_callback_answer(callback)
 
@@ -1480,6 +1560,23 @@ def build_dispatcher(
                 reply_markup=await build_subscription_settings_keyboard(callback.from_user.id),
             )
             await safe_callback_answer(callback, "Уведомления обновлены")
+            return
+        if action == "audience_setup":
+            user = await db.get_user("telegram", callback.from_user.id)
+            if not user or user.subscription_type != "teacher":
+                await safe_callback_answer(callback, "Эта настройка доступна после выбора преподавателя.", show_alert=True)
+                return
+            await prompt_audience_selection(callback.bot, callback.message.chat.id, callback.from_user.id)
+            await safe_callback_answer(callback)
+            return
+        if action == "audience_clear":
+            await db.clear_user_audience_subscription("telegram", callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                await format_subscription_settings_text(callback.from_user.id),
+                reply_markup=await build_subscription_settings_keyboard(callback.from_user.id),
+            )
+            await safe_callback_answer(callback, "Кабинет отвязан")
             return
         if action == "clear_group":
             await db.clear_user_subscription("telegram", callback.from_user.id)
@@ -1769,6 +1866,24 @@ def build_dispatcher(
             )
             return
 
+        if message.from_user.id in awaiting_audience_subscription_input:
+            if message.text.startswith("/"):
+                return
+            audience_data, error_text = await resolve_audience_input(message.text.strip())
+            if audience_data is None:
+                await prompt_audience_selection(message.bot, message.chat.id, message.from_user.id, error_text)
+                return
+            await db.set_user_audience_subscription("telegram", message.from_user.id, **audience_data)
+            awaiting_audience_subscription_input.discard(message.from_user.id)
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "menu",
+                build_welcome_text(await get_user_record(message.from_user.id), is_editor=await user_is_editor(message.from_user.id)),
+                reply_markup=await build_start_keyboard(message.from_user.id),
+            )
+            return
+
         text_normalized = message.text.strip().casefold()
 
         if text_normalized in {"узнать расписание", "расписание"}:
@@ -1879,7 +1994,7 @@ def build_dispatcher(
             message.chat.id,
             "menu",
             build_welcome_text(user, is_editor=await user_is_editor(message.from_user.id)),
-            reply_markup=START_KEYBOARD,
+            reply_markup=await build_start_keyboard(message.from_user.id),
         )
 
     @dispatcher.errors()

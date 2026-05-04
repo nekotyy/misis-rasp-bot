@@ -36,6 +36,9 @@ class UserRecord:
     subscription_key: str | None
     subscription_title: str | None
     subscription_url: str | None
+    audience_subscription_key: str | None
+    audience_subscription_title: str | None
+    audience_subscription_url: str | None
     group_name: str | None
     schedule_id: int | None
     is_admin: bool
