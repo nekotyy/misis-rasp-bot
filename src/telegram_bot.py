@@ -327,18 +327,37 @@ def build_dispatcher(
             snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
         else:
             return None
-        await db.save_snapshot(
-            "current",
-            snapshot_hash,
-            snapshot_obj,
-            user.schedule_id,
-            user.group_name,
-            source_type=user.subscription_type,
-            source_key=user.subscription_key,
-            source_title=user.subscription_title,
-            source_url=user.subscription_url,
-        )
-        return await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
+        return {
+            "source_type": user.subscription_type,
+            "source_key": user.subscription_key,
+            "source_title": user.subscription_title,
+            "source_url": user.subscription_url,
+            "group_name": user.group_name or snapshot_obj.group_name,
+            "schedule_id": user.schedule_id,
+            "snapshot_hash": snapshot_hash,
+            "content": {
+                "group_name": snapshot_obj.group_name,
+                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
+                "days": [
+                    {
+                        "date_label": day.date_label,
+                        "date_iso": day.date_iso,
+                        "lessons": [
+                            {
+                                "number": lesson.number,
+                                "subject": lesson.subject,
+                                "teacher": lesson.teacher,
+                                "classroom": lesson.classroom,
+                            }
+                            for lesson in day.lessons
+                        ],
+                    }
+                    for day in snapshot_obj.days
+                ],
+            },
+            "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
+            "created_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
+        }
 
     def format_group_prompt(error_text: str | None = None) -> str:
         lines = [
