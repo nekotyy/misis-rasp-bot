@@ -27,7 +27,7 @@ from src.subscription_utils import make_group_subscription, make_teacher_subscri
 
 logger = logging.getLogger(__name__)
 
-SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
+SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 
 
@@ -942,7 +942,7 @@ def build_dispatcher(
                 (
                     "<b>Произошла ошибка при обработке запроса.</b>\n\n"
                     f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
-                    f"Напиши мне для решения: {SUPPORT_CONTACT}"
+                    f"Напишите мне для решения: {SUPPORT_CONTACT}"
                 ),
             )
         except TelegramBadRequest:

@@ -25,7 +25,7 @@ from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_b
 from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
 
 PAGE_SIZE = 6
-SUPPORT_CONTACT = "tg: @nekoty vk: vk.com/nekoteevich"
+SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
 
 WEEKDAY_BELLS_TEXT = "\n".join(
     [
@@ -163,7 +163,7 @@ def build_vk_bot(
                 message=(
                     "Произошла ошибка при обработке запроса.\n\n"
                     f"Ошибка: {short_error_text(error)}\n\n"
-                    f"Напиши мне для решения: {SUPPORT_CONTACT}"
+                    f"Напишите мне для решения: {SUPPORT_CONTACT}"
                 ),
                 random_id=0,
             )

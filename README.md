@@ -1,936 +1,586 @@
-# MISIS Schedule Bot — полная документация
+# MISIS Schedule Bot
 
-## 1. Что это за проект
+Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
 
-`misis-rasp-bot` — асинхронный Python-проект, который объединяет:
+## Что умеет проект
 
-- Telegram-бота (aiogram)
-- VK-бота (vkbottle)
-- общий парсер расписания с сайта колледжа
-- SQLite-хранилище пользователей, расписания, изменений и ДЗ
-- фоновый планировщик для авто-проверки изменений расписания
+- показывает расписание по группам, преподавателям и аудиториям;
+- хранит пользователей, подписки, снимки расписания и события в SQLite;
+- отслеживает изменения расписания и рассылает уведомления;
+- работает с RabbitMQ, но не зависит от него жестко для базовой логики;
+- считает пройденные пары по группам и дисциплинам;
+- поднимает веб-дашборд для метрик, управления ботом и веб-пользователями;
+- поддерживает массовые и тестовые рассылки;
+- переживает падение одного канала связи без остановки остальных.
 
-Проект поддерживает:
+## Архитектура
 
-- выдачу расписания (сегодня / завтра / через 2 дня)
-- поиск расписания (группа, преподаватель, аудитория)
-- хранение и просмотр домашнего задания
-- роль редактора ДЗ
-- админ-функции (статус, перепарс, сохранение эталона, управление редакторами, удаление ДЗ)
-- уведомления о смене расписания и новом ДЗ
+Проект состоит из четырех основных частей:
 
----
+1. `src/` — основная логика бота, парсер, планировщик, доставка, БД.
+2. `web_configurator/` — FastAPI-дашборд и веб-авторизация.
+3. `runtime/` — рабочие данные в Docker: SQLite, JSON счетчиков, вложения.
+4. `deploy/nginx/` — шаблон optional nginx для публичного доступа к дашборду.
 
-## 2. Технологический стек
+Сквозной поток данных:
+
+1. Пользователь пишет в Telegram или VK.
+2. Бот создает или обновляет запись в `users`.
+3. Парсер получает расписание с сайта колледжа.
+4. Снимки пишутся в `schedule_snapshots`.
+5. При изменении формируется событие в `change_events`.
+6. Уведомление отправляется либо через RabbitMQ, либо напрямую.
+7. Ночная задача счетчиков пар учитывает прошедшие пары и пишет события в `lesson_counter_events`.
+
+## Стек
 
 - Python 3.12+
-- `aiogram` — Telegram
-- `vkbottle` — VK
-- `httpx` + `beautifulsoup4` — HTTP и HTML-парсинг
-- `aiosqlite` — асинхронная SQLite
-- `aio-pika` — работа с RabbitMQ
-- `APScheduler` — фоновые Cron-задачи
-- `RabbitMQ` — очередь уведомлений между producer и consumer
-- `python-dotenv` — переменные окружения
+- `aiogram`
+- `vkbottle`
+- `FastAPI`
+- `uvicorn`
+- `aiosqlite`
+- `aio-pika`
+- `APScheduler`
+- `httpx`
+- `beautifulsoup4`
+- `python-dotenv`
+- `alembic`
+- Docker / Docker Compose
+- optional `nginx`
 
----
+## Структура проекта
 
-## 3. Структура проекта
+```text
+src/
+  config.py              настройки из .env
+  main.py                вход в приложение
+  db.py                  SQLite-схема и SQL-операции
+  db_migrations.py       запуск миграций alembic
+  models.py              dataclass-модели
+  parser.py              парсинг расписания
+  group_catalog.py       каталог групп и поиск schedule_id
+  schedule_search.py     поиск групп / преподавателей / аудиторий
+  schedule_service.py    форматирование и сравнение снимков
+  scheduler.py           фоновые задачи APScheduler
+  notifier.py            рассылки и уведомления
+  message_broker.py      RabbitMQ producer / consumer
+  lesson_counters.py     логика подсчета пар
+  telegram_bot.py        Telegram-бот
+  vk_bot.py              VK-бот
 
-- `src/main.py` — точка входа, сборка зависимостей, запуск ботов и джоб
-- `src/config.py` — загрузка настроек из `.env`
-- `src/db.py` — все SQL-операции
-- `src/models.py` — dataclass-модели
-- `src/parser.py` — парсер расписания
-- `src/group_catalog.py` — каталог групп и соответствий group -> schedule_id
-- `src/schedule_search.py` — поиск по группам/преподавателям/аудиториям
-- `src/schedule_service.py` — форматирование расписания и сравнение слепков
-- `src/scheduler.py` — регулярные фоновые задачи
-- `src/notifier.py` — producer/dispatcher уведомлений в Telegram/VK
-- `src/message_broker.py` — RabbitMQ broker, очередь и consumer доставки
-- `src/lesson_counters.py` — счетчики пройденных пар по группам
-- `src/telegram_bot.py` — вся Telegram-логика
-- `src/vk_bot.py` — вся VK-логика
+web_configurator/
+  app.py                 FastAPI-приложение
+  metrics.py             сбор метрик для дашборда
+  lesson_editor.py       валидация и сохранение счетчиков пар
+  security.py            веб-авторизация и права доступа
 
----
-
-## 4. Быстрый запуск
-
-1. Скопировать `.env.example` -> `.env`
-1. Заполнить токены
-1. Установить `uv` (если еще не установлен):
-
-```bash
-pip install --upgrade uv
+deploy/nginx/
+  default.conf.template  шаблон nginx-конфига
 ```
 
-1. Установить зависимости:
+## Хранилища данных
+
+### SQLite
+
+Основная база проекта — SQLite. По умолчанию локально используется `bot.db`, в Docker — `runtime/bot.db`.
+
+Ключевые таблицы:
+
+- `users` — TG/VK-пользователи, подписки, роли, служебные флаги;
+- `schedule_snapshots` — снимки расписания;
+- `change_events` — журнал изменений;
+- `delivery_events` — история доставки сообщений;
+- `lesson_counters` — настроенные счетчики пар;
+- `lesson_counter_events` — уже учтенные пары;
+- `web_users` — пользователи веб-дашборда.
+
+### JSON
+
+JSON в проекте используется там, где он удобен как редактируемый конфиг:
+
+- `storage/lesson_counters.json` или `runtime/lesson_counters.json` — конфигурация счетчиков пар;
+- `WEB_USERS_JSON_IMPORT_PATH` — optional путь к файлу для одноразового импорта веб-пользователей в SQLite, если нужно перенести существующие аккаунты.
+
+## Быстрый локальный запуск
+
+1. Скопировать пример окружения:
+
+```bash
+cp .env.example .env
+```
+
+2. Заполнить `.env`.
+
+3. Установить зависимости:
 
 ```bash
 uv sync --frozen
 ```
 
-1. Запустить:
+4. Запустить бота:
 
 ```bash
 uv run --frozen -m src.main
 ```
 
----
+5. Запустить веб-дашборд:
 
-## 5. Docker / VPS
+```bash
+uv run --frozen uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
+```
 
-Проект запускается через `docker-compose.yml`.
+## Docker и деплой
 
-Миграции БД:
-
-- Используется `Alembic`.
-- При старте приложения миграции применяются автоматически до `head`.
-- Для уже существующей БД без `alembic_version` выполняется безопасный `stamp head`, чтобы не ломать рабочую схему на VPS.
-
-- В compose поднимаются два сервиса:
-  - `bot` — основное приложение
-  - `rabbitmq` — брокер очередей для уведомлений
-- База и вложения сохраняются в `./runtime` на хосте.
-- В контейнер пробрасываются:
-  - `DATABASE_PATH=/app/runtime/bot.db`
-  - `ATTACHMENTS_PATH=/app/runtime/attachments`
-  - `TZ=${APP_TIMEZONE}`
-- RabbitMQ поднимается в отдельном контейнере:
-  - AMQP: `5672`
-  - management UI: `15672`
-- Внутри сети Docker бот подключается к RabbitMQ по имени сервиса `rabbitmq`.
-
-Запуск:
+Обычный запуск:
 
 ```bash
 docker compose up -d --build
 ```
 
-Практический порядок действий на VPS:
+По умолчанию поднимаются:
 
-1. Обновить код:
+- `bot`
+- `rabbitmq`
+- `web`
 
-```bash
-git pull
-```
-
-1. Проверить `.env` и убедиться, что там есть блок RabbitMQ:
-
-```env
-RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-RABBITMQ_QUEUE=misis_notifications
-RABBITMQ_PREFETCH_COUNT=20
-```
-
-1. Пересобрать и перезапустить сервисы:
-
-```bash
-docker compose up -d --build
-```
-
-Проверка контейнеров:
-
-```bash
-docker compose ps
-docker compose logs -f bot
-docker compose logs -f rabbitmq
-```
-
-Проверка миграций в контейнере:
-
-```bash
-docker compose exec bot uv run --frozen alembic current
-docker compose exec bot uv run --frozen alembic heads
-```
-
-Что важно:
-
-- если `RABBITMQ_URL` задан, уведомления идут через очередь
-- если `RABBITMQ_URL` пустой, `Broadcaster` автоматически откатывается на прямую отправку без брокера
-- для VPS в Docker рекомендован именно режим с RabbitMQ, потому что он мягче обрабатывает всплески уведомлений и не бьет сразу по API Telegram/VK
-
-### 5.1. CI/CD: автодеплой из `main` через self-hosted runner
-
-В репозиторий добавлен workflow:
-
-- `.github/workflows/ci-cd.yml`
-
-Логика работы:
-
-1. На `pull_request` в `main` и на `push` в `main` запускается CI:
-CI включает установку зависимостей, проверку синтаксиса Python (`compileall`) и `pip check`.
-1. На `push` в `main` после успешного CI запускается деплой на self-hosted runner.
-1. Runner выполняет на сервере `git pull --ff-only origin main`, затем `docker compose up -d --build --remove-orphans`.
-
-#### Что указать в GitHub
-
-1. В репозитории открой `Settings` -> `Actions` -> `Runners`.
-1. Нажми `New self-hosted runner` и выполни команды установки на своем локальном сервере.
-1. В репозитории открой `Settings` -> `Secrets and variables` -> `Actions` -> `Variables`.
-1. Добавь переменную `DEPLOY_PROJECT_PATH`.
-
-Значение `DEPLOY_PROJECT_PATH`:
-
-- абсолютный путь к проекту на сервере (например `/opt/misis-rasp-bot`)
-
-#### Что подготовить на сервере один раз
-
-1. Клонировать репозиторий в путь, указанный в `DEPLOY_PROJECT_PATH`.
-2. Создать и заполнить `.env` в папке проекта.
-3. Убедиться, что работает ручной запуск:
-
-```bash
-docker compose up -d --build
-```
-
-1. Настроить доступ сервера к GitHub для `git pull`: через SSH deploy key или через HTTPS + токен.
-1. Убедиться, что runner-процесс запущен и online в разделе `Actions` -> `Runners`.
-1. Если runner-пользователь не в группе `docker`, workflow автоматически попробует `sudo docker compose` (нужен passwordless sudo).
-
-#### Как проверить, что деплой сработал
-
-1. Сделать коммит и пуш в `main`.
-2. Вкладка `Actions` должна показать успешный workflow `CI/CD`.
-3. На сервере проверить:
-
-```bash
-docker compose ps
-docker compose logs -f bot
-```
-
----
-
-## 6. Конфигурация (`.env`)
-
-- `APP_TIMEZONE` — таймзона APScheduler и контейнера
-- `SCHEDULE_URL` — базовый URL расписания (обычно `http://asu.sf-misis.ru/rasp/600`)
-- `DATABASE_PATH` — путь к sqlite
-- `ATTACHMENTS_PATH` — корень файлов вложений
-- `ADMIN_TELEGRAM_ID` — Telegram ID администратора
-- `ADMIN_VK_ID` — VK ID администратора
-- `TELEGRAM_BOT_TOKEN` — токен Telegram
-- `VK_BOT_TOKEN` — токен VK
-- `VK_DISABLE_SSL_VERIFY` — отключение SSL-валидации для VK HTTP-клиента
-- `RABBITMQ_URL` — адрес подключения к RabbitMQ
-- `RABBITMQ_QUEUE` — имя очереди уведомлений
-- `RABBITMQ_PREFETCH_COUNT` — сколько сообщений consumer берет в работу одновременно
-- `LESSON_COUNTERS_ENABLED` — глобальный выключатель счетчиков пройденных пар
-- `LESSON_COUNTERS_PATH` — путь к JSON со счетчиками по группам
-- `LESSON_COUNTERS_QUEUE` — отдельная RabbitMQ-очередь задач подсчета пар
-- `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий веб-конфигуратора
-- `WEB_SUPERUSER_LOGIN` — логин суперпользователя веб-конфигуратора
-- `WEB_SUPERUSER_PASSWORD` — пароль суперпользователя веб-конфигуратора
-- `WEB_USERS_PATH` — JSON-хранилище веб-пользователей и прав
-
-Рекомендуемый блок для Docker/VPS:
-
-```env
-APP_TIMEZONE=Europe/Moscow
-SCHEDULE_REQUEST_DELAY_SECONDS=10
-SCHEDULE_REQUEST_JITTER_SECONDS=8
-SCHEDULE_URL=http://asu.sf-misis.ru/rasp/600
-DATABASE_PATH=/app/runtime/bot.db
-ATTACHMENTS_PATH=/app/runtime/attachments
-ADMIN_TELEGRAM_ID=...
-ADMIN_VK_ID=...
-TELEGRAM_BOT_TOKEN=...
-VK_BOT_TOKEN=...
-VK_DISABLE_SSL_VERIFY=false
-RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-RABBITMQ_QUEUE=misis_notifications
-RABBITMQ_PREFETCH_COUNT=20
-LESSON_COUNTERS_ENABLED=false
-LESSON_COUNTERS_PATH=/app/runtime/lesson_counters.json
-LESSON_COUNTERS_QUEUE=misis_lesson_counters
-WEB_CONFIG_SECRET=change-me-long-random-secret
-WEB_SUPERUSER_LOGIN=admin
-WEB_SUPERUSER_PASSWORD=change-me
-WEB_USERS_PATH=/app/runtime/web_users.json
-```
-
-Пояснение по RabbitMQ-переменным:
-
-- `RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/`
-  - `guest:guest` — логин и пароль
-  - `rabbitmq` — имя сервиса в `docker-compose`
-  - `5672` — стандартный AMQP-порт
-- `RABBITMQ_QUEUE=misis_notifications`
-  - имя очереди, куда producer складывает уведомления и откуда consumer их читает
-- `RABBITMQ_PREFETCH_COUNT=20`
-  - ограничение на число сообщений, одновременно взятых consumer в обработку
-  - меньше — мягче и медленнее
-  - больше — быстрее, но агрессивнее
-- `LESSON_COUNTERS_QUEUE=misis_lesson_counters`
-  - durable-очередь задач подсчета пар по группам
-  - используется только счетчиками, уведомления остаются в `RABBITMQ_QUEUE`
-
-Пример `lesson_counters.json`:
-
-```json
-{
-  "groups": [
-    {
-      "schedule_id": 600,
-      "group_name": "ИСП-25-1",
-      "subjects": [
-        {
-          "subject": "Литература",
-          "teacher": "Волошина Н. В.",
-          "passed": 10,
-          "total": 62
-        }
-      ]
-    }
-  ]
-}
-```
-
----
-
-## 7. Веб-конфигуратор
-
-Веб-модуль лежит отдельно в `web_configurator/` и запускается независимо от бота:
-
-```bash
-uv run uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
-```
-
-В Docker Compose обычный запуск поднимает все сервисы: `bot`, `rabbitmq` и `web`.
-
-```bash
-docker compose up -d --build
-```
-
-Если вебка не нужна или не поднялась, основной сервис `bot` продолжает работать отдельно.
-
-RabbitMQ поднимается рядом с ботом. Если брокер временно недоступен, бот не падает: RabbitMQ-consumer не стартует, а отправка продолжает работать через прямой fallback.
-
-Возможности:
-
-- метрики аптайма, пользователей TG/VK, сервисов, парсинга, изменений расписания, активных групп и доставки сообщений
-- список пользователей с фильтрами: TG/VK, преподаватели/группы, новые/старые
-- редактор `lesson_counters.json` с валидацией дисциплин по расписанию группы
-- управление веб-пользователями и правами по разделам
-
-Суперпользователь задается через `WEB_SUPERUSER_LOGIN` и `WEB_SUPERUSER_PASSWORD`.
-
-### 7.1. nginx and public dashboard access
-
-Now `docker compose up -d --build` starts `bot`, `rabbitmq`, `web`, and `nginx`.
-
-Flow:
-
-- `web` stays inside the Docker network on `web:8080`
-- `nginx` accepts external traffic and proxies it to `web`
-- HTTP is exposed on `80`
-- HTTPS is exposed on `2443`
-
-Public URL after deploy:
+Если нужен только рабочий бот с очередью и вебкой без reverse proxy, этого достаточно. Дашборд будет доступен напрямую:
 
 ```text
-http://dashboard.nekoty.ru
-https://dashboard.nekoty.ru:2443
+http://server-ip:8080
 ```
 
-Relevant `.env` values:
+### Optional nginx
+
+`nginx` в проекте необязателен и включается через профиль.
+
+Вариант через `.env`:
 
 ```env
-NGINX_SERVER_NAME=dashboard.nekoty.ru
-NGINX_HTTP_PORT=80
-NGINX_HTTPS_PORT=2443
-WEB_UPSTREAM=web:8080
-NGINX_SSL_CERT_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/fullchain.pem
-NGINX_SSL_KEY_PATH=/etc/letsencrypt/live/dashboard.nekoty.ru/privkey.pem
+COMPOSE_PROFILES=nginx
 ```
 
-DNS setup:
-
-- use `CNAME` if `dashboard.nekoty.ru` should point to another hostname
-- use an `A` record if the subdomain should point directly to the VPS IP
-
-Certificate note:
-
-- put certbot certificates into `./deploy/certs`, they are mounted into the container as `/etc/letsencrypt`
-- after certificate renewal, restart nginx: `docker compose restart nginx`
-
-Post-deploy check:
+После этого обычная команда:
 
 ```bash
-docker compose ps
-docker compose logs -f nginx
-docker compose logs -f web
+docker compose up -d --build
 ```
 
+поднимет:
 
----
+- `bot`
+- `rabbitmq`
+- `web`
+- `nginx`
 
-## 7. Как работает парсинг расписания (подробно)
+Можно включить профиль и без `.env`:
 
-### 7.1. Источники данных
-
-1. Основная страница расписания группы: `/rasp/{schedule_id}`
-2. Каталог групп: `/` + `/group/{department_id}`
-3. Каталог преподавателей: `/prep`
-4. Каталог аудиторий: `/aud`
-
-### 7.2. Класс `ScheduleParser`
-
-Пайплайн:
-
-1. `parse(schedule_id)` -> `fetch_html` -> `_get_with_retry`
-2. HTML разбирается `BeautifulSoup`
-3. Из `div#titleF` берется имя группы
-4. Для каждого `div.titleDate` ищется следующий `div.rasp`
-5. Из таблицы дня читаются строки пар (номер, предмет, преподаватель, аудитория)
-6. Дата переводится в ISO (`_date_label_to_iso`)
-7. Формируется `ScheduleSnapshot`
-8. Вычисляется hash (`compute_hash`) по нормализованному содержимому
-
-### 7.3. Ретраи и отказоустойчивость
-
-В `_get_with_retry`:
-
-- несколько попыток (`request_retries`)
-- `response.raise_for_status()`
-- при ошибке — лог и `asyncio.sleep(backoff * attempt)`
-- после исчерпания попыток бросается последняя HTTP-ошибка
-
-### 7.4. Нормализация и хеш
-
-`compute_hash(snapshot)` собирает строковый payload:
-
-- имя группы
-- даты (`date_iso`)
-- пары, отсортированные по номеру
-
-Итог: `sha256(payload)`.
-
-Это дает стабильный контроль изменений структуры расписания.
-
-### 7.5. Сравнение расписания
-
-`ScheduleComparator.compare(previous, current)`:
-
-- сравнивает baseline и current
-- ограничивает проверку ближайшими днями
-- для изменившихся дней формирует:
-  - `message` (обычный текст)
-  - `telegram_message` (HTML)
-  - `vk_message`
-  - `payload`
-
-Результат (`ChangeSummary`) используется для записи события и массовой рассылки.
-
----
-
-## 8. Каталоги групп и поиск
-
-### 8.1. `GroupCatalog`
-
-- Загружает все отделения и группы с сайта
-- Привязывает `group_name -> schedule_id`
-- Поддерживает поиск:
-  - по нормализованному имени группы
-  - по `schedule_id`
-
-Нормализация: `casefold`, `ё -> е`, выравнивание разных типов дефиса, схлопывание пробелов.
-
-### 8.2. `ScheduleSearchCatalog`
-
-Поиск в порядке:
-
-1. Группы (`GroupCatalog.find_group`)
-2. Преподаватели (страница `/prep`)
-3. Аудитории (страница `/aud`)
-
-Поддерживает:
-
-- точное совпадение
-- частичное совпадение (`_find_partial`):
-  - совпадение по слову
-  - по префиксу
-  - по вхождению
-
-Возвращает `SearchTarget(kind, title, url)`.
-
----
-
-## 9. Фоновая синхронизация и уведомления
-
-### 9.1. `ScheduleJobs`
-
-Планировщик создает 3 задачи:
-
-1. `save_daily_baseline` — ежедневно в 00:00
-2. `save_daily_baseline_fallback` — fallback в 05:00
-3. `sync_current_snapshot` — каждый час на 10-й минуте
-
-### 9.2. Алгоритм `sync_current_snapshot`
-
-Для каждой активной группы:
-
-1. Парсится текущее расписание
-2. Берется baseline
-3. Вычисляется `change_summary`
-4. Сохраняется `current` snapshot
-5. Если есть изменения:
-   - запись в `change_events`
-   - рассылка через `Broadcaster`
-   - обновление baseline
-
-### 9.3. `Broadcaster`
-
-- Работает как единая точка отправки уведомлений
-- Умеет публиковать уведомления в RabbitMQ
-- При включенном RabbitMQ становится producer
-- При выключенном RabbitMQ делает прямую отправку в Telegram и VK
-- Умеет выборочную рассылку по `schedule_id`
-- Для ДЗ использует флаг `homework_notifications_enabled`
-- Умеет отдельно уведомлять админов
-
-### 9.4. RabbitMQ в проекте
-
-RabbitMQ используется только для исходящих уведомлений.
-
-Схема такая:
-
-1. scheduler или админка формируют уведомление
-2. `Broadcaster` получает текст уведомления
-3. `Broadcaster` публикует задачу в очередь `misis_notifications`
-4. consumer из `src/message_broker.py` читает сообщения из очереди
-5. consumer вызывает отправку в нужную платформу:
-   - Telegram
-   - VK
-
-Что хранится в очереди:
-
-- `platform`
-- `user_id`
-- `text`
-
-Пример payload:
-
-```json
-{
-  "platform": "telegram",
-  "user_id": 123456789,
-  "text": "Обнаружены изменения в расписании!"
-}
+```bash
+docker compose --profile nginx up -d --build
 ```
 
-Преимущества такой схемы:
+Пример публичной схемы:
 
-- уведомления не улетают всем сразу одним пакетом
-- проще переживаются всплески нагрузки
-- producer и delivery-логика разделены
-- бот меньше зависит от мгновенной доступности API Telegram/VK
+- `http://dashboard.example.com`
+- `https://dashboard.example.com`
 
----
+Внутри Docker трафик идет так:
 
-## 10. База данных (SQLite)
+```text
+internet -> nginx -> web:8080
+```
 
-### 10.1. Таблицы
+### Сертификаты
 
-- `users` — пользователи, роли, группа, флаги уведомлений
-- `schedule_snapshots` — снимки расписания (`current`, `daily_baseline`)
-- `change_events` — события изменения расписания
-- `homework_entries` — записи ДЗ
-- `homework_attachments` — вложения ДЗ
-- `linked_accounts` — связь Telegram<->VK аккаунтов
-- `link_tokens` — временные коды привязки
+Если используется `nginx`, контейнер ожидает сертификаты в смонтированной директории:
 
-### 10.2. Что хранится в слепке
+```text
+deploy/certs/live/dashboard.example.com/fullchain.pem
+deploy/certs/live/dashboard.example.com/privkey.pem
+```
 
-`content_json` содержит:
+После обновления сертификатов:
 
-- `group_name`
-- `fetched_at`
-- список дней, где для каждого дня — список пар
+```bash
+docker compose restart nginx
+```
 
-### 10.3. Слой `Database`
+Если `nginx` отключен, этот раздел можно игнорировать: бот, RabbitMQ и дашборд работают без него.
 
-`Database` инкапсулирует весь SQL: инициализацию схемы, CRUD пользователей, snapshots, change events, счетчики пар, привязку аккаунтов.
+### Что важно при деплое
 
----
+1. Не потерять рабочую базу `runtime/bot.db`.
+2. Держать `runtime/` на постоянном диске.
+3. Проверить доступность внешнего `80/tcp`, если планируется certbot.
+4. Не оставлять тестовые пароли и секреты из `.env.example`.
+5. После выдачи сертификатов перезапустить `nginx`.
 
-## 11. Счетчики пар
+## CI/CD
 
-- Список групп и дисциплин хранится в JSON из `LESSON_COUNTERS_PATH`.
-- В 23:00 и 23:40 бот создает задачи подсчета по всем группам из JSON, даже если на группу никто не подписан.
-- При включенном RabbitMQ задачи идут в durable-очередь `LESSON_COUNTERS_QUEUE`.
-- Одна и та же пара за одну дату не засчитывается повторно.
+Если в репозитории используется self-hosted runner, схема деплоя может быть такой:
 
-### Формат JSON
+1. На `push` в рабочую ветку запускается CI.
+2. Runner делает `git pull --ff-only`.
+3. Затем выполняется:
 
-См. пример в `storage/lesson_counters.json`.
+```bash
+docker compose up -d --build --remove-orphans
+```
 
----
+Для такого сценария обычно достаточно:
 
-## 12. Telegram-бот: логика и сценарии
+- установить runner на сервер;
+- подготовить `.env`;
+- убедиться, что `docker compose up -d --build` вручную уже работает;
+- настроить доступ сервера к GitHub для `git pull`.
 
-Точка сборки: `build_dispatcher(...)`.
+## Переменные окружения
+
+Подробные комментарии уже есть в `.env.example`, а здесь — краткая карта.
+
+### Базовые
+
+- `APP_TIMEZONE` — таймзона проекта.
+- `SCHEDULE_URL` — базовый URL расписания.
+- `DATABASE_PATH` — путь к SQLite.
+- `ATTACHMENTS_PATH` — корень вложений.
+- `TELEGRAM_BOT_TOKEN` — токен Telegram-бота.
+- `VK_BOT_TOKEN` — токен VK-бота.
+- `ADMIN_TELEGRAM_ID` — Telegram ID администратора.
+- `ADMIN_VK_ID` — VK ID администратора.
+
+### RabbitMQ
+
+- `RABBITMQ_URL` — адрес подключения.
+- `RABBITMQ_QUEUE` — очередь уведомлений.
+- `LESSON_COUNTERS_QUEUE` — очередь задач подсчета пар.
+- `RABBITMQ_PREFETCH_COUNT` — prefetch для consumer.
+
+### Счетчики пар
+
+- `LESSON_COUNTERS_ENABLED` — глобальный флаг включения подсчета.
+- `LESSON_COUNTERS_PATH` — путь к JSON-конфигу счетчиков.
+
+### Веб-дашборд
+
+- `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий.
+- `WEB_SUPERUSER_LOGIN` — логин встроенного суперпользователя.
+- `WEB_SUPERUSER_PASSWORD` — пароль встроенного суперпользователя.
+- `WEB_USERS_JSON_IMPORT_PATH` — optional путь для одноразового импорта веб-пользователей.
+- `WEB_PORT` — внешний порт FastAPI-дашборда без nginx.
+
+### Nginx
+
+- `COMPOSE_PROFILES` — если поставить `nginx`, compose поднимет optional nginx-профиль.
+- `NGINX_SERVER_NAME` — домен дашборда.
+- `NGINX_HTTP_PORT` — внешний HTTP-порт.
+- `NGINX_HTTPS_PORT` — внешний HTTPS-порт.
+- `WEB_UPSTREAM` — внутренний upstream для проксирования.
+- `NGINX_SSL_CERT_PATH` — путь к сертификату внутри контейнера nginx.
+- `NGINX_SSL_KEY_PATH` — путь к приватному ключу внутри контейнера nginx.
+
+## Как работает парсинг расписания
+
+Основная логика находится в `src/parser.py`, `src/group_catalog.py`, `src/schedule_search.py` и `src/schedule_service.py`.
+
+### Базовый URL
+
+`SCHEDULE_URL` задает базовую точку входа к сайту расписания. Безопасные варианты:
+
+- `http://asu.sf-misis.ru/rasp/`
+- `http://asu.sf-misis.ru/rasp/600`
+
+Парсер сам формирует адрес группы как `{base}/{schedule_id}`.
+
+### Загрузка HTML
+
+`ScheduleParser`:
+
+1. собирает URL нужной группы;
+2. выполняет HTTP GET через `httpx`;
+3. использует retry/backoff;
+4. возвращает HTML для последующего разбора.
+
+### Разбор страницы
+
+`BeautifulSoup` проходит по HTML и собирает нормализованный снимок:
+
+- даты;
+- пары внутри каждой даты;
+- предмет;
+- преподаватель;
+- аудитория;
+- время;
+- сопутствующие поля, которые нужны для форматирования.
+
+### Хеш снимка
+
+После парсинга формируется нормализованный JSON и считается SHA256-хеш. Это позволяет быстро понять, изменилось расписание или нет, без ручного сравнения строк.
+
+### Каталоги групп и поиск
+
+`GroupCatalog` и `ScheduleSearchCatalog` отвечают за:
+
+- загрузку каталога групп;
+- поиск `schedule_id`;
+- поиск по преподавателям;
+- поиск по аудиториям;
+- частичное совпадение по запросу;
+- нормализацию пользовательского ввода.
+
+### Сравнение снимков
+
+`ScheduleComparator` сравнивает baseline и current:
+
+- по дням;
+- по составу пар;
+- по содержимому самих записей.
+
+Если находится различие, создается `ChangeSummary`, который потом идет в БД и в уведомления.
+
+## Как работает RabbitMQ
+
+Основная логика очередей находится в `src/message_broker.py` и `src/notifier.py`.
+
+### Очереди
+
+В проекте используются две основные очереди:
+
+- `RABBITMQ_QUEUE` — пользовательские уведомления;
+- `LESSON_COUNTERS_QUEUE` — задачи подсчета пар.
+
+### Producer
+
+Когда бот или веб-дашборд формирует событие на доставку:
+
+1. собирается полезная нагрузка;
+2. сообщение публикуется в очередь;
+3. consumer забирает его уже отдельно от основного потока.
+
+### Consumer
+
+Consumer:
+
+1. получает сообщение;
+2. определяет платформу и адресата;
+3. отправляет сообщение через Telegram или VK;
+4. пишет результат доставки в `delivery_events`;
+5. подтверждает сообщение.
+
+### Ack, retry и fallback
+
+Если доставка успешна — сообщение подтверждается. Если нет — применяется логика повторной обработки или прямой доставки, смотря в каком участке конвейера произошла проблема.
+
+Что важно practically:
+
+- RabbitMQ полезен для всплесков уведомлений;
+- бот не должен становиться хрупким из-за очереди;
+- при недоступности RabbitMQ основная логика проекта не теряет жизнеспособность.
+
+## Планировщик и фоновые задачи
+
+Фоновые задачи собраны в `src/scheduler.py` и запускаются через `APScheduler`.
 
 Основные сценарии:
 
-1. Регистрация/обновление пользователя при каждом входящем событии
-2. Проверка выбранной группы (иначе принудительный выбор)
-3. Меню расписания, поиск расписания
-4. Просмотр ДЗ
-5. Создание ДЗ (для редактора):
-   - выбор предмета
-   - ввод текста
-   - добавление вложений
-   - предпросмотр
-   - публикация
-6. Настройки:
-   - toggle уведомлений ДЗ
-   - отписка от группы
-7. Админка:
-   - статус
-   - перепарс
-   - сохранение baseline
-   - пользователи
-   - редакторы
-   - удаление ДЗ
-   - тестовая рассылка
+- сохранение дневного baseline;
+- резервное сохранение baseline;
+- синхронизация current snapshot;
+- сравнение baseline/current;
+- запись событий изменений;
+- запуск задач подсчета пар.
 
-Особенность: используется `context_messages` для «чистого» UX (редактирование/удаление устаревших сообщений вместо спама).
+Время и поведение зависят от настроек проекта и таймзоны `APP_TIMEZONE`.
 
----
+## Счетчики пар
 
-## 13. VK-бот: логика и сценарии
+Логика собрана в `src/lesson_counters.py`, а конфиг хранится в JSON.
 
-Точка сборки: `build_vk_bot(...)`.
+### Что хранится в конфиге
 
-Основные элементы:
+Для каждой группы задаются:
 
-- `peer_modes` — текущий режим диалога (FSM-подобное состояние)
-- `peer_pages` — пагинация списков
-- `editor_option_map`, `delete_option_map` — сопоставление кнопок и действий
+- `schedule_id`
+- `group_name`
+- список дисциплин
+- преподаватель
+- `passed`
+- `total`
 
-Сценарии аналогичны Telegram:
+### Как идет подсчет
 
-- группа/расписание/поиск
-- ДЗ просмотр и публикация
-- настройки
-- админка
+1. Ночная задача получает список групп со счетчиками.
+2. Для каждой группы парсится актуальный снимок расписания.
+3. На основе предмета и преподавателя ищутся пары за день.
+4. Найденные пары учитываются один раз.
+5. Результат записывается в `lesson_counter_events`, чтобы не было дублей.
 
-Сообщения обрабатываются единым `all_messages_handler`, логика ветвится по состоянию `mode` и тексту кнопок.
+### Валидация
 
----
+В `web_configurator/lesson_editor.py` конфиг проверяется по реальному расписанию:
 
-## 14. Полный справочник функций и методов
+- существует ли группа;
+- существует ли дисциплина;
+- нормализуется ли название;
+- совпадает ли преподаватель;
+- не повреждена ли структура JSON.
 
-Ниже перечислены **все** функции/методы проекта.
+Поэтому можно редактировать счетчики и через формы, и через raw JSON, не теряя базовую защиту от опечаток.
 
-### 14.1 `src/main.py`
+## Веб-дашборд
 
-- `run_telegram_polling(...)` — запуск polling Telegram и привязка Bot к Broadcaster.
-- `run_vk_polling(vk_bot)` — запуск polling VK внутри текущего event loop.
-- `main()` — полная инициализация приложения.
-- `_run_vk()` (внутри `run_vk_polling`) — обертка запуска VK.
+Веб-модуль живет в `web_configurator/` и запускается на FastAPI + Uvicorn.
 
-### 14.2 `src/config.py`
+Основные разделы:
 
-- `Settings.from_env()` — загрузка и преобразование переменных окружения в dataclass.
+1. `Метрики`
+2. `Счетчики пар`
+3. `Управление ботом`
+4. `Веб-пользователи`
 
-### 14.3 `src/models.py`
+### Что показывает дашборд
 
-- `HomeworkDraft.__post_init__()` — гарантирует список `attachments`.
+- аптайм;
+- общее число пользователей;
+- разбивку TG/VK;
+- новых и старых пользователей;
+- подписки на преподавателей и группы;
+- тихих пользователей;
+- статус Telegram / VK / RabbitMQ;
+- последний парс расписания;
+- последнее изменение расписания;
+- журнал последних изменений;
+- активные группы и число пользователей в них;
+- доставку сообщений за сегодня и за все время;
+- состояние счетчиков пар.
 
-### 14.4 `src/parser.py` (`ScheduleParser`)
+### Что умеет раздел управления
 
-- `__init__` — конфиг парсера и URL.
-- `build_schedule_url` — сборка URL группы по `schedule_id`.
-- `fetch_html` — загрузка HTML страницы группы.
-- `fetch_html_from_url` — загрузка HTML произвольной страницы расписания.
-- `_get_with_retry` — HTTP GET с ретраями.
-- `parse` — парсинг по `schedule_id` (+ hash).
-- `parse_from_url` — парсинг по URL (+ hash).
-- `parse_html` — извлечение дат и пар из HTML.
-- `compute_hash` — SHA256 нормализованного слепка.
-- `_date_label_to_iso` — перевод русской даты в ISO.
+- массовая рассылка;
+- тестовая рассылка;
+- ручной перепарс активных источников;
+- ручное сохранение baseline;
+- управление веб-пользователями и их правами.
 
-### 14.5 `src/group_catalog.py` (`GroupCatalog`)
+### Права веб-пользователей
 
-- `__init__` — конфиг каталога групп.
-- `ensure_loaded` — ленивое обеспечение загрузки.
-- `refresh` — реальная загрузка отделений/групп с сайта.
-- `_get_with_retry` — HTTP GET с ретраями.
-- `list_groups` — список всех групп.
-- `find_group` — поиск группы по имени.
-- `get_by_schedule_id` — поиск группы по `schedule_id`.
-- `normalize` — нормализация поисковой строки.
+Права выдаются точечно:
 
-### 14.6 `src/schedule_search.py` (`ScheduleSearchCatalog`)
+- `stats_overview` — верхние карточки и общая сводка;
+- `stats_users` — список пользователей и фильтры;
+- `stats_services` — статусы Telegram, VK и RabbitMQ;
+- `stats_schedule` — парсинг, активные группы, журнал изменений;
+- `stats_delivery` — доставка сообщений;
+- `stats_lesson_counters` — метрики счетчиков пар;
+- `config_lesson_counters` — редактирование счетчиков;
+- `manage_bot_admin` — рассылки и служебные действия из вебки;
+- `manage_web_users` — управление веб-аккаунтами и их правами.
 
-- `__init__` — конфиг поиска.
-- `find` — универсальный поиск группы/преподавателя/аудитории.
-- `_ensure_preps_loaded` — загрузка справочника преподавателей.
-- `_ensure_auds_loaded` — загрузка справочника аудиторий.
-- `_get_with_retry` — HTTP GET с ретраями.
-- `_find_partial` — частичный матч строки.
-- `normalize` — нормализация строки запроса.
+Суперпользователь из `.env` всегда имеет полный доступ.
 
-### 14.7 `src/schedule_service.py`
+## Роуты веб-дашборда
 
-`ScheduleFormatter`:
+### HTML-страницы
 
-- `format_day` — человекочитаемый день расписания.
-- `format_day_card` — HTML-формат дня для Telegram.
-- `format_day_plain` — plain-формат дня.
-- `format_range` — формат нескольких дней.
-- `format_search_snapshot` — формат результата поиска.
+- `GET /` — главная страница дашборда.
+- `GET /login` — форма входа.
+- `GET /lessons` — экран управления счетчиками пар.
+- `GET /web-users` — экран управления веб-пользователями.
+- `GET /control` — экран управления ботом.
 
-`ScheduleComparator`:
+### Аутентификация
 
-- `compare` — сравнение baseline/current и сбор `ChangeSummary`.
-- `_day_changed` — сравнение одного дня.
+- `POST /login` — вход в дашборд.
+- `POST /logout` — выход из дашборда.
 
-Функции модуля:
+### Метрики
 
-- `filter_days` — ближайшие дни из snapshot.
-- `get_day_by_offset` — день по смещению из snapshot.
-- `get_day_by_offset_from_content` — день по смещению из JSON-контента snapshot.
+- `GET /api/metrics` — JSON с метриками с учетом прав текущего пользователя.
 
-### 14.8 `src/notifier.py` (`Broadcaster`)
+### Счетчики пар
 
-- `__init__` — связывает DB и ботов.
-- `broadcast` — универсальная рассылка в TG/VK.
-- `broadcast_test_message` — тестовая рассылка.
-- `broadcast_homework_update` — рассылка только подписчикам ДЗ.
-- `notify_admins` — отправка сообщений администраторам.
-- `_broadcast_telegram` — рассылка в Telegram.
-- `_broadcast_vk` — рассылка в VK.
+- `POST /lessons/json` — валидация и сохранение JSON-конфига.
+- `POST /lessons/groups` — добавить группу.
+- `POST /lessons/groups/delete` — удалить группу.
+- `POST /lessons/subjects` — добавить или изменить дисциплину.
+- `POST /lessons/subjects/delete` — удалить дисциплину.
 
-### 14.9 `src/scheduler.py` (`ScheduleJobs`)
+### Веб-пользователи
 
-- `__init__` — создание AsyncIOScheduler.
-- `configure` — регистрация Cron jobs.
-- `start` — запуск scheduler.
-- `save_daily_baseline` — сохранение дневного baseline.
-- `save_daily_baseline_fallback` — fallback baseline.
-- `sync_current_snapshot` — синхронизация current, сравнение, запись и рассылка.
+- `POST /web-users` — создать пользователя или обновить пароль/права.
+- `POST /web-users/delete` — удалить пользователя.
 
-### 14.10 `src/lesson_counters.py`
+### Управление ботом
 
-- `load_config_file` — чтение JSON счетчиков.
-- `sync_config` — синхронизация JSON в БД.
-- `configured_schedule_ids` — список групп, по которым надо считать пары.
-- `count_today_for_snapshot` — учет сегодняшних пар без дублей.
-- `save_vk_url` — скачивание файла из URL (VK).
-- `save_vk_message_attachments` — извлечение/сохранение вложений из VK сообщения.
-- `_build_relative_path` — формирование безопасного относительного пути.
-- `_detect_extension` — определение расширения файла.
-- `_sanitize_stem` — очистка имени файла.
-- `_build_vk_attachment_string` — сериализация VK attachment-id.
-- `_pick_vk_photo_url` — выбор лучшего URL фото.
-- `_pick_vk_video_url` — выбор доступного mp4 URL видео.
-- `_vk_doc_type` — типизирование VK doc по расширению.
-- `_guess_mime_type` — попытка определения MIME.
+- `POST /control/broadcast` — массовая рассылка.
+- `POST /control/test` — тестовая рассылка.
+- `POST /control/refresh` — перепарсить активные источники.
+- `POST /control/baseline` — сохранить baseline для активных источников.
 
-### 14.12 `src/db.py` (`Database`)
+## Админка внутри ботов
 
-- `__init__` — путь к sqlite.
-- `initialize` — создание/миграция схемы.
-- `_ensure_column` — безопасное добавление недостающего столбца.
-- `upsert_user` — создать/обновить пользователя.
-- `list_users` — список пользователей c фильтрами.
-- `get_users_for_platform` — пользователи платформы.
-- `get_user` — получить одного пользователя.
-- `set_user_group` — назначить группу пользователю.
-- `clear_user_group` — снять группу.
-- `set_editor` — включить/выключить редактора.
-- `set_homework_notifications` — переключить подписку на ДЗ.
-- `get_users_for_homework_notifications` — выборка подписчиков ДЗ.
-- `get_active_groups` — активные группы по пользователям.
-- `save_snapshot` — сохранение snapshot.
-- `get_latest_snapshot` — последний snapshot по типу/группе.
-- `record_change` — запись события изменения.
-- `get_last_change` — последнее изменение.
-- `count_homework_entries` — количество записей ДЗ.
-- `create_homework` — создание ДЗ + вложений.
-- `get_homework_for_subject` — последние ДЗ по предмету.
-- `delete_homework` — удаление ДЗ.
-- `create_link_token` — генерация одноразового кода привязки.
-- `get_linked_account` — получить связанный аккаунт.
-- `unlink_account` — отвязать аккаунт.
-- `consume_link_token` — применить код привязки и создать связь TG/VK.
-- `get_homework_attachments` — вложения записи ДЗ.
-- `has_baseline_for_date` — проверка baseline на дату.
-- `_snapshot_to_dict` — сериализация dataclass snapshot в dict.
+Кроме вебки, часть управления остается внутри Telegram/VK-админки:
 
-### 14.13 `src/telegram_bot.py`
+- просмотр статуса;
+- поиск пользователей;
+- кликабельные ID и профили;
+- управление редакторами;
+- внутренние админские сценарии каналов.
 
-Внешняя функция:
+## Надежность и отказоустойчивость
 
-- `build_dispatcher(...)` — собирает Dispatcher, клавиатуры, хелперы и все обработчики.
+Что уже заложено в проект:
 
-Внутренние функции-хелперы и обработчики (все):
+- Telegram и VK стартуют независимо;
+- для каждого канала есть supervisor-цикл с перезапуском;
+- RabbitMQ не является жесткой единственной точкой отказа;
+- вебка вынесена отдельно от логики самих ботов;
+- счетчики пар идут через отдельную очередь и журнал событий;
+- optional `nginx` не нужен для работы ядра проекта.
 
-- `build_homework_subjects_keyboard`
-- `build_editors_keyboard`
-- `build_homework_preview_keyboard`
-- `build_homework_attachment_keyboard`
-- `build_admin_homework_subjects_keyboard`
-- `build_admin_homework_entries_keyboard`
-- `register_message_user`
-- `register_callback_user`
-- `user_is_admin`
-- `user_is_editor`
-- `get_user_record`
-- `user_has_homework_access`
-- `get_saved_snapshot`
-- `format_group_prompt`
-- `format_search_prompt`
-- `build_search_result_keyboard`
-- `format_welcome`
-- `format_settings_text`
-- `build_settings_keyboard`
-- `format_admin_panel`
-- `build_admin_users_keyboard`
-- `empty_day_text`
-- `format_snapshot_info`
-- `format_admin_status`
-- `replace_context_message`
-- `send_new_context_message`
-- `clear_context_messages`
-- `try_delete_message`
-- `clear_context_messages_except`
-- `try_edit_source_message`
-- `safe_callback_answer`
-- `safe_edit_message_text`
-- `short_error_text`
-- `notify_user_about_error`
-- `notify_admin_about_error`
-- `extract_error_context`
-- `prompt_group_selection`
-- `ensure_group_selected`
-- `prompt_schedule_search`
-- `perform_schedule_search`
-- `handle_group_input`
-- `send_schedule_menu`
-- `send_homework_subject_picker`
-- `send_homework_entries`
-- `send_homework_entry_with_attachments`
-- `send_attachment`
-- `send_draft_preview_message`
-- `send_draft_preview`
-- `handle_start`
-- `handle_settings_command`
-- `handle_rasp_command`
-- `handle_homework_command`
-- `handle_dz_command`
-- `handle_cancel_command`
-- `handle_admin_command`
-- `handle_menu_start`
-- `handle_menu_settings`
-- `handle_menu_homework`
-- `handle_start_rasp`
-- `handle_start_homework`
-- `handle_schedule_callback`
-- `handle_homework_subject`
-- `handle_homework_subject_for_create`
-- `handle_add_attachments`
-- `handle_save_homework`
-- `handle_cancel_homework`
-- `handle_settings_callback`
-- `handle_admin_callback`
-- `handle_editor_toggle`
-- `handle_homework_attachment_message`
-- `handle_homework_text_shortcut`
-- `handle_text_message`
-- `handle_telegram_errors`
+Сценарии отказа:
 
-### 14.14 `src/vk_bot.py`
+- падает Telegram — VK и вебка продолжают жить;
+- падает VK — Telegram и вебка продолжают жить;
+- падает RabbitMQ — проект продолжает базовую работу и прямую доставку там, где она предусмотрена;
+- падает вебка — бот и очереди продолжают работать;
+- не поднялся nginx — дашборд доступен напрямую через `WEB_PORT`.
 
-Внешняя функция:
+## Полезные команды
 
-- `build_vk_bot(...)` — собирает VK Bot, клавиатуры, состояние диалогов и обработчики.
+Сборка и запуск:
 
-Внутренние функции-хелперы и обработчики (все):
+```bash
+docker compose up -d --build
+```
 
-- `make_keyboard`
-- `paged_rows`
-- `shorten_button_label`
-- `short_error_text`
-- `notify_user_about_error`
-- `notify_admin_about_error`
-- `user_is_admin`
-- `user_is_editor`
-- `user_has_homework_access`
-- `fetch_vk_names`
-- `sync_vk_user_names`
-- `register_user`
-- `show_screen`
-- `upload_attachment_for_vk`
-- `collect_vk_attachments`
-- `menu_keyboard`
-- `group_prompt_text`
-- `schedule_search_prompt_text`
-- `schedule_keyboard`
-- `search_result_keyboard`
-- `homework_view_keyboard`
-- `draft_preview_keyboard`
-- `draft_attachment_keyboard`
-- `settings_keyboard`
-- `admin_keyboard`
-- `welcome_text`
-- `settings_text`
-- `schedule_text`
-- `homework_text`
-- `preview_text`
-- `snapshot_line`
-- `admin_status_text`
-- `show_main_menu`
-- `prompt_group_selection`
-- `ensure_group_selected`
-- `handle_group_input`
-- `get_or_fetch_snapshot`
-- `perform_schedule_search`
-- `handle_vk_errors`
-- `show_settings`
-- `show_homework_subjects`
-- `show_dz_subjects`
-- `show_admin_delete_subjects`
-- `show_latest_homework`
-- `show_draft_preview`
-- `publish_homework`
-- `subject_by_title`
-- `build_editor_keyboard`
-- `build_delete_keyboard`
-- `all_messages_handler`
+Логи:
 
----
+```bash
+docker compose logs -f bot
+docker compose logs -f web
+docker compose logs -f nginx
+docker compose logs -f rabbitmq
+```
 
-## 15. Поток данных (сквозной сценарий)
+Проверка сервисов:
 
-1. Пользователь выбирает группу
-2. `users` обновляется в БД
-3. По запросу расписания:
-   - берется `current` snapshot из БД
-   - если нет — парсится сайт и сохраняется snapshot
-4. Планировщик регулярно синхронизирует расписание
-5. При изменениях:
-   - запись в `change_events`
-   - `Broadcaster` создает задачи на рассылку
-   - задачи уходят в RabbitMQ
-   - consumer читает очередь и доставляет сообщения пользователям выбранной группы
----
-
-## 16. Ограничения и важные детали
-
-- В Telegram и VK используются отдельные состояния диалога.
-- В Telegram применяются HTML-сообщения (`ParseMode.HTML`) — строки экранируются через `html.escape`.
-- Для стабильной работы на VPS обязательно корректно выставлять `APP_TIMEZONE`.
-
----
-
-## 17. Минимальная проверка после изменений
+```bash
+docker compose ps
+docker compose config
+```
 
 Проверка синтаксиса:
 
 ```bash
-python -m compileall src
+python -m compileall src web_configurator
 ```
+
+## Рекомендации для прод-эксплуатации
+
+- держать `runtime/` на постоянном диске;
+- регулярно бэкапить `runtime/bot.db`;
+- сменить все тестовые секреты и пароли;
+- ограничить доступ к RabbitMQ management UI;
+- не хранить сертификаты и продовые `.env` в публичном репозитории;
+- перед выкладкой проверять `docker compose config` и `compileall`.

@@ -109,6 +109,14 @@ class Database:
                     UNIQUE(counter_id, date_iso, lesson_number),
                     FOREIGN KEY(counter_id) REFERENCES lesson_counters(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS web_users (
+                    login TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    permissions_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
