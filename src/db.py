@@ -28,6 +28,9 @@ class Database:
                     subscription_key TEXT,
                     subscription_title TEXT,
                     subscription_url TEXT,
+                    audience_subscription_key TEXT,
+                    audience_subscription_title TEXT,
+                    audience_subscription_url TEXT,
                     group_name TEXT,
                     schedule_id INTEGER,
                     is_admin INTEGER NOT NULL DEFAULT 0,
@@ -125,6 +128,9 @@ class Database:
             await self._ensure_column(db, "users", "subscription_key", "TEXT")
             await self._ensure_column(db, "users", "subscription_title", "TEXT")
             await self._ensure_column(db, "users", "subscription_url", "TEXT")
+            await self._ensure_column(db, "users", "audience_subscription_key", "TEXT")
+            await self._ensure_column(db, "users", "audience_subscription_title", "TEXT")
+            await self._ensure_column(db, "users", "audience_subscription_url", "TEXT")
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "users", "delivery_disabled_auto", "INTEGER NOT NULL DEFAULT 0")
@@ -270,6 +276,9 @@ class Database:
         subscription_key: str | None = None,
         subscription_title: str | None = None,
         subscription_url: str | None = None,
+        audience_subscription_key: str | None = None,
+        audience_subscription_title: str | None = None,
+        audience_subscription_url: str | None = None,
         group_name: str | None = None,
         schedule_id: int | None = None,
         is_admin: bool = False,
@@ -280,9 +289,9 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO users (
-                    platform, user_id, username, full_name, subscription_type, subscription_key, subscription_title, subscription_url, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, delivery_disabled_auto, created_at, last_seen_at
+                    platform, user_id, username, full_name, subscription_type, subscription_key, subscription_title, subscription_url, audience_subscription_key, audience_subscription_title, audience_subscription_url, group_name, schedule_id, is_admin, is_editor, homework_notifications_enabled, delivery_disabled_auto, created_at, last_seen_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform, user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name,
@@ -290,6 +299,9 @@ class Database:
                     subscription_key = COALESCE(excluded.subscription_key, users.subscription_key),
                     subscription_title = COALESCE(excluded.subscription_title, users.subscription_title),
                     subscription_url = COALESCE(excluded.subscription_url, users.subscription_url),
+                    audience_subscription_key = COALESCE(excluded.audience_subscription_key, users.audience_subscription_key),
+                    audience_subscription_title = COALESCE(excluded.audience_subscription_title, users.audience_subscription_title),
+                    audience_subscription_url = COALESCE(excluded.audience_subscription_url, users.audience_subscription_url),
                     group_name = COALESCE(excluded.group_name, users.group_name),
                     schedule_id = COALESCE(excluded.schedule_id, users.schedule_id),
                     is_admin = excluded.is_admin,
@@ -305,6 +317,9 @@ class Database:
                     subscription_key,
                     subscription_title,
                     subscription_url,
+                    audience_subscription_key,
+                    audience_subscription_title,
+                    audience_subscription_url,
                     group_name,
                     schedule_id,
                     int(is_admin),
@@ -333,6 +348,9 @@ class Database:
                 subscription_key,
                 subscription_title,
                 subscription_url,
+                audience_subscription_key,
+                audience_subscription_title,
+                audience_subscription_url,
                 group_name,
                 schedule_id,
                 is_admin,
@@ -372,14 +390,17 @@ class Database:
                 subscription_key=row[5],
                 subscription_title=row[6],
                 subscription_url=row[7],
-                group_name=row[8],
-                schedule_id=row[9],
-                is_admin=bool(row[10]),
-                is_editor=bool(row[11]),
-                homework_notifications_enabled=bool(row[12]),
-                delivery_disabled_auto=bool(row[13]),
-                created_at=row[14],
-                last_seen_at=row[15],
+                audience_subscription_key=row[8],
+                audience_subscription_title=row[9],
+                audience_subscription_url=row[10],
+                group_name=row[11],
+                schedule_id=row[12],
+                is_admin=bool(row[13]),
+                is_editor=bool(row[14]),
+                homework_notifications_enabled=bool(row[15]),
+                delivery_disabled_auto=bool(row[16]),
+                created_at=row[17],
+                last_seen_at=row[18],
             )
             for row in rows
         ]
@@ -405,6 +426,9 @@ class Database:
                     subscription_key,
                     subscription_title,
                     subscription_url,
+                    audience_subscription_key,
+                    audience_subscription_title,
+                    audience_subscription_url,
                     group_name,
                     schedule_id,
                     is_admin,
@@ -431,14 +455,17 @@ class Database:
             subscription_key=row[5],
             subscription_title=row[6],
             subscription_url=row[7],
-            group_name=row[8],
-            schedule_id=row[9],
-            is_admin=bool(row[10]),
-            is_editor=bool(row[11]),
-            homework_notifications_enabled=bool(row[12]),
-            delivery_disabled_auto=bool(row[13]),
-            created_at=row[14],
-            last_seen_at=row[15],
+            audience_subscription_key=row[8],
+            audience_subscription_title=row[9],
+            audience_subscription_url=row[10],
+            group_name=row[11],
+            schedule_id=row[12],
+            is_admin=bool(row[13]),
+            is_editor=bool(row[14]),
+            homework_notifications_enabled=bool(row[15]),
+            delivery_disabled_auto=bool(row[16]),
+            created_at=row[17],
+            last_seen_at=row[18],
         )
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
@@ -493,6 +520,49 @@ class Database:
     async def clear_user_group(self, platform: str, user_id: int) -> None:
         await self.clear_user_subscription(platform, user_id)
 
+    async def set_user_audience_subscription(
+        self,
+        platform: str,
+        user_id: int,
+        audience_subscription_key: str,
+        audience_subscription_title: str,
+        audience_subscription_url: str,
+    ) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET
+                    audience_subscription_key = ?,
+                    audience_subscription_title = ?,
+                    audience_subscription_url = ?
+                WHERE platform = ? AND user_id = ?
+                """,
+                (
+                    audience_subscription_key,
+                    audience_subscription_title,
+                    audience_subscription_url,
+                    platform,
+                    user_id,
+                ),
+            )
+            await db.commit()
+
+    async def clear_user_audience_subscription(self, platform: str, user_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                UPDATE users
+                SET
+                    audience_subscription_key = NULL,
+                    audience_subscription_title = NULL,
+                    audience_subscription_url = NULL
+                WHERE platform = ? AND user_id = ?
+                """,
+                (platform, user_id),
+            )
+            await db.commit()
+
     async def clear_user_subscription(self, platform: str, user_id: int) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -503,6 +573,9 @@ class Database:
                     subscription_key = NULL,
                     subscription_title = NULL,
                     subscription_url = NULL,
+                    audience_subscription_key = NULL,
+                    audience_subscription_title = NULL,
+                    audience_subscription_url = NULL,
                     group_name = NULL,
                     schedule_id = NULL
                 WHERE platform = ? AND user_id = ?
@@ -648,11 +721,36 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
                 """
-                SELECT subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name, COUNT(*)
-                FROM users
-                WHERE subscription_key IS NOT NULL
-                GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
-                ORDER BY subscription_title
+                SELECT source_type, source_key, source_title, source_url, schedule_id, group_name, SUM(users_count)
+                FROM (
+                    SELECT
+                        subscription_type AS source_type,
+                        subscription_key AS source_key,
+                        subscription_title AS source_title,
+                        subscription_url AS source_url,
+                        schedule_id,
+                        group_name,
+                        COUNT(*) AS users_count
+                    FROM users
+                    WHERE subscription_key IS NOT NULL
+                    GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
+
+                    UNION ALL
+
+                    SELECT
+                        'audience' AS source_type,
+                        audience_subscription_key AS source_key,
+                        audience_subscription_title AS source_title,
+                        audience_subscription_url AS source_url,
+                        NULL AS schedule_id,
+                        audience_subscription_title AS group_name,
+                        COUNT(*) AS users_count
+                    FROM users
+                    WHERE audience_subscription_key IS NOT NULL
+                    GROUP BY audience_subscription_key, audience_subscription_title, audience_subscription_url
+                )
+                GROUP BY source_type, source_key, source_title, source_url, schedule_id, group_name
+                ORDER BY source_title
                 """
             )
             rows = await cursor.fetchall()

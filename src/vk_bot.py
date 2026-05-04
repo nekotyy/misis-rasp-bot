@@ -22,7 +22,12 @@ from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
-from src.subscription_utils import make_group_subscription, make_teacher_subscription, subscription_caption
+from src.subscription_utils import (
+    make_audience_subscription,
+    make_group_subscription,
+    make_teacher_subscription,
+    subscription_caption,
+)
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
@@ -257,8 +262,10 @@ def build_vk_bot(
             attachment=attachment,
             random_id=0,
         )
-    def menu_keyboard(is_editor: bool, is_admin: bool) -> str:
+    def menu_keyboard(user, is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Дополнительно"]]
+        if user and user.subscription_type == "teacher":
+            rows.insert(1, ["Изменить кабинет" if user.audience_subscription_key else "Подписаться на кабинет"])
         if is_admin:
             rows.append(["Админка"])
         return make_keyboard(rows)
@@ -409,6 +416,7 @@ def build_vk_bot(
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
+            user.audience_subscription_title if user else None,
         )
         lines.append(subscription_line if subscription_line else "Подписка пока не выбрана.")
         lines.extend(["", "Используй кнопки ниже для расписания."])
@@ -423,6 +431,7 @@ def build_vk_bot(
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
+            user.audience_subscription_title if user else None,
         )
         lines.append(subscription_line if subscription_line else "Подписка: не выбрана")
         lines.append(f"Уведомления: {'включены' if notifications_enabled else 'выключены'}")
@@ -430,11 +439,17 @@ def build_vk_bot(
             lines.extend(["", extra])
         return "\n".join(lines)
 
-    def build_subscription_settings_keyboard(notifications_enabled: bool, has_subscription: bool) -> str:
+    def build_subscription_settings_keyboard(user) -> str:
+        notifications_enabled = user.homework_notifications_enabled if user else True
+        has_subscription = bool(user and user.subscription_key)
         rows: list[list[str]] = [
             ["Пройденные пары"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"],
         ]
+        if user and user.subscription_type == "teacher":
+            rows.append(["Изменить кабинет" if user.audience_subscription_key else "Подписаться на кабинет"])
+            if user.audience_subscription_key:
+                rows.append(["Убрать кабинет"])
         if has_subscription:
             rows.append(["Отписаться от группы"])
         rows.append(["Назад в меню"])
@@ -578,7 +593,7 @@ def build_vk_bot(
         await show_screen(
             peer_id,
             build_welcome_text(user, is_admin),
-            keyboard=menu_keyboard(is_editor, is_admin),
+            keyboard=menu_keyboard(user, is_editor, is_admin),
         )
 
     async def prompt_group_selection(peer_id: int, error_text: str | None = None) -> None:
@@ -590,6 +605,20 @@ def build_vk_bot(
             "Например: ИСП-25-1 или МТО-25",
             "",
             "Регистр не важен.",
+        ]
+        if error_text:
+            lines.extend(["", error_text])
+        await show_screen(peer_id, "\n".join(lines))
+
+    async def prompt_audience_selection(peer_id: int, error_text: str | None = None) -> None:
+        peer_modes[peer_id] = "audience_select"
+        lines = [
+            "Укажи кабинет",
+            "",
+            "Напиши аудиторию в формате, как на сайте расписания.",
+            "Например: 312, 305/2 или спортзал.",
+            "",
+            "Эта подписка работает вместе с преподавателем и помогает быстрее замечать изменения по кабинету.",
         ]
         if error_text:
             lines.extend(["", error_text])
@@ -633,9 +662,11 @@ def build_vk_bot(
         return False
 
     async def handle_subscription_input(peer_id: int, user_id: int, text: str) -> bool:
+        existing_user = await db.get_user("vk", user_id)
         group = await group_catalog.find_group(text) if group_catalog is not None else None
         if group is not None:
             await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
+            await db.clear_user_audience_subscription("vk", user_id)
         else:
             if search_catalog is None:
                 await prompt_group_selection(peer_id, "Справочник сейчас недоступен. Попробуй позже.")
@@ -644,7 +675,26 @@ def build_vk_bot(
             if target is None or target.kind != "teacher":
                 await prompt_group_selection(peer_id, "Ничего не найдено. Проверь написание и попробуй еще раз.")
                 return False
-            await db.set_user_subscription("vk", user_id, **make_teacher_subscription(target))
+            subscription_data = make_teacher_subscription(target)
+            await db.set_user_subscription("vk", user_id, **subscription_data)
+            if (
+                existing_user is None
+                or existing_user.subscription_type != "teacher"
+                or existing_user.subscription_key != subscription_data["subscription_key"]
+            ):
+                await db.clear_user_audience_subscription("vk", user_id)
+        await show_main_menu(peer_id, user_id)
+        return True
+
+    async def handle_audience_input(peer_id: int, user_id: int, text: str) -> bool:
+        if search_catalog is None:
+            await prompt_audience_selection(peer_id, "Справочник сейчас недоступен. Попробуй позже.")
+            return False
+        target = await search_catalog.find(text)
+        if target is None or target.kind != "audience":
+            await prompt_audience_selection(peer_id, "Кабинет не найден. Проверь написание и попробуй еще раз.")
+            return False
+        await db.set_user_audience_subscription("vk", user_id, **make_audience_subscription(target))
         await show_main_menu(peer_id, user_id)
         return True
 
@@ -655,7 +705,7 @@ def build_vk_bot(
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
         if snapshot is not None:
             return snapshot
-        if user.subscription_type == "teacher" and user.subscription_url:
+        if user.subscription_type in {"teacher", "audience"} and user.subscription_url:
             snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
         elif user.schedule_id is not None:
             snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
@@ -773,10 +823,7 @@ def build_vk_bot(
         await show_screen(
             peer_id,
             await build_settings_text(user_id, extra=extra),
-            keyboard=build_subscription_settings_keyboard(
-                user.homework_notifications_enabled if user else True,
-                has_subscription=bool(user and user.subscription_key),
-            ),
+            keyboard=build_subscription_settings_keyboard(user),
         )
     async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
         sources = await db.get_active_sources()
@@ -785,7 +832,7 @@ def build_vk_bot(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
-            if source["source_type"] == "teacher":
+            if source["source_type"] in {"teacher", "audience"}:
                 snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
                 snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -810,7 +857,7 @@ def build_vk_bot(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
-            if source["source_type"] == "teacher":
+            if source["source_type"] in {"teacher", "audience"}:
                 snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
                 snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -1001,10 +1048,7 @@ def build_vk_bot(
             await show_screen(
                 peer_id,
                 await lesson_counters_text(user_id),
-                keyboard=build_subscription_settings_keyboard(
-                    user.homework_notifications_enabled if user else True,
-                    bool(user and user.subscription_key),
-                ),
+                keyboard=build_subscription_settings_keyboard(user),
             )
             return
 
@@ -1016,6 +1060,19 @@ def build_vk_bot(
         if text == "Включить уведомления":
             await db.set_notifications_enabled("vk", user_id, True)
             await show_settings(peer_id, user_id, extra="Уведомления включены.")
+            return
+
+        if text in {"Подписаться на кабинет", "Изменить кабинет"}:
+            user = await db.get_user("vk", user_id)
+            if not user or user.subscription_type != "teacher":
+                await show_settings(peer_id, user_id, extra="Сначала выбери преподавателя.")
+                return
+            await prompt_audience_selection(peer_id)
+            return
+
+        if text == "Убрать кабинет":
+            await db.clear_user_audience_subscription("vk", user_id)
+            await show_settings(peer_id, user_id, extra="Кабинет отвязан.")
             return
 
         if text == "Отписаться от группы":
@@ -1033,6 +1090,10 @@ def build_vk_bot(
         if text == "Найти расписание":
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text())
+            return
+
+        if mode == "audience_select":
+            await handle_audience_input(peer_id, user_id, text)
             return
 
         if mode == "schedule_menu":
@@ -1074,7 +1135,11 @@ def build_vk_bot(
 
         if text in {"/admin", "Админка"}:
             if not user_is_admin(user_id):
-                await show_screen(peer_id, "Эта кнопка доступна только администратору.", keyboard=menu_keyboard(await user_is_editor(user_id), user_is_admin(user_id)))
+                await show_screen(
+                    peer_id,
+                    "Эта кнопка доступна только администратору.",
+                    keyboard=menu_keyboard(await db.get_user("vk", user_id), await user_is_editor(user_id), user_is_admin(user_id)),
+                )
                 return
             admin_broadcast_drafts.pop(peer_id, None)
             peer_modes[peer_id] = "admin_menu"

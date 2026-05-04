@@ -164,7 +164,7 @@ class ScheduleJobs:
         await asyncio.sleep(delay)
 
     async def _parse_source(self, source: SourceRow):
-        if source["source_type"] == "teacher":
+        if source["source_type"] in {"teacher", "audience"}:
             return await self.parser.parse_from_url(source["source_url"])
         return await self.parser.parse(source["schedule_id"])
 
