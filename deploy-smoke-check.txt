@@ -1,0 +1,3 @@
+Deploy smoke check
+Date: 2026-04-14
+Purpose: test self-hosted CI/CD deploy from main
