@@ -53,8 +53,7 @@ class GroupCatalog:
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 try:
                     root_response = await self._get_with_retry(client, f"{self.base_origin}/")
-                    root_response.encoding = "utf-8"
-                    root_soup = BeautifulSoup(root_response.text, "html.parser")
+                    root_soup = BeautifulSoup(root_response.content, "html.parser")
                 except httpx.HTTPError:
                     logger.exception("Не удалось загрузить список отделений с %s", self.base_origin)
                     if not self._loaded:
@@ -79,8 +78,7 @@ class GroupCatalog:
                     except httpx.HTTPError:
                         logger.warning("Пропускаю отделение id=%s из-за ошибки сети", department_id)
                         continue
-                    response.encoding = "utf-8"
-                    soup = BeautifulSoup(response.text, "html.parser")
+                    soup = BeautifulSoup(response.content, "html.parser")
                     department_name_node = soup.find(id="titleS")
                     department_name = department_name_node.get_text(" ", strip=True) if department_name_node else ""
                     for link in soup.select("a[href^='/rasp/']"):

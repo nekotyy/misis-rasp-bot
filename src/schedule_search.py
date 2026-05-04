@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import re
 import unicodedata
 from urllib.parse import urlsplit
@@ -71,8 +72,7 @@ class ScheduleSearchCatalog:
                 return
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await self._get_with_retry(client, f"{self.base_origin}/prep")
-                response.encoding = "utf-8"
-                soup = BeautifulSoup(response.text, "html.parser")
+                soup = BeautifulSoup(response.content, "html.parser")
                 for link in soup.select("a[href^='/raspprep/']"):
                     title = link.get_text(" ", strip=True)
                     href = link.get("href", "")
@@ -96,8 +96,7 @@ class ScheduleSearchCatalog:
                 return
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await self._get_with_retry(client, f"{self.base_origin}/aud")
-                response.encoding = "utf-8"
-                soup = BeautifulSoup(response.text, "html.parser")
+                soup = BeautifulSoup(response.content, "html.parser")
                 for link in soup.select("a[href^='/raspAud/']"):
                     title = link.get_text(" ", strip=True)
                     href = link.get("href", "")
@@ -154,6 +153,38 @@ class ScheduleSearchCatalog:
             unique_matches = {match.url: match for match in matches}
             if len(unique_matches) == 1:
                 return next(iter(unique_matches.values()))
+        fuzzy_match = self._find_fuzzy(normalized_compact, items)
+        if fuzzy_match is not None:
+            return fuzzy_match
+        return None
+
+    def _find_fuzzy(self, normalized_compact: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
+        if len(normalized_compact) < 5:
+            return None
+
+        ranked: dict[str, tuple[float, SearchTarget]] = {}
+        for candidate_text, target in items:
+            candidate_compact = self._compact_name_key(candidate_text)
+            if not candidate_compact:
+                continue
+            ratio = SequenceMatcher(None, normalized_compact, candidate_compact).ratio()
+            if ratio < 0.82:
+                continue
+            existing = ranked.get(target.url)
+            if existing is None or ratio > existing[0]:
+                ranked[target.url] = (ratio, target)
+
+        if not ranked:
+            return None
+
+        ordered = sorted(ranked.values(), key=lambda item: item[0], reverse=True)
+        best_ratio, best_target = ordered[0]
+        if len(ordered) == 1:
+            return best_target if best_ratio >= 0.86 else None
+
+        second_ratio = ordered[1][0]
+        if best_ratio >= 0.9 and best_ratio - second_ratio >= 0.03:
+            return best_target
         return None
 
     def _teacher_search_keys(self, title: str) -> set[str]:
