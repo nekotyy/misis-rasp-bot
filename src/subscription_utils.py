@@ -29,6 +29,16 @@ def make_teacher_subscription(target: SearchTarget) -> dict[str, str | int | Non
     }
 
 
+def make_audience_subscription(target: SearchTarget) -> dict[str, str | None]:
+    audience_id = extract_numeric_id(target.url)
+    key = f"audience:{audience_id}" if audience_id is not None else f"audience:{target.url}"
+    return {
+        "audience_subscription_key": key,
+        "audience_subscription_title": target.title,
+        "audience_subscription_url": target.url,
+    }
+
+
 def extract_numeric_id(url: str) -> int | None:
     path = urlsplit(url).path.rstrip("/")
     if not path:
@@ -37,14 +47,26 @@ def extract_numeric_id(url: str) -> int | None:
     return int(tail) if tail.isdigit() else None
 
 
-def subscription_caption(subscription_type: str | None, subscription_title: str | None) -> str | None:
+def subscription_caption(
+    subscription_type: str | None,
+    subscription_title: str | None,
+    audience_subscription_title: str | None = None,
+) -> str | None:
     if not subscription_type or not subscription_title:
         return None
     if subscription_type == "teacher":
+        audience_line = (
+            f"\nВыбран кабинет: {audience_subscription_title}"
+            if audience_subscription_title
+            else "\nКабинет пока не выбран."
+        )
         return (
-            f"Выбран преподаватель: {subscription_title}\n\n"
+            f"Выбран преподаватель: {subscription_title}"
+            f"{audience_line}\n\n"
             "Сайт может загружать изменения в расписании с задержкой. "
             "Если пары проходят в одном кабинете, дополнительно сверяй расписание по кабинету: "
             "там обновления обычно появляются быстрее."
         )
+    if subscription_type == "audience":
+        return f"Выбран кабинет: {subscription_title}"
     return f"Твоя группа: {subscription_title}"
