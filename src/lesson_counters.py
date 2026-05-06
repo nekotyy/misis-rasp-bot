@@ -30,7 +30,7 @@ SUBJECT_NOISE_PREFIXES = (
 
 SUBJECT_PARSE_PATTERNS = (
     re.compile(r"(?:^| )по (?P<subject>.+?)(?: у |$)"),
-    re.compile(r"(?:^| )по(?P<subject>[a-z?-?0-9 _-]+?)(?: у |$)"),
+    re.compile(r"(?:^| )по(?P<subject>[a-zа-я0-9 _-]+?)(?: у |$)"),
 )
 
 
