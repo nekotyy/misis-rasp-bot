@@ -461,7 +461,10 @@ def build_vk_bot(
         user = await db.get_user("vk", user_id)
         if not user or user.subscription_type != "group" or user.schedule_id is None:
             return "Счетчики пар доступны после выбора группы."
-        return await lesson_counter_service.format_counters_text(user.schedule_id)
+        return await lesson_counter_service.format_counters_text(
+            user.schedule_id,
+            group_name=user.group_name,
+        )
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [title, ""]
@@ -615,8 +618,8 @@ def build_vk_bot(
         lines = [
             "Укажи кабинет",
             "",
-            "Напиши аудиторию в формате, как на сайте расписания.",
-            "Например: 312, 305/2 или спортзал.",
+            "Напиши кабинет точно в таком же формате, как на сайте расписания.",
+            "Например: 312, 305/2, 508/2М или с-з.",
             "",
             "Эта подписка работает вместе с преподавателем и помогает быстрее замечать изменения по кабинету.",
         ]

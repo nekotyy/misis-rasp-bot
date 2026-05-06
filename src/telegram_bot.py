@@ -1037,8 +1037,8 @@ def build_dispatcher(
         lines = [
             "<b>Укажи кабинет</b>",
             "",
-            "Напиши аудиторию в формате, как на сайте расписания.",
-            "Например: <b>312</b>, <b>305/2</b> или <b>спортзал</b>.",
+            "Напиши кабинет точно в таком же формате, как на сайте расписания.",
+            "Например: <b>312</b>, <b>305/2</b>, <b>508/2М</b> или <b>с-з</b>.",
             "",
             "Эта подписка работает вместе с преподавателем и помогает быстрее замечать изменения по кабинету.",
         ]
@@ -1198,7 +1198,11 @@ def build_dispatcher(
         user = await db.get_user("telegram", user_id)
         if not user or user.subscription_type != "group" or user.schedule_id is None:
             return "Счетчики пар доступны после выбора группы."
-        return await lesson_counter_service.format_counters_text(user.schedule_id, html=True)
+        return await lesson_counter_service.format_counters_text(
+            user.schedule_id,
+            group_name=user.group_name,
+            html=True,
+        )
 
     async def handle_subscription_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
         subscription_data, error_text = await resolve_subscription_input(raw_text)
