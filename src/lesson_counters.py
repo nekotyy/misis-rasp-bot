@@ -177,10 +177,28 @@ class LessonCounterService:
             logger.info("Lesson counters: added %s lesson(s) for schedule_id=%s.", added, schedule_id)
         return added
 
-    async def format_counters_text(self, schedule_id: int | None = None, *, html: bool = False) -> str:
+    async def format_counters_text(
+        self,
+        schedule_id: int | None = None,
+        *,
+        group_name: str | None = None,
+        html: bool = False,
+    ) -> str:
         counters = await self.db.list_lesson_counters(schedule_id)
         if not counters:
             return "Список дисциплин пока не настроен."
+
+        lines: list[str] = []
+        if group_name:
+            title = escape(group_name) if html else group_name
+            lines.extend(
+                [
+                    f"Информация для - <b>{title}</b>" if html else f"Информация для - {title}",
+                    "",
+                    "В текущем семестре будут следующие пары:",
+                    "",
+                ]
+            )
 
         blocks: list[str] = []
         for counter in counters:
@@ -192,4 +210,5 @@ class LessonCounterService:
             passed = int(counter["passed_count"] or 0)
             total = int(counter["total_count"] or 0)
             blocks.append(f"{subject}\n{teacher}\nПрошло - {passed}, всего - {total}")
-        return "\n\n".join(blocks)
+        lines.append("\n\n".join(blocks))
+        return "\n".join(lines)

@@ -461,7 +461,10 @@ def build_vk_bot(
         user = await db.get_user("vk", user_id)
         if not user or user.subscription_type != "group" or user.schedule_id is None:
             return "Счетчики пар доступны после выбора группы."
-        return await lesson_counter_service.format_counters_text(user.schedule_id)
+        return await lesson_counter_service.format_counters_text(
+            user.schedule_id,
+            group_name=user.group_name,
+        )
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [title, ""]
