@@ -22,6 +22,70 @@ def normalize_lesson_text(value: str) -> str:
     return " ".join(normalized.split())
 
 
+SUBJECT_NOISE_PREFIXES = (
+    "консульт",
+    "консультац",
+)
+
+
+SUBJECT_PARSE_PATTERNS = (
+    re.compile(r"(?:^| )по (?P<subject>.+?)(?: у |$)"),
+    re.compile(r"(?:^| )по(?P<subject>[a-zа-я0-9 _-]+?)(?: у |$)"),
+)
+
+
+def _add_subject_candidate(candidates: set[str], value: str) -> None:
+    normalized = normalize_lesson_text(value)
+    if not normalized:
+        return
+    normalized = re.sub(r"(^[-\s]+|[-\s]+$)", "", normalized)
+    if normalized:
+        candidates.add(normalized)
+
+
+
+def extract_subject_candidates(value: str) -> set[str]:
+    candidates: set[str] = set()
+    normalized = normalize_lesson_text(value)
+    if not normalized:
+        return candidates
+
+    _add_subject_candidate(candidates, normalized)
+    simplified = re.sub(r"[-_]+", " ", normalized)
+    _add_subject_candidate(candidates, simplified)
+
+    for pattern in SUBJECT_PARSE_PATTERNS:
+        for match in pattern.finditer(simplified):
+            segment = match.group("subject").strip()
+            if not segment:
+                continue
+            _add_subject_candidate(candidates, segment)
+            words = segment.split()
+            while words and any(words[0].startswith(prefix) for prefix in SUBJECT_NOISE_PREFIXES):
+                words.pop(0)
+            if words:
+                cleaned_segment = " ".join(words)
+                _add_subject_candidate(candidates, cleaned_segment)
+                _add_subject_candidate(candidates, words[-1])
+
+    return candidates
+
+
+
+def subject_matches(config_subject_norm: str, lesson_subject: str) -> bool:
+    if not config_subject_norm:
+        return False
+    candidates = extract_subject_candidates(lesson_subject)
+    if config_subject_norm in candidates:
+        return True
+    config_words = config_subject_norm.split()
+    if len(config_words) == 1:
+        needle = config_words[0]
+        return any(needle in candidate.split() for candidate in candidates)
+    return False
+
+
+
 def teacher_matches(config_teacher_norm: str, lesson_teacher: str) -> bool:
     lesson_teacher_norm = normalize_lesson_text(lesson_teacher)
     if not config_teacher_norm or not lesson_teacher_norm:
@@ -156,9 +220,8 @@ class LessonCounterService:
 
         added = 0
         for lesson in today.lessons:
-            subject_norm = normalize_lesson_text(lesson.subject)
             for counter in counters:
-                if subject_norm != counter["subject_norm"]:
+                if not subject_matches(counter["subject_norm"], lesson.subject):
                     continue
                 if not teacher_matches(counter["teacher_norm"], lesson.teacher):
                     continue
