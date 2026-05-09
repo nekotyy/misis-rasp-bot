@@ -4,10 +4,12 @@ import asyncio
 import logging
 import random
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
 from src.lesson_counters import LessonCounterService
@@ -34,6 +36,11 @@ class ScheduleJobs:
         lesson_counters_enabled: bool = False,
         lesson_counter_service: LessonCounterService | None = None,
         lesson_counter_broker: LessonCounterJobBroker | None = None,
+        admin_backup_enabled: bool = False,
+        admin_backup_interval_days: int = 2,
+        admin_telegram_id: int | None = None,
+        lesson_counters_path: Path | None = None,
+        database_path: Path | None = None,
     ) -> None:
         self.db = db
         self.parser = parser
@@ -44,6 +51,11 @@ class ScheduleJobs:
         self.lesson_counters_enabled = lesson_counters_enabled
         self.lesson_counter_service = lesson_counter_service
         self.lesson_counter_broker = lesson_counter_broker
+        self.admin_backup_enabled = admin_backup_enabled
+        self.admin_backup_interval_days = max(1, admin_backup_interval_days)
+        self.admin_telegram_id = admin_telegram_id
+        self.lesson_counters_path = lesson_counters_path
+        self.database_path = database_path
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
         self._lesson_counter_lock = asyncio.Lock()
@@ -66,6 +78,13 @@ class ScheduleJobs:
         if self.lesson_counters_enabled and self.lesson_counter_service is not None:
             self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=0), max_instances=1, coalesce=True)
             self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=40), max_instances=1, coalesce=True)
+        if self.admin_backup_enabled:
+            self.scheduler.add_job(
+                self.send_admin_backup,
+                IntervalTrigger(days=self.admin_backup_interval_days),
+                max_instances=1,
+                coalesce=True,
+            )
 
     def start(self) -> None:
         self.configure()
@@ -141,6 +160,45 @@ class ScheduleJobs:
         if not self.lesson_counters_enabled or self.lesson_counter_service is None:
             return
         await self._count_lessons_for_schedule_id(job.schedule_id)
+
+    async def send_admin_backup(self) -> None:
+        if self.admin_telegram_id is None:
+            logger.info("Admin backup skipped: ADMIN_TELEGRAM_ID is not set.")
+            return
+        if self.broadcaster.telegram_bot is None:
+            logger.info("Admin backup skipped: Telegram bot is not running.")
+            return
+
+        files: list[tuple[str, Path]] = []
+        if self.lesson_counters_path is not None and self.lesson_counters_path.exists():
+            files.append(("lesson_counters.json", self.lesson_counters_path))
+        else:
+            logger.warning("Admin backup: lesson counters file is missing: %s", self.lesson_counters_path)
+        if self.database_path is not None and self.database_path.exists():
+            files.append(("bot.db", self.database_path))
+        else:
+            logger.warning("Admin backup: database file is missing: %s", self.database_path)
+
+        if not files:
+            logger.warning("Admin backup skipped: no files to send.")
+            return
+
+        from aiogram.types import FSInputFile
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        try:
+            await self.broadcaster.telegram_bot.send_message(
+                chat_id=self.admin_telegram_id,
+                text=f"Автобекап за {timestamp}.",
+            )
+            for label, path in files:
+                await self.broadcaster.telegram_bot.send_document(
+                    chat_id=self.admin_telegram_id,
+                    document=FSInputFile(path),
+                    caption=label,
+                )
+        except Exception:
+            logger.exception("Admin backup failed to deliver.")
 
     async def _run_for_active_sources(self, job_name: str, worker: SourceWorker, **kwargs: Any) -> None:
         sources = await self.db.get_active_sources()

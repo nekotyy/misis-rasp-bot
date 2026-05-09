@@ -232,6 +232,30 @@ async def upsert_lesson_subject(
     return RedirectResponse("/lessons", status_code=303)
 
 
+@app.post("/lessons/subjects/bulk")
+async def upsert_lesson_subjects_bulk(
+    user: Annotated[WebUser, Depends(require("config_lesson_counters"))],
+    schedule_id: Annotated[int, Form()],
+    bulk_payload: Annotated[str, Form()],
+):
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    group = find_config_group(payload, schedule_id)
+    if group is None:
+        return RedirectResponse("/lessons?error=group", status_code=303)
+
+    items, parse_problems = parse_bulk_subjects(bulk_payload)
+    if parse_problems:
+        return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(parse_problems, False)), user))
+
+    subjects = group.setdefault("subjects", [])
+    upsert_bulk_subjects(subjects, items)
+    normalized, problems = await validate_payload_for_save(payload)
+    if any(problem["level"] == "error" for problem in problems):
+        return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
+    save_lesson_config(Settings.from_env().lesson_counters_path, normalized)
+    return RedirectResponse("/lessons", status_code=303)
+
+
 @app.post("/lessons/subjects/delete")
 async def delete_lesson_subject(
     _: Annotated[WebUser, Depends(require("config_lesson_counters"))],
@@ -385,6 +409,14 @@ def lesson_group_card(group: dict[str, Any]) -> str:
         <label>Всего <input name="total" type="number" min="0" value="0"></label>
         <button type="submit">{icon("save")} Добавить дисциплину</button>
       </form>
+            <form method="post" action="/lessons/subjects/bulk" class="bulk-form">
+                <input type="hidden" name="schedule_id" value="{schedule_id}">
+                <label>Добавить списком
+                    <textarea name="bulk_payload" placeholder="Информатика | Иванов И. И. | 0 | 16&#10;Физика | Петров П. П."></textarea>
+                </label>
+                <p class="muted">Формат: дисциплина | преподаватель | прошли | всего. Прошли/всего можно пропустить. Строки с # игнорируются.</p>
+                <button type="submit">{icon("save")} Добавить списком</button>
+            </form>
     </article>
     """
 
@@ -418,6 +450,79 @@ def lesson_subject_row(schedule_id: int, item: dict[str, Any]) -> str:
       </form>
     </details>
     """
+
+
+def parse_bulk_subjects(raw_payload: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    items: list[dict[str, Any]] = []
+    problems: list[dict[str, Any]] = []
+    for line_index, raw_line in enumerate(raw_payload.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) < 2:
+            problems.append(
+                {
+                    "level": "error",
+                    "message": f"Строка {line_index}: ожидается формат 'дисциплина | преподаватель | прошли | всего'.",
+                }
+            )
+            continue
+        subject = parts[0]
+        teacher = parts[1]
+        if not subject or not teacher:
+            problems.append(
+                {
+                    "level": "error",
+                    "message": f"Строка {line_index}: дисциплина и преподаватель обязательны.",
+                }
+            )
+            continue
+        passed = 0
+        total = 0
+        if len(parts) > 2 and parts[2]:
+            try:
+                passed = int(parts[2])
+            except ValueError:
+                problems.append(
+                    {
+                        "level": "error",
+                        "message": f"Строка {line_index}: прошли должно быть числом.",
+                    }
+                )
+                continue
+        if len(parts) > 3 and parts[3]:
+            try:
+                total = int(parts[3])
+            except ValueError:
+                problems.append(
+                    {
+                        "level": "error",
+                        "message": f"Строка {line_index}: всего должно быть числом.",
+                    }
+                )
+                continue
+        items.append(
+            {
+                "subject": subject.strip(),
+                "teacher": teacher.strip(),
+                "passed": max(0, passed),
+                "total": max(0, total),
+            }
+        )
+    return items, problems
+
+
+def upsert_bulk_subjects(subjects: list[dict[str, Any]], items: list[dict[str, Any]]) -> None:
+    for item in items:
+        replaced = False
+        for index, existing in enumerate(subjects):
+            if existing.get("subject") == item["subject"] and existing.get("teacher") == item["teacher"]:
+                subjects[index] = item
+                replaced = True
+                break
+        if not replaced:
+            subjects.append(item)
 
 
 async def resolve_group_input(group_catalog: GroupCatalog, group_name: str, schedule_id: str) -> tuple[int | None, str | None]:
@@ -868,7 +973,7 @@ main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{positio
 .help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:999px;border:1px solid #3f3a30;background:#15191f;color:var(--accent);cursor:help;flex:0 0 auto;outline:none}.help svg{width:14px;height:14px}.help:hover,.help:focus{background:#1c2128;border-color:#595142;color:#f1eadf}.tooltip{position:absolute;right:-6px;bottom:34px;width:min(320px,80vw);padding:12px;border:1px solid #484238;border-radius:8px;background:#0f1115;color:var(--text);box-shadow:0 18px 45px rgba(0,0,0,.4);font-size:12px;font-weight:500;line-height:1.45;opacity:0;pointer-events:none;transform:translateY(4px);transition:.14s ease;z-index:30}.help:hover .tooltip,.help:focus .tooltip{opacity:1;transform:none}
 .collapsible{padding:0}.collapse-title{display:flex;align-items:center;gap:10px;padding:18px;cursor:pointer;list-style:none;min-height:76px}.collapse-title::-webkit-details-marker{display:none}.collapse-title h3{flex:1}.collapse-hint{margin-left:auto;color:var(--muted);font-size:12px;font-weight:700}.collapsible[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:16px}.collapsible[open]>*:not(summary){margin-left:18px;margin-right:18px}.collapsible[open]>*:last-child{margin-bottom:18px}.nested-details{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:#101318}.nested-details .collapse-title{padding:14px;min-height:60px}.nested-details[open] .collapse-title{border-bottom:1px solid var(--line);margin-bottom:12px}.nested-details[open] .table-wrap{margin:0 12px 12px}.user-admin-list{display:grid;gap:14px}.admin-user-card{border:1px solid var(--line);border-radius:8px;background:#101318;padding:14px}.admin-user-form{display:grid;gap:14px}.admin-user-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,320px);gap:14px;align-items:start}.password-inline{margin:0}
 .two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.summary-gap{margin-top:6px}
-.head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
+.head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.bulk-form{display:grid;gap:10px;margin-top:14px}.bulk-form textarea{min-height:140px}.bulk-form button{width:fit-content}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
 @media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head,.two-col,.action-grid{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
 </style>
