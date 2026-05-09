@@ -1164,11 +1164,26 @@ def build_dispatcher(
         lines.append(f"Уведомления: <b>{'включены' if notifications_enabled else 'выключены'}</b>")
         return "\n".join(lines)
 
+    def format_project_about_text() -> str:
+        return "\n".join(
+            [
+                "<b>О проекте</b>",
+                "",
+                "Бот сделан студентом ОИТ, группы ИСП-25-1, в качестве альтернативы официальному боту, который давно не работает. Я не сотрудник колледжа, а просто энтузиаст, который хочет помочь всем получать актуальную информацию о расписании и изменениях. Я не несу никакой ответственности за точность данных, так как получаю их с официального сайта, и не имею возможности оперативно исправлять ошибки в расписании. Если ты заметил неточности, пожалуйста, сообщи об этом администрации колледжа, чтобы они могли исправить информацию на сайте.",
+                "",
+                "Профиль: <a href=\"https://github.com/nekotyy\">github.com/nekotyy</a>",
+                "Проект: <a href=\"https://github.com/nekotyy/misis-rasp-bot\">github.com/nekotyy/misis-rasp-bot</a>",
+                "",
+                "Если понравилось, поставь звездочку на GitHub ⭐",
+            ]
+        )
+
     async def build_subscription_settings_keyboard(user_id: int) -> InlineKeyboardMarkup:
         user = await db.get_user("telegram", user_id)
         notifications_enabled = user.homework_notifications_enabled if user else True
         rows: list[list[InlineKeyboardButton]] = [
             [InlineKeyboardButton(text="Пройденные пары", callback_data="settings:lesson_counters")],
+            [InlineKeyboardButton(text="О проекте", callback_data="settings:about")],
             [
                 InlineKeyboardButton(
                     text="Отключить уведомления" if notifications_enabled else "Включить уведомления",
@@ -1565,6 +1580,14 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
+        if action == "about":
+            await safe_edit_message_text(
+                callback.message,
+                format_project_about_text(),
+                reply_markup=await build_subscription_settings_keyboard(callback.from_user.id),
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "lesson_counters":
             await safe_edit_message_text(
                 callback.message,
