@@ -1,4 +1,4 @@
-# Bot for viewing the schedule of the OPK STI NUST MISIS
+# Бот для просмотра расписания ОПК СТИ НИТУ МИСИС
 
 [![License](https://img.shields.io/badge/license-MIT-6B7280?style=for-the-badge)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-2563EB?style=for-the-badge)](pyproject.toml)
