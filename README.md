@@ -1,75 +1,58 @@
 # MISIS Schedule Bot
 
-![License](https://img.shields.io/github/license/nekotyy/misis-rasp-bot?style=flat-square)
-![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=flat-square&logo=telegram&logoColor=white)
-![VK](https://img.shields.io/badge/VK-4C75A3?style=flat-square&logo=vk&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+[![License](https://img.shields.io/badge/license-MIT-6B7280?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-2563EB?style=for-the-badge)](pyproject.toml)
+[![CI](https://img.shields.io/github/actions/workflow/status/nekotyy/misis-rasp-bot/ci-cd.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/actions/workflows/ci-cd.yml)
+[![Last Commit](https://img.shields.io/github/last-commit/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/commits/main)
+[![Stars](https://img.shields.io/github/stars/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/stargazers)
+[![Issues](https://img.shields.io/github/issues/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/issues)
+
+[![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=for-the-badge&logo=telegram&logoColor=white)](https://github.com/aiogram/aiogram)
+[![VK](https://img.shields.io/badge/VK-4C75A3?style=for-the-badge&logo=vk&logoColor=white)](https://vk.com/dev)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
 > Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
 
+**Быстрые ссылки:**
+
+- [Быстрый старт](#быстрый-старт-docker)
+- [Переменные окружения](#переменные-окружения)
+- [Деплой и прод](#деплой-и-прод)
+- [Roadmap](#roadmap)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+
 ## Содержание
 
-- [MISIS Schedule Bot](#misis-schedule-bot)
-  - [Содержание](#содержание)
-  - [Возможности](#возможности)
-  - [Архитектура](#архитектура)
-  - [Стек](#стек)
-  - [Структура проекта](#структура-проекта)
-  - [Хранилища данных](#хранилища-данных)
-    - [SQLite](#sqlite)
-    - [JSON](#json)
-  - [Быстрый старт (Docker)](#быстрый-старт-docker)
-  - [Локальный запуск (dev)](#локальный-запуск-dev)
-  - [Деплой и прод](#деплой-и-прод)
-    - [Optional nginx](#optional-nginx)
-    - [Сертификаты](#сертификаты)
-    - [Что важно при деплое](#что-важно-при-деплое)
-  - [Прод-быстрый старт](#прод-быстрый-старт)
-  - [CI/CD](#cicd)
-  - [Переменные окружения](#переменные-окружения)
-    - [Базовые](#базовые)
-    - [RabbitMQ](#rabbitmq)
-    - [Счетчики пар](#счетчики-пар)
-    - [Веб-дашборд](#веб-дашборд)
-    - [Nginx](#nginx)
-  - [Как работает парсинг расписания](#как-работает-парсинг-расписания)
-    - [Базовый URL](#базовый-url)
-    - [Загрузка HTML](#загрузка-html)
-    - [Разбор страницы](#разбор-страницы)
-    - [Хеш снимка](#хеш-снимка)
-    - [Каталоги групп и поиск](#каталоги-групп-и-поиск)
-    - [Сравнение снимков](#сравнение-снимков)
-  - [Как работает RabbitMQ](#как-работает-rabbitmq)
-    - [Очереди](#очереди)
-    - [Producer](#producer)
-    - [Consumer](#consumer)
-    - [Ack, retry и fallback](#ack-retry-и-fallback)
-  - [Планировщик и фоновые задачи](#планировщик-и-фоновые-задачи)
-  - [Счетчики пар](#счетчики-пар-1)
-    - [Что хранится в конфиге](#что-хранится-в-конфиге)
-    - [Как идет подсчет](#как-идет-подсчет)
-    - [Валидация](#валидация)
-    - [Быстрое добавление списком](#быстрое-добавление-списком)
-  - [Веб-дашборд](#веб-дашборд-1)
-    - [Что показывает дашборд](#что-показывает-дашборд)
-    - [Что умеет раздел управления](#что-умеет-раздел-управления)
-    - [Права веб-пользователей](#права-веб-пользователей)
-  - [Роуты веб-дашборда](#роуты-веб-дашборда)
-    - [HTML-страницы](#html-страницы)
-    - [Аутентификация](#аутентификация)
-    - [Метрики](#метрики)
-    - [Счетчики пар](#счетчики-пар-2)
-    - [Веб-пользователи](#веб-пользователи)
-    - [Управление ботом](#управление-ботом)
-  - [Админка внутри ботов](#админка-внутри-ботов)
-  - [Надежность и отказоустойчивость](#надежность-и-отказоустойчивость)
-  - [Автобекапы админу](#автобекапы-админу)
-  - [Полезные команды](#полезные-команды)
-  - [Рекомендации для прод-эксплуатации](#рекомендации-для-прод-эксплуатации)
-  - [Безопасность](#безопасность)
-  - [Лицензия](#лицензия)
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Быстрый старт (Docker)](#быстрый-старт-docker)
+- [Локальный запуск (dev)](#локальный-запуск-dev)
+- [Деплой и прод](#деплой-и-прод)
+- [Прод-быстрый старт](#прод-быстрый-старт)
+- [CI/CD](#cicd)
+- [Переменные окружения](#переменные-окружения)
+- [Архитектура](#архитектура)
+- [Стек](#стек)
+- [Структура проекта](#структура-проекта)
+- [Хранилища данных](#хранилища-данных)
+- [Как работает парсинг расписания](#как-работает-парсинг-расписания)
+- [Как работает RabbitMQ](#как-работает-rabbitmq)
+- [Планировщик и фоновые задачи](#планировщик-и-фоновые-задачи)
+- [Счетчики пар](#счетчики-пар)
+- [Веб-дашборд](#веб-дашборд)
+- [Роуты веб-дашборда](#роуты-веб-дашборда)
+- [Админка внутри ботов](#админка-внутри-ботов)
+- [Надежность и отказоустойчивость](#надежность-и-отказоустойчивость)
+- [Автобекапы админу](#автобекапы-админу)
+- [Полезные команды](#полезные-команды)
+- [Рекомендации для прод-эксплуатации](#рекомендации-для-прод-эксплуатации)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Безопасность](#безопасность)
+- [Лицензия](#лицензия)
 
 ## Возможности
 
@@ -81,6 +64,12 @@
 - поднимает веб-дашборд для метрик, управления ботом и веб-пользователями;
 - поддерживает массовые и тестовые рассылки;
 - переживает падение одного канала связи без остановки остальных.
+
+## Требования
+
+- Python 3.12+ (для локального запуска)
+- Docker / Docker Compose (для продового или простого запуска)
+- `uv` (рекомендуется для dev) или `pip`
 
 ## Архитектура
 
@@ -707,6 +696,16 @@ python -m compileall src web_configurator
 - ограничить доступ к RabbitMQ management UI;
 - не хранить сертификаты и продовые `.env` в публичном репозитории;
 - перед выкладкой проверять `docker compose config` и `compileall`.
+
+## Roadmap
+
+- добавить базовые тесты и smoke-проверки для ключевых сценариев;
+- добавить публикацию Docker-образа в Registry;
+- расширить настройки расписания бэкапов из `.env`.
+
+## Contributing
+
+Правила участия и dev-setup описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Безопасность
 
