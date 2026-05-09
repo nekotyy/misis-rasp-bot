@@ -1,8 +1,71 @@
 # MISIS Schedule Bot
 
-Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
+[![License](https://img.shields.io/badge/license-MIT-6B7280?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-2563EB?style=for-the-badge)](pyproject.toml)
+[![CI](https://img.shields.io/github/actions/workflow/status/nekotyy/misis-rasp-bot/ci-cd.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/actions/workflows/ci-cd.yml)
+[![Last Commit](https://img.shields.io/github/last-commit/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/commits/main)
+[![Stars](https://img.shields.io/github/stars/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/stargazers)
+[![Issues](https://img.shields.io/github/issues/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/issues)
 
-## Что умеет проект
+[![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=for-the-badge&logo=telegram&logoColor=white)](https://github.com/aiogram/aiogram)
+[![VK](https://img.shields.io/badge/VK-4C75A3?style=for-the-badge&logo=vk&logoColor=white)](https://vk.com/dev)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
+
+> Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
+
+**Быстрые ссылки:**
+
+- [Быстрый старт](#быстрый-старт-docker)
+- [Переменные окружения](#переменные-окружения)
+- [Деплой и прод](#деплой-и-прод)
+- [Roadmap](#roadmap)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
+
+## Содержание
+
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Превью](#превью)
+- [Быстрый старт (Docker)](#быстрый-старт-docker)
+- [Локальный запуск (dev)](#локальный-запуск-dev)
+- [Деплой и прод](#деплой-и-прод)
+- [Прод-быстрый старт](#прод-быстрый-старт)
+- [CI/CD](#cicd)
+- [Переменные окружения](#переменные-окружения)
+- [Архитектура](#архитектура)
+- [Стек](#стек)
+- [Структура проекта](#структура-проекта)
+- [Хранилища данных](#хранилища-данных)
+- [Как работает парсинг расписания](#как-работает-парсинг-расписания)
+- [Как работает RabbitMQ](#как-работает-rabbitmq)
+- [Планировщик и фоновые задачи](#планировщик-и-фоновые-задачи)
+- [Счетчики пар](#счетчики-пар)
+- [Веб-дашборд](#веб-дашборд)
+- [Роуты веб-дашборда](#роуты-веб-дашборда)
+- [Админка внутри ботов](#админка-внутри-ботов)
+- [Надежность и отказоустойчивость](#надежность-и-отказоустойчивость)
+- [Автобекапы админу](#автобекапы-админу)
+- [Полезные команды](#полезные-команды)
+- [Рекомендации для прод-эксплуатации](#рекомендации-для-прод-эксплуатации)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Безопасность](#безопасность)
+- [Лицензия](#лицензия)
+
+## Превью
+
+**Telegram**
+
+![Превью Telegram](docs/media/preview-tg.gif)
+
+**VK**
+
+![Превью VK](docs/media/preview-vk.gif)
+
+## Возможности
 
 - показывает расписание по группам, преподавателям и аудиториям;
 - хранит пользователей, подписки, снимки расписания и события в SQLite;
@@ -12,6 +75,12 @@
 - поднимает веб-дашборд для метрик, управления ботом и веб-пользователями;
 - поддерживает массовые и тестовые рассылки;
 - переживает падение одного канала связи без остановки остальных.
+
+## Требования
+
+- Python 3.12+ (для локального запуска)
+- Docker / Docker Compose (для продового или простого запуска)
+- `uv` (рекомендуется для dev) или `pip`
 
 ## Архитектура
 
@@ -102,7 +171,29 @@ JSON в проекте используется там, где он удобен
 - `storage/lesson_counters.json` или `runtime/lesson_counters.json` — конфигурация счетчиков пар;
 - `WEB_USERS_JSON_IMPORT_PATH` — optional путь к файлу для одноразового импорта веб-пользователей в SQLite, если нужно перенести существующие аккаунты.
 
-## Быстрый локальный запуск
+## Быстрый старт (Docker)
+
+1. Скопировать пример окружения:
+
+```bash
+cp .env.example .env
+```
+
+2. Заполнить `.env` (токены, секреты, пароли).
+
+3. Запустить сервисы:
+
+```bash
+docker compose up -d --build
+```
+
+По умолчанию поднимутся `bot`, `rabbitmq` и `web`, а дашборд будет доступен напрямую:
+
+```text
+http://server-ip:8080
+```
+
+## Локальный запуск (dev)
 
 1. Скопировать пример окружения:
 
@@ -130,7 +221,7 @@ uv run --frozen -m src.main
 uv run --frozen uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 ```
 
-## Docker и деплой
+## Деплой и прод
 
 Обычный запуск:
 
@@ -138,17 +229,7 @@ uv run --frozen uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 docker compose up -d --build
 ```
 
-По умолчанию поднимаются:
-
-- `bot`
-- `rabbitmq`
-- `web`
-
-Если нужен только рабочий бот с очередью и вебкой без reverse proxy, этого достаточно. Дашборд будет доступен напрямую:
-
-```text
-http://server-ip:8080
-```
+Если нужен только рабочий бот с очередью и вебкой без reverse proxy, этого достаточно.
 
 ### Optional nginx
 
@@ -215,6 +296,25 @@ docker compose restart nginx
 4. Не оставлять тестовые пароли и секреты из `.env.example`.
 5. После выдачи сертификатов перезапустить `nginx`.
 
+## Прод-быстрый старт
+
+1. Подготовить `.env` с секретами и ID администратора.
+2. Убедиться, что `runtime/` лежит на постоянном диске.
+3. Запустить:
+
+```bash
+docker compose up -d --build
+```
+
+4. Проверить статус:
+
+```bash
+docker compose ps
+docker compose logs -f bot
+```
+
+Если нужен публичный дашборд через `nginx`, включить профиль `nginx` и проверить сертификаты.
+
 ## CI/CD
 
 Если в репозитории используется self-hosted runner, схема деплоя может быть такой:
@@ -246,7 +346,7 @@ docker compose up -d --build --remove-orphans
 - `ATTACHMENTS_PATH` — корень вложений.
 - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота.
 - `VK_BOT_TOKEN` — токен VK-бота.
-- `ADMIN_TELEGRAM_ID` — Telegram ID администратора.
+- `ADMIN_TELEGRAM_ID` — Telegram ID администратора (служебные уведомления и автобэкапы).
 - `ADMIN_VK_ID` — VK ID администратора.
 
 ### RabbitMQ
@@ -427,9 +527,21 @@ Consumer:
 
 Поэтому можно редактировать счетчики и через формы, и через raw JSON, не теряя базовую защиту от опечаток.
 
+### Быстрое добавление списком
+
+В веб-редакторе доступен режим массового ввода. Формат строк:
+
+```text
+Дисциплина | Преподаватель | прошли | всего
+```
+
+`прошли/всего` можно не указывать — тогда будет 0. Строки с `#` игнорируются.
+
 ## Веб-дашборд
 
 Веб-модуль живет в `web_configurator/` и запускается на FastAPI + Uvicorn.
+
+OpenAPI и `/docs` отключены, чтобы не выставлять внутренние схемы наружу в проде.
 
 Основные разделы:
 
@@ -503,6 +615,7 @@ Consumer:
 - `POST /lessons/groups` — добавить группу.
 - `POST /lessons/groups/delete` — удалить группу.
 - `POST /lessons/subjects` — добавить или изменить дисциплину.
+- `POST /lessons/subjects/bulk` — добавить дисциплины списком.
 - `POST /lessons/subjects/delete` — удалить дисциплину.
 
 ### Веб-пользователи
@@ -546,6 +659,15 @@ Consumer:
 - падает вебка — бот и очереди продолжают работать;
 - не поднялся nginx — дашборд доступен напрямую через `WEB_PORT`.
 
+## Автобекапы админу
+
+Каждые 2 дня бот отправляет администратору в Telegram два файла:
+
+- JSON счетчиков пар (путь из `LESSON_COUNTERS_PATH`)
+- SQLite базу (путь из `DATABASE_PATH`)
+
+Требуются `TELEGRAM_BOT_TOKEN` и `ADMIN_TELEGRAM_ID`. Если файл не найден, в лог пишется предупреждение.
+
 ## Полезные команды
 
 Сборка и запуск:
@@ -580,7 +702,28 @@ python -m compileall src web_configurator
 
 - держать `runtime/` на постоянном диске;
 - регулярно бэкапить `runtime/bot.db`;
+- проверять доставку авто-бэкапов в Telegram;
 - сменить все тестовые секреты и пароли;
 - ограничить доступ к RabbitMQ management UI;
 - не хранить сертификаты и продовые `.env` в публичном репозитории;
 - перед выкладкой проверять `docker compose config` и `compileall`.
+
+## Roadmap
+
+- добавить базовые тесты и smoke-проверки для ключевых сценариев;
+- добавить публикацию Docker-образа в Registry;
+- расширить настройки расписания бэкапов из `.env`.
+
+## Contributing
+
+Правила участия и dev-setup описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Безопасность
+
+- Веб-дашборд запускается без `/docs` и `/openapi.json` в продовой конфигурации.
+- Храните `.env` и TLS-ключи вне публичного доступа.
+- Используйте уникальные секреты и пароли для `WEB_CONFIG_SECRET` и суперпользователя.
+
+## Лицензия
+
+Проект распространяется по лицензии MIT. Подробнее см. [LICENSE](LICENSE).

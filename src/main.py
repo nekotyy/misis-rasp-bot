@@ -161,6 +161,11 @@ async def main() -> None:
         lesson_counters_enabled=settings.lesson_counters_enabled,
         lesson_counter_service=lesson_counter_service,
         lesson_counter_broker=lesson_counter_broker,
+        admin_backup_enabled=bool(settings.admin_telegram_id),
+        admin_backup_interval_days=2,
+        admin_telegram_id=settings.admin_telegram_id,
+        lesson_counters_path=settings.lesson_counters_path,
+        database_path=settings.database_path,
     )
     jobs.start()
     try:

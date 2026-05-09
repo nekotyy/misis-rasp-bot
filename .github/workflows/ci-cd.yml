@@ -4,9 +4,14 @@ on:
   pull_request:
     branches:
       - main
+      - development
   push:
     branches:
       - main
+      - development
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-cd-${{ github.ref }}
@@ -17,6 +22,8 @@ jobs:
     name: CI checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -39,67 +46,3 @@ jobs:
       - name: Validate installed dependencies
         run: python -m pip check
 
-  deploy:
-    name: Deploy on self-hosted runner
-    runs-on: self-hosted
-    needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 20
-
-    steps:
-      - name: Validate deploy path variable
-        env:
-          DEPLOY_PROJECT_PATH: ${{ vars.DEPLOY_PROJECT_PATH }}
-        run: |
-          if [ -z "$DEPLOY_PROJECT_PATH" ]; then
-            echo "::error::Missing repository variable DEPLOY_PROJECT_PATH"
-            exit 1
-          fi
-
-      - name: Update code and restart containers
-        env:
-          DEPLOY_PROJECT_PATH: ${{ vars.DEPLOY_PROJECT_PATH }}
-        run: |
-          set -eu
-
-          PROJECT_PATH="$DEPLOY_PROJECT_PATH"
-
-          if [ ! -d "$PROJECT_PATH" ]; then
-            echo "::error::Project path does not exist: $PROJECT_PATH"
-            exit 1
-          fi
-
-          cd "$PROJECT_PATH"
-
-          if [ ! -d ".git" ]; then
-            echo "::error::Directory is not a git repository: $PROJECT_PATH"
-            exit 1
-          fi
-
-          if [ ! -f ".env" ]; then
-            echo "::error::Missing .env file in $PROJECT_PATH"
-            exit 1
-          fi
-
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
-
-          if docker compose version >/dev/null 2>&1 && docker compose ps >/dev/null 2>&1; then
-            COMPOSE_CMD="docker compose"
-          elif docker-compose version >/dev/null 2>&1 && docker-compose ps >/dev/null 2>&1; then
-            COMPOSE_CMD="docker-compose"
-          elif sudo -n docker compose version >/dev/null 2>&1 && sudo -n docker compose ps >/dev/null 2>&1; then
-            COMPOSE_CMD="sudo docker compose"
-          elif sudo -n docker-compose version >/dev/null 2>&1 && sudo -n docker-compose ps >/dev/null 2>&1; then
-            COMPOSE_CMD="sudo docker-compose"
-          else
-            echo "::error::Docker Compose is not available for the runner user with daemon access."
-            echo "::error::Add the runner user to the docker group or configure passwordless sudo for docker."
-            exit 1
-          fi
-
-          echo "Using compose command: $COMPOSE_CMD"
-
-          $COMPOSE_CMD up -d --build --remove-orphans
-          $COMPOSE_CMD ps

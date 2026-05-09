@@ -15,6 +15,23 @@
           "teacher": "Травкина Е. А.",
           "passed": 4,
           "total": 43
+        },
+        {"subject": "Информатика",
+          "teacher": "Спицына О. И.",
+          "passed": 9,
+          "total": 11
+        }
+      ]
+    },
+    {
+      "schedule_id": 618,
+      "group_name": "ТЭОР-25-1",
+      "subjects": [
+        {
+          "subject": "Литература",
+          "teacher": "Левченко Т. Н.",
+          "passed": 2,
+          "total": 62
         }
       ]
     }
