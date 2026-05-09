@@ -341,6 +341,7 @@ def build_vk_bot(
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
         rows: list[list[str]] = [
             ["Пройденные пары"],
+            ["О проекте"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
         ]
         if has_group:
@@ -439,11 +440,26 @@ def build_vk_bot(
             lines.extend(["", extra])
         return "\n".join(lines)
 
+    def build_project_about_text() -> str:
+        return "\n".join(
+            [
+                "О проекте",
+                "",
+                "Бот сделан студентом ОИТ, группы ИСП-25-1, в качестве альтернативы официальному боту, который давно не работает. Я не сотрудник колледжа, а просто энтузиаст, который хочет помочь всем получать актуальную информацию о расписании и изменениях. Я не несу никакой ответственности за точность данных, так как получаю их с официального сайта, и не имею возможности оперативно исправлять ошибки в расписании. Если ты заметил неточности, пожалуйста, сообщи об этом администрации колледжа, чтобы они могли исправить информацию на сайте.",
+                "",
+                "Профиль: https://github.com/nekotyy",
+                "Проект: https://github.com/nekotyy/misis-rasp-bot",
+                "",
+                "Если понравилось, поставь звездочку на GitHub ⭐",
+            ]
+        )
+
     def build_subscription_settings_keyboard(user) -> str:
         notifications_enabled = user.homework_notifications_enabled if user else True
         has_subscription = bool(user and user.subscription_key)
         rows: list[list[str]] = [
             ["Пройденные пары"],
+            ["О проекте"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"],
         ]
         if user and user.subscription_type == "teacher":
@@ -1051,6 +1067,15 @@ def build_vk_bot(
             await show_screen(
                 peer_id,
                 await lesson_counters_text(user_id),
+                keyboard=build_subscription_settings_keyboard(user),
+            )
+            return
+
+        if text == "О проекте":
+            user = await db.get_user("vk", user_id)
+            await show_screen(
+                peer_id,
+                build_project_about_text(),
                 keyboard=build_subscription_settings_keyboard(user),
             )
             return
