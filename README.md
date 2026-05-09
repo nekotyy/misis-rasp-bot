@@ -1,20 +1,11 @@
 # MISIS Schedule Bot
 
-![python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
-![fastapi](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?logo=telegram&logoColor=white)
-![vk](https://img.shields.io/badge/VK-4C75A3?logo=vk&logoColor=white)
-![docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
-
-![python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
-![fastapi](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?logo=telegram&logoColor=white)
-![vk](https://img.shields.io/badge/VK-4C75A3?logo=vk&logoColor=white)
-![docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
-
 ![License](https://img.shields.io/github/license/nekotyy/misis-rasp-bot?style=flat-square)
-![Python](https://img.shields.io/badge/python-3.12%2B-blue?style=flat-square)
-![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=flat-square&logo=telegram&logoColor=white)
+![VK](https://img.shields.io/badge/VK-4C75A3?style=flat-square&logo=vk&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
 
 > Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
 
