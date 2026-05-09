@@ -36,7 +36,12 @@ auth_store = WebAuthStore(
 )
 signer = SessionSigner(os.getenv("WEB_CONFIG_SECRET", "change-me"))
 
-app = FastAPI(title="MISIS bot configurator")
+app = FastAPI(
+    title="MISIS bot configurator",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 PERMISSION_DESCRIPTIONS = {
     "stats_overview": "Главные карточки на верхней строке дашборда: аптайм, аудитория, новые пользователи и общая активность.",
