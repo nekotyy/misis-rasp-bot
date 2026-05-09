@@ -1,5 +1,11 @@
 # MISIS Schedule Bot
 
+![python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)
+![fastapi](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?logo=telegram&logoColor=white)
+![vk](https://img.shields.io/badge/VK-4C75A3?logo=vk&logoColor=white)
+![docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)
+
 Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
 
 ## Что умеет проект
@@ -215,6 +221,25 @@ docker compose restart nginx
 4. Не оставлять тестовые пароли и секреты из `.env.example`.
 5. После выдачи сертификатов перезапустить `nginx`.
 
+## Прод-быстрый старт
+
+1. Подготовить `.env` с секретами и ID администратора.
+2. Убедиться, что `runtime/` лежит на постоянном диске.
+3. Запустить:
+
+```bash
+docker compose up -d --build
+```
+
+4. Проверить статус:
+
+```bash
+docker compose ps
+docker compose logs -f bot
+```
+
+Если нужен публичный дашборд через `nginx`, включить профиль `nginx` и проверить сертификаты.
+
 ## CI/CD
 
 Если в репозитории используется self-hosted runner, схема деплоя может быть такой:
@@ -246,7 +271,7 @@ docker compose up -d --build --remove-orphans
 - `ATTACHMENTS_PATH` — корень вложений.
 - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота.
 - `VK_BOT_TOKEN` — токен VK-бота.
-- `ADMIN_TELEGRAM_ID` — Telegram ID администратора.
+- `ADMIN_TELEGRAM_ID` — Telegram ID администратора (служебные уведомления и автобэкапы).
 - `ADMIN_VK_ID` — VK ID администратора.
 
 ### RabbitMQ
@@ -427,6 +452,16 @@ Consumer:
 
 Поэтому можно редактировать счетчики и через формы, и через raw JSON, не теряя базовую защиту от опечаток.
 
+### Быстрое добавление списком
+
+В веб-редакторе доступен режим массового ввода. Формат строк:
+
+```text
+Дисциплина | Преподаватель | прошли | всего
+```
+
+`прошли/всего` можно не указывать — тогда будет 0. Строки с `#` игнорируются.
+
 ## Веб-дашборд
 
 Веб-модуль живет в `web_configurator/` и запускается на FastAPI + Uvicorn.
@@ -503,6 +538,7 @@ Consumer:
 - `POST /lessons/groups` — добавить группу.
 - `POST /lessons/groups/delete` — удалить группу.
 - `POST /lessons/subjects` — добавить или изменить дисциплину.
+- `POST /lessons/subjects/bulk` — добавить дисциплины списком.
 - `POST /lessons/subjects/delete` — удалить дисциплину.
 
 ### Веб-пользователи
@@ -546,6 +582,15 @@ Consumer:
 - падает вебка — бот и очереди продолжают работать;
 - не поднялся nginx — дашборд доступен напрямую через `WEB_PORT`.
 
+## Автобекапы админу
+
+Каждые 2 дня бот отправляет администратору в Telegram два файла:
+
+- JSON счетчиков пар (путь из `LESSON_COUNTERS_PATH`)
+- SQLite базу (путь из `DATABASE_PATH`)
+
+Требуются `TELEGRAM_BOT_TOKEN` и `ADMIN_TELEGRAM_ID`. Если файл не найден, в лог пишется предупреждение.
+
 ## Полезные команды
 
 Сборка и запуск:
@@ -580,6 +625,7 @@ python -m compileall src web_configurator
 
 - держать `runtime/` на постоянном диске;
 - регулярно бэкапить `runtime/bot.db`;
+- проверять доставку авто-бэкапов в Telegram;
 - сменить все тестовые секреты и пароли;
 - ограничить доступ к RabbitMQ management UI;
 - не хранить сертификаты и продовые `.env` в публичном репозитории;

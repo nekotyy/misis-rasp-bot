@@ -25,6 +25,7 @@ env/
 storage/attachments/
 storage/tmp/
 storage/web_users.json
+storage/lesson_counters.json
 uploads/
 runtime/
 

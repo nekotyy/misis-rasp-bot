@@ -15,6 +15,11 @@
           "teacher": "Травкина Е. А.",
           "passed": 4,
           "total": 43
+        },
+        {"subject": "Информатика",
+          "teacher": "Спицына О. И.",
+          "passed": 9,
+          "total": 11
         }
       ]
     },
