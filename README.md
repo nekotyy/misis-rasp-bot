@@ -13,7 +13,7 @@
 [![VK](https://img.shields.io/badge/VK-4C75A3?style=for-the-badge&logo=vk&logoColor=white)](https://vk.com/dev)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
 
-> Асинхронный бот расписания для колледжа МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
+> Асинхронный бот расписания для колледжа ОПК СТИ НИТУ МИСИС с поддержкой Telegram, VK, RabbitMQ и веб-дашборда для администрирования, мониторинга и настройки счетчиков пар.
 
 **Быстрые ссылки:**
 
