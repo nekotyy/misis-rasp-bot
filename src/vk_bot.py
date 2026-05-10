@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime
 from html import escape
+from pathlib import Path
 from time import monotonic
 from traceback import format_exception
 
@@ -13,6 +14,7 @@ from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
 from vkbottle.http import AiohttpClient
+from vkbottle.tools import DocUploader
 
 from src.config import Settings
 from src.db import Database
@@ -28,6 +30,7 @@ from src.subscription_utils import (
     make_teacher_subscription,
     subscription_caption,
 )
+from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
@@ -102,6 +105,7 @@ def build_vk_bot(
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     admin_broadcast_drafts: dict[int, str] = {}
+    admin_lesson_drafts: dict[int, dict[str, object]] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
@@ -354,6 +358,8 @@ def build_vk_bot(
             [
                 ["Статус", "Перепарсить"],
                 ["Сохранить эталон", "Последнее изменение"],
+                ["Скачать БД", "Скачать пары"],
+                ["Добавить пару"],
                 ["Пользователи", "Информация по группам"],
                 ["Разослать", "Тестовая рассылка"],
                 ["Закрыть админку"],
@@ -452,6 +458,51 @@ def build_vk_bot(
                 "",
                 "Если понравилось, поставь звездочку на GitHub ⭐",
             ]
+        )
+
+    def format_admin_lesson_prompt(step: str, draft: dict[str, object] | None = None, error_text: str | None = None) -> str:
+        prompt_map = {
+            "group": "Шаг 1/5. Укажи группу или schedule_id.",
+            "subject": "Шаг 2/5. Укажи дисциплину.",
+            "teacher": "Шаг 3/5. Укажи преподавателя.",
+            "passed": "Шаг 4/5. Сколько пар уже прошло? (число)",
+            "total": "Шаг 5/5. Сколько пар всего? (число)",
+        }
+        lines = ["Добавление пары", "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: {draft['group_name']}"])
+        if error_text:
+            lines.extend(["", f"Ошибка: {error_text}"])
+        lines.append("\nОтмена: Отменить")
+        return "\n".join(lines)
+
+    def format_admin_lesson_preview(draft: dict[str, object]) -> str:
+        return "\n".join(
+            [
+                "Проверь данные",
+                "",
+                f"Группа: {draft.get('group_name', '')}",
+                f"schedule_id: {draft.get('schedule_id', '')}",
+                f"Дисциплина: {draft.get('subject', '')}",
+                f"Преподаватель: {draft.get('teacher', '')}",
+                f"Прошло: {draft.get('passed', 0)}",
+                f"Всего: {draft.get('total', 0)}",
+                "",
+                "Подтвердить добавление пары?",
+            ]
+        )
+
+    async def send_admin_document(peer_id: int, path: Path, title: str) -> None:
+        if not path.exists():
+            await show_screen(peer_id, f"{title} не найден.", keyboard=admin_keyboard())
+            return
+        uploader = DocUploader(bot.api)
+        doc = await uploader.upload(path, peer_id=peer_id, title=title)
+        await bot.api.messages.send(
+            peer_ids=[peer_id],
+            message=title,
+            attachment=doc,
+            random_id=0,
         )
 
     def build_subscription_settings_keyboard(user) -> str:
@@ -1041,6 +1092,123 @@ def build_vk_bot(
             )
             return
 
+        if user_is_admin(user_id) and mode == "admin_lesson_add":
+            if text == "Отменить":
+                admin_lesson_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+            draft = admin_lesson_drafts.get(peer_id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "subject",
+                        }
+                    )
+                    admin_lesson_drafts[peer_id] = draft
+                    await show_screen(peer_id, format_admin_lesson_prompt("subject", draft), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await show_screen(peer_id, format_admin_lesson_prompt("group", draft, "Группа не найдена."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "subject"})
+                admin_lesson_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_prompt("subject", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "subject":
+                if not text:
+                    await show_screen(peer_id, format_admin_lesson_prompt("subject", draft, "Дисциплина не может быть пустой."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                draft.update({"subject": text, "step": "teacher"})
+                admin_lesson_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_prompt("teacher", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "teacher":
+                if not text:
+                    await show_screen(peer_id, format_admin_lesson_prompt("teacher", draft, "Преподаватель не может быть пустым."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                draft.update({"teacher": text, "step": "passed"})
+                admin_lesson_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_prompt("passed", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "passed":
+                if not text.isdigit():
+                    await show_screen(peer_id, format_admin_lesson_prompt("passed", draft, "Нужно число."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                draft.update({"passed": int(text), "step": "total"})
+                admin_lesson_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_prompt("total", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "total":
+                if not text.isdigit():
+                    await show_screen(peer_id, format_admin_lesson_prompt("total", draft, "Нужно число."), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                draft.update({"total": int(text), "step": "confirm"})
+                admin_lesson_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_preview(draft), keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]))
+                return
+            if step == "confirm":
+                if text != "Подтвердить":
+                    await show_screen(peer_id, "Подтверди или отмени добавление.", keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]))
+                    return
+                payload = load_lesson_config(settings.lesson_counters_path)
+                schedule_id = int(draft.get("schedule_id") or 0)
+                group_name = str(draft.get("group_name") or schedule_id)
+                subject = str(draft.get("subject") or "").strip()
+                teacher = str(draft.get("teacher") or "").strip()
+                passed = int(draft.get("passed") or 0)
+                total = int(draft.get("total") or 0)
+                groups = payload.setdefault("groups", [])
+                group = next(
+                    (
+                        item
+                        for item in groups
+                        if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
+                    ),
+                    None,
+                )
+                if group is None:
+                    group = {"schedule_id": schedule_id, "group_name": group_name, "subjects": []}
+                    groups.append(group)
+                subjects = group.setdefault("subjects", [])
+                replaced = False
+                for index, item in enumerate(subjects):
+                    if item.get("subject") == subject and item.get("teacher") == teacher:
+                        subjects[index] = {"subject": subject, "teacher": teacher, "passed": passed, "total": total}
+                        replaced = True
+                        break
+                if not replaced:
+                    subjects.append({"subject": subject, "teacher": teacher, "passed": passed, "total": total})
+
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                normalized, problems = await validate_lesson_config(
+                    payload,
+                    group_catalog=active_catalog,
+                    parser=parser,
+                )
+                has_errors = any(problem.get("level") == "error" for problem in problems)
+                if has_errors:
+                    errors = "\n".join(f"- {problem['message']}" for problem in problems)
+                    admin_lesson_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(peer_id, "Ошибка валидации:\n\n" + errors, keyboard=admin_keyboard())
+                    return
+                save_lesson_config(settings.lesson_counters_path, normalized)
+                admin_lesson_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Пара добавлена.", keyboard=admin_keyboard())
+                return
+
         user = await db.get_user("vk", user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
             if text in {"/admin", "Админка"}:
@@ -1179,6 +1347,17 @@ def build_vk_bot(
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_broadcast_input"
                 await show_screen(peer_id, admin_broadcast_prompt_text(), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if text == "Скачать БД":
+                await send_admin_document(peer_id, settings.database_path, "bot.db")
+                return
+            if text == "Скачать пары":
+                await send_admin_document(peer_id, settings.lesson_counters_path, "lesson_counters.json")
+                return
+            if text == "Добавить пару":
+                admin_lesson_drafts[peer_id] = {"step": "group"}
+                peer_modes[peer_id] = "admin_lesson_add"
+                await show_screen(peer_id, format_admin_lesson_prompt("group"), keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Статус":
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())

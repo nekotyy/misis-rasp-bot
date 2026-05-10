@@ -29,6 +29,7 @@ from src.subscription_utils import (
     subscription_caption,
 )
 
+from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,11 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
         ],
         [
+            InlineKeyboardButton(text="Скачать БД", callback_data="admin:download_db"),
+            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
+        ],
+        [InlineKeyboardButton(text="Добавить пару", callback_data="admin:lesson_add")],
+        [
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -170,6 +176,8 @@ def build_dispatcher(
     awaiting_admin_broadcast_text: set[int] = set()
     awaiting_admin_user_search: set[int] = set()
     admin_broadcast_drafts: dict[int, str] = {}
+    admin_lesson_drafts: dict[int, dict[str, object]] = {}
+    awaiting_admin_lesson_input: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -464,6 +472,47 @@ def build_dispatcher(
             escape(text),
         ])
 
+    def format_admin_lesson_prompt(step: str, draft: dict[str, object] | None = None, error_text: str | None = None) -> str:
+        header = "<b>Добавление пары</b>"
+        prompt_map = {
+            "group": "Шаг 1/5. Укажи группу или schedule_id.",
+            "subject": "Шаг 2/5. Укажи дисциплину.",
+            "teacher": "Шаг 3/5. Укажи преподавателя.",
+            "passed": "Шаг 4/5. Сколько пар уже прошло? (число)",
+            "total": "Шаг 5/5. Сколько пар всего? (число)",
+        }
+        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+        if error_text:
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
+        lines.append("\nОтмена: /cancel")
+        return "\n".join(lines)
+
+    def format_admin_lesson_preview(draft: dict[str, object]) -> str:
+        return "\n".join(
+            [
+                "<b>Проверь данные</b>",
+                "",
+                f"Группа: <b>{escape(str(draft.get('group_name', ''))) }</b>",
+                f"schedule_id: <b>{escape(str(draft.get('schedule_id', ''))) }</b>",
+                f"Дисциплина: <b>{escape(str(draft.get('subject', ''))) }</b>",
+                f"Преподаватель: <b>{escape(str(draft.get('teacher', ''))) }</b>",
+                f"Прошло: <b>{escape(str(draft.get('passed', 0)))}</b>",
+                f"Всего: <b>{escape(str(draft.get('total', 0)))}</b>",
+                "",
+                "Подтвердить добавление пары?",
+            ]
+        )
+
+    def admin_lesson_confirm_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Подтвердить", callback_data="admin:lesson_confirm")],
+                [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_cancel")],
+            ]
+        )
+
     def sort_admin_users(users: list, sort_mode: str) -> list:
         def platform_priority(user: object) -> int:
             return 0 if getattr(user, "platform", None) == "telegram" else 1
@@ -637,6 +686,21 @@ def build_dispatcher(
         rows.append([InlineKeyboardButton(text="Поиск", callback_data=f"admin:users_search:{sort_mode}")])
         rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"admin:users:{next_kind_mode}:0")])
         rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"admin:users:{next_platform_mode}:0")])
+        rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def build_editors_keyboard(users: list) -> InlineKeyboardMarkup:
+        def sort_key(user: object) -> tuple[int, str]:
+            label = getattr(user, "full_name", None) or (f"@{user.username}" if user.username else str(user.user_id))
+            return (0 if getattr(user, "is_editor", False) else 1, label.casefold())
+
+        rows: list[list[InlineKeyboardButton]] = []
+        for user in sorted(users, key=sort_key):
+            label = getattr(user, "full_name", None) or (f"@{user.username}" if user.username else str(user.user_id))
+            if len(label) > 32:
+                label = f"{label[:29]}..."
+            prefix = "✅" if getattr(user, "is_editor", False) else "➕"
+            rows.append([InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"editor:toggle:{user.user_id}")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1394,8 +1458,11 @@ def build_dispatcher(
             awaiting_audience_subscription_input.discard(message.from_user.id)
         await clear_context_messages(message.bot, message.chat.id, "dz")
         await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
+        await clear_context_messages(message.bot, message.chat.id, "admin_lesson")
         search_results.pop(message.from_user.id, None)
         awaiting_schedule_search.discard(message.from_user.id)
+        awaiting_admin_lesson_input.discard(message.from_user.id)
+        admin_lesson_drafts.pop(message.from_user.id, None)
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -1510,8 +1577,10 @@ def build_dispatcher(
         search_results.pop(callback.from_user.id, None)
         awaiting_schedule_search.discard(callback.from_user.id)
         awaiting_admin_broadcast_text.discard(callback.from_user.id)
+        awaiting_admin_lesson_input.discard(callback.from_user.id)
         awaiting_audience_subscription_input.discard(callback.from_user.id)
         admin_broadcast_drafts.pop(callback.from_user.id, None)
+        admin_lesson_drafts.pop(callback.from_user.id, None)
         editor = await user_is_editor(callback.from_user.id)
         user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
@@ -1700,6 +1769,116 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Отправлено")
             return
+        if action == "download_db":
+            file_path = settings.database_path
+            if not file_path.exists():
+                await safe_callback_answer(callback, "Файл базы не найден.", show_alert=True)
+                return
+            await callback.message.bot.send_document(
+                callback.message.chat.id,
+                document=FSInputFile(file_path),
+                caption="bot.db",
+            )
+            await safe_callback_answer(callback, "База отправлена")
+            return
+        if action == "download_counters":
+            file_path = settings.lesson_counters_path
+            if not file_path.exists():
+                await safe_callback_answer(callback, "Файл счетчиков не найден.", show_alert=True)
+                return
+            await callback.message.bot.send_document(
+                callback.message.chat.id,
+                document=FSInputFile(file_path),
+                caption="lesson_counters.json",
+            )
+            await safe_callback_answer(callback, "Файл отправлен")
+            return
+        if action == "lesson_add":
+            admin_lesson_drafts[callback.from_user.id] = {"step": "group"}
+            awaiting_admin_lesson_input.add(callback.from_user.id)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_lesson",
+                format_admin_lesson_prompt("group"),
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "lesson_cancel":
+            admin_lesson_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_input.discard(callback.from_user.id)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Отменено")
+            return
+        if action == "lesson_confirm":
+            draft = admin_lesson_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
+                return
+            payload = load_lesson_config(settings.lesson_counters_path)
+            schedule_id = int(draft.get("schedule_id") or 0)
+            group_name = str(draft.get("group_name") or schedule_id)
+            subject = str(draft.get("subject") or "").strip()
+            teacher = str(draft.get("teacher") or "").strip()
+            passed = int(draft.get("passed") or 0)
+            total = int(draft.get("total") or 0)
+            groups = payload.setdefault("groups", [])
+            group = next(
+                (
+                    item
+                    for item in groups
+                    if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
+                ),
+                None,
+            )
+            if group is None:
+                group = {"schedule_id": schedule_id, "group_name": group_name, "subjects": []}
+                groups.append(group)
+            subjects = group.setdefault("subjects", [])
+            replaced = False
+            for index, item in enumerate(subjects):
+                if item.get("subject") == subject and item.get("teacher") == teacher:
+                    subjects[index] = {"subject": subject, "teacher": teacher, "passed": passed, "total": total}
+                    replaced = True
+                    break
+            if not replaced:
+                subjects.append({"subject": subject, "teacher": teacher, "passed": passed, "total": total})
+
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+            await active_catalog.ensure_loaded()
+            normalized, problems = await validate_lesson_config(
+                payload,
+                group_catalog=active_catalog,
+                parser=parser,
+            )
+            has_errors = any(problem.get("level") == "error" for problem in problems)
+            if has_errors:
+                errors = "\n".join(f"- {problem['message']}" for problem in problems)
+                await safe_edit_message_text(
+                    callback.message,
+                    "<b>Ошибка валидации</b>\n\n" + escape(errors),
+                    reply_markup=ADMIN_KEYBOARD,
+                )
+                admin_lesson_drafts.pop(callback.from_user.id, None)
+                awaiting_admin_lesson_input.discard(callback.from_user.id)
+                return
+            save_lesson_config(settings.lesson_counters_path, normalized)
+            admin_lesson_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_input.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Пара добавлена.</b>",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Сохранено")
+            return
         if action == "status":
             text = await format_admin_status()
             await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_KEYBOARD)
@@ -1733,8 +1912,11 @@ def build_dispatcher(
             editor = await user_is_editor(callback.from_user.id)
             awaiting_admin_user_search.discard(callback.from_user.id)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            awaiting_admin_lesson_input.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
+            admin_lesson_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson")
             await safe_edit_message_text(callback.message, build_welcome_text(admin_user, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await safe_callback_answer(callback)
@@ -1742,8 +1924,11 @@ def build_dispatcher(
         if action == "back":
             awaiting_admin_user_search.discard(callback.from_user.id)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            awaiting_admin_lesson_input.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
+            admin_lesson_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson")
             await safe_edit_message_text(callback.message, format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
             await safe_callback_answer(callback)
             return
@@ -1961,6 +2146,123 @@ def build_dispatcher(
                 action_map[text_normalized],
             )
             return
+
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_lesson_input:
+            draft = admin_lesson_drafts.get(message.from_user.id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            text = message.text.strip()
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "subject",
+                        }
+                    )
+                    admin_lesson_drafts[message.from_user.id] = draft
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("subject", draft),
+                    )
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("group", draft, "Группа не найдена."),
+                    )
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "subject"})
+                admin_lesson_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson",
+                    format_admin_lesson_prompt("subject", draft),
+                )
+                return
+            if step == "subject":
+                if not text:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("subject", draft, "Дисциплина не может быть пустой."),
+                    )
+                    return
+                draft.update({"subject": text, "step": "teacher"})
+                admin_lesson_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson",
+                    format_admin_lesson_prompt("teacher", draft),
+                )
+                return
+            if step == "teacher":
+                if not text:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("teacher", draft, "Преподаватель не может быть пустым."),
+                    )
+                    return
+                draft.update({"teacher": text, "step": "passed"})
+                admin_lesson_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson",
+                    format_admin_lesson_prompt("passed", draft),
+                )
+                return
+            if step == "passed":
+                if not text.isdigit():
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("passed", draft, "Нужно число."),
+                    )
+                    return
+                draft.update({"passed": int(text), "step": "total"})
+                admin_lesson_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson",
+                    format_admin_lesson_prompt("total", draft),
+                )
+                return
+            if step == "total":
+                if not text.isdigit():
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson",
+                        format_admin_lesson_prompt("total", draft, "Нужно число."),
+                    )
+                    return
+                draft.update({"total": int(text), "step": "confirm"})
+                admin_lesson_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson",
+                    format_admin_lesson_preview(draft),
+                    reply_markup=admin_lesson_confirm_keyboard(),
+                )
+                return
 
         if (
             user_is_admin(message.from_user.id)
