@@ -19,7 +19,7 @@ from vkbottle.tools import DocUploader
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService
+from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -106,6 +106,8 @@ def build_vk_bot(
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     admin_broadcast_drafts: dict[int, str] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
+    admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
+    admin_lesson_delete_one_drafts: dict[int, dict[str, object]] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
@@ -359,7 +361,8 @@ def build_vk_bot(
                 ["Статус", "Перепарсить"],
                 ["Сохранить эталон", "Последнее изменение"],
                 ["Скачать БД", "Скачать пары"],
-                ["Добавить пару"],
+                ["Добавить пару", "Удалить пару"],
+                ["Удалить пары"],
                 ["Пользователи", "Информация по группам"],
                 ["Разослать", "Тестовая рассылка"],
                 ["Закрыть админку"],
@@ -491,6 +494,46 @@ def build_vk_bot(
                 "Подтвердить добавление пары?",
             ]
         )
+
+    def format_admin_lesson_delete_prompt(
+        step: str,
+        draft: dict[str, object] | None = None,
+        error_text: str | None = None,
+    ) -> str:
+        prompt_map = {
+            "group": "Шаг 1/2. Укажи группу или schedule_id.",
+            "confirm": "Шаг 2/2. Подтверди удаление всех пар у группы.",
+        }
+        lines = ["Удаление пар", "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: {draft['group_name']}"])
+        if error_text:
+            lines.extend(["", f"Ошибка: {error_text}"])
+        lines.append("\nОтмена: Отменить")
+        return "\n".join(lines)
+
+    def format_admin_lesson_delete_one_prompt(
+        step: str,
+        draft: dict[str, object] | None = None,
+        error_text: str | None = None,
+    ) -> str:
+        prompt_map = {
+            "group": "Шаг 1/4. Укажи группу или schedule_id.",
+            "subject": "Шаг 2/4. Укажи дисциплину.",
+            "teacher": "Шаг 3/4. Укажи преподавателя.",
+            "confirm": "Шаг 4/4. Подтверди удаление пары.",
+        }
+        lines = ["Удаление пары", "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: {draft['group_name']}"])
+        if draft and draft.get("subject"):
+            lines.append(f"Дисциплина: {draft['subject']}")
+        if draft and draft.get("teacher"):
+            lines.append(f"Преподаватель: {draft['teacher']}")
+        if error_text:
+            lines.extend(["", f"Ошибка: {error_text}"])
+        lines.append("\nОтмена: Отменить")
+        return "\n".join(lines)
 
     async def send_admin_document(peer_id: int, path: Path, title: str) -> None:
         if not path.exists():
@@ -1209,6 +1252,200 @@ def build_vk_bot(
                 await show_screen(peer_id, "Пара добавлена.", keyboard=admin_keyboard())
                 return
 
+        if user_is_admin(user_id) and mode == "admin_lesson_delete":
+            if text == "Отменить":
+                admin_lesson_delete_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+            draft = admin_lesson_delete_drafts.get(peer_id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "confirm",
+                        }
+                    )
+                    admin_lesson_delete_drafts[peer_id] = draft
+                    await show_screen(
+                        peer_id,
+                        format_admin_lesson_delete_prompt("confirm", draft),
+                        keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]),
+                    )
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await show_screen(
+                        peer_id,
+                        format_admin_lesson_delete_prompt("group", draft, "Группа не найдена."),
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "confirm"})
+                admin_lesson_delete_drafts[peer_id] = draft
+                await show_screen(
+                    peer_id,
+                    format_admin_lesson_delete_prompt("confirm", draft),
+                    keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]),
+                )
+                return
+            if step == "confirm":
+                if text != "Подтвердить":
+                    await show_screen(
+                        peer_id,
+                        "Подтверди или отмени удаление.",
+                        keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]),
+                    )
+                    return
+                payload = load_lesson_config(settings.lesson_counters_path)
+                schedule_id = int(draft.get("schedule_id") or 0)
+                groups = payload.setdefault("groups", [])
+                before_count = len(groups)
+                groups[:] = [
+                    item
+                    for item in groups
+                    if not (isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id)
+                ]
+                if len(groups) == before_count:
+                    admin_lesson_delete_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(peer_id, "Группа не найдена в конфиге.", keyboard=admin_keyboard())
+                    return
+                save_lesson_config(settings.lesson_counters_path, payload)
+                admin_lesson_delete_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Пары удалены.", keyboard=admin_keyboard())
+                return
+
+        if user_is_admin(user_id) and mode == "admin_lesson_delete_one":
+            if text == "Отменить":
+                admin_lesson_delete_one_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+            draft = admin_lesson_delete_one_drafts.get(peer_id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "subject",
+                        }
+                    )
+                    admin_lesson_delete_one_drafts[peer_id] = draft
+                    await show_screen(peer_id, format_admin_lesson_delete_one_prompt("subject", draft), keyboard=make_keyboard([["Отменить"]]))
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await show_screen(
+                        peer_id,
+                        format_admin_lesson_delete_one_prompt("group", draft, "Группа не найдена."),
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "subject"})
+                admin_lesson_delete_one_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_delete_one_prompt("subject", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "subject":
+                if not text:
+                    await show_screen(
+                        peer_id,
+                        format_admin_lesson_delete_one_prompt("subject", draft, "Дисциплина не может быть пустой."),
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+                draft.update({"subject": text, "step": "teacher"})
+                admin_lesson_delete_one_drafts[peer_id] = draft
+                await show_screen(peer_id, format_admin_lesson_delete_one_prompt("teacher", draft), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if step == "teacher":
+                if not text:
+                    await show_screen(
+                        peer_id,
+                        format_admin_lesson_delete_one_prompt("teacher", draft, "Преподаватель не может быть пустым."),
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+                draft.update({"teacher": text, "step": "confirm"})
+                admin_lesson_delete_one_drafts[peer_id] = draft
+                await show_screen(
+                    peer_id,
+                    format_admin_lesson_delete_one_prompt("confirm", draft),
+                    keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]),
+                )
+                return
+            if step == "confirm":
+                if text != "Подтвердить":
+                    await show_screen(
+                        peer_id,
+                        "Подтверди или отмени удаление.",
+                        keyboard=make_keyboard([["Подтвердить"], ["Отменить"]]),
+                    )
+                    return
+                payload = load_lesson_config(settings.lesson_counters_path)
+                schedule_id = int(draft.get("schedule_id") or 0)
+                subject_input = str(draft.get("subject") or "").strip()
+                teacher_input = str(draft.get("teacher") or "").strip()
+                groups = payload.setdefault("groups", [])
+                group = next(
+                    (
+                        item
+                        for item in groups
+                        if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
+                    ),
+                    None,
+                )
+                if group is None:
+                    admin_lesson_delete_one_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(peer_id, "Группа не найдена в конфиге.", keyboard=admin_keyboard())
+                    return
+                subjects = group.get("subjects", [])
+                if not isinstance(subjects, list):
+                    admin_lesson_delete_one_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(peer_id, "Некорректная структура subjects.", keyboard=admin_keyboard())
+                    return
+                subject_norm = normalize_lesson_text(subject_input)
+                teacher_norm = normalize_lesson_text(teacher_input)
+                kept: list[dict[str, object]] = []
+                removed = 0
+                for item in subjects:
+                    if not isinstance(item, dict):
+                        kept.append(item)
+                        continue
+                    item_subject = str(item.get("subject") or "")
+                    item_teacher = str(item.get("teacher") or "")
+                    if subject_matches(subject_norm, item_subject) and teacher_matches(teacher_norm, item_teacher):
+                        removed += 1
+                        continue
+                    kept.append(item)
+                if removed == 0:
+                    admin_lesson_delete_one_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(peer_id, "Пара не найдена в конфиге.", keyboard=admin_keyboard())
+                    return
+                group["subjects"] = kept
+                save_lesson_config(settings.lesson_counters_path, payload)
+                admin_lesson_delete_one_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Пара удалена.", keyboard=admin_keyboard())
+                return
+
         user = await db.get_user("vk", user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
             if text in {"/admin", "Админка"}:
@@ -1223,6 +1460,9 @@ def build_vk_bot(
         if text in {"Назад в меню", "Закрыть админку"}:
             search_results.pop(peer_id, None)
             admin_broadcast_drafts.pop(peer_id, None)
+            admin_lesson_drafts.pop(peer_id, None)
+            admin_lesson_delete_drafts.pop(peer_id, None)
+            admin_lesson_delete_one_drafts.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
             return
 
@@ -1358,6 +1598,16 @@ def build_vk_bot(
                 admin_lesson_drafts[peer_id] = {"step": "group"}
                 peer_modes[peer_id] = "admin_lesson_add"
                 await show_screen(peer_id, format_admin_lesson_prompt("group"), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if text == "Удалить пары":
+                admin_lesson_delete_drafts[peer_id] = {"step": "group"}
+                peer_modes[peer_id] = "admin_lesson_delete"
+                await show_screen(peer_id, format_admin_lesson_delete_prompt("group"), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if text == "Удалить пару":
+                admin_lesson_delete_one_drafts[peer_id] = {"step": "group"}
+                peer_modes[peer_id] = "admin_lesson_delete_one"
+                await show_screen(peer_id, format_admin_lesson_delete_one_prompt("group"), keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Статус":
                 await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())

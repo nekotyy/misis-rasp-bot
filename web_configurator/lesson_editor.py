@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import normalize_lesson_text, teacher_matches
+from src.lesson_counters import normalize_lesson_text, subject_matches, teacher_matches
 from src.parser import ScheduleParser
 
 
@@ -139,6 +139,8 @@ def _canonical_subject(subject: str, subjects: dict[str, str]) -> str | None:
     for candidate_norm, candidate in subjects.items():
         candidate_compact = " ".join(candidate_norm.replace(".", "").replace("-", " ").split())
         if compact == candidate_compact:
+            return candidate
+        if subject_matches(subject_norm, candidate):
             return candidate
     return None
 

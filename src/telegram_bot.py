@@ -3,21 +3,24 @@ from __future__ import annotations
 from collections import defaultdict
 import asyncio
 import logging
+import tempfile
+import zipfile
 from datetime import datetime
 from html import escape
+from pathlib import Path
 from time import monotonic
 from traceback import format_exception
 
 import httpx
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService
+from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -139,12 +142,20 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Скачать БД", callback_data="admin:download_db"),
             InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
         ],
-        [InlineKeyboardButton(text="Добавить пару", callback_data="admin:lesson_add")],
+        [
+            InlineKeyboardButton(text="Добавить пару", callback_data="admin:lesson_add"),
+            InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
+        ],
+        [
+            InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
+        ],
         [
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
 )
+
+ADMIN_FILE_MAX_BYTES = 49 * 1024 * 1024
 
 ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -178,6 +189,10 @@ def build_dispatcher(
     admin_broadcast_drafts: dict[int, str] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
     awaiting_admin_lesson_input: set[int] = set()
+    admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
+    awaiting_admin_lesson_delete_input: set[int] = set()
+    admin_lesson_delete_one_drafts: dict[int, dict[str, object]] = {}
+    awaiting_admin_lesson_delete_one_input: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -512,6 +527,89 @@ def build_dispatcher(
                 [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_cancel")],
             ]
         )
+
+    def format_admin_lesson_delete_prompt(
+        step: str,
+        draft: dict[str, object] | None = None,
+        error_text: str | None = None,
+    ) -> str:
+        header = "<b>Удаление пар</b>"
+        prompt_map = {
+            "group": "Шаг 1/2. Укажи группу или schedule_id.",
+            "confirm": "Шаг 2/2. Подтверди удаление всех пар у группы.",
+        }
+        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+        if error_text:
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
+        lines.append("\nОтмена: /cancel")
+        return "\n".join(lines)
+
+    def admin_lesson_delete_confirm_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Подтвердить", callback_data="admin:lesson_delete_confirm")],
+                [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_delete_cancel")],
+            ]
+        )
+
+    def format_admin_lesson_delete_one_prompt(
+        step: str,
+        draft: dict[str, object] | None = None,
+        error_text: str | None = None,
+    ) -> str:
+        header = "<b>Удаление пары</b>"
+        prompt_map = {
+            "group": "Шаг 1/4. Укажи группу или schedule_id.",
+            "subject": "Шаг 2/4. Укажи дисциплину.",
+            "teacher": "Шаг 3/4. Укажи преподавателя.",
+            "confirm": "Шаг 4/4. Подтверди удаление пары.",
+        }
+        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        if draft and draft.get("group_name"):
+            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+        if draft and draft.get("subject"):
+            lines.extend([f"Дисциплина: <b>{escape(str(draft['subject']))}</b>"])
+        if draft and draft.get("teacher"):
+            lines.extend([f"Преподаватель: <b>{escape(str(draft['teacher']))}</b>"])
+        if error_text:
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
+        lines.append("\nОтмена: /cancel")
+        return "\n".join(lines)
+
+    def admin_lesson_delete_one_confirm_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Подтвердить", callback_data="admin:lesson_delete_one_confirm")],
+                [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_delete_one_cancel")],
+            ]
+        )
+
+    async def send_admin_document(
+        bot: Bot,
+        chat_id: int,
+        file_path: Path,
+        caption: str,
+    ) -> bool:
+        if not file_path.exists():
+            return False
+        size = file_path.stat().st_size
+        if size <= ADMIN_FILE_MAX_BYTES:
+            await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
+            return True
+
+        with tempfile.TemporaryDirectory(prefix="tg-admin-") as tmp_dir:
+            zip_path = Path(tmp_dir) / f"{caption}.zip"
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(file_path, arcname=caption)
+            if zip_path.stat().st_size > ADMIN_FILE_MAX_BYTES:
+                return False
+            try:
+                await bot.send_document(chat_id, document=FSInputFile(zip_path), caption=zip_path.name)
+                return True
+            except TelegramEntityTooLarge:
+                return False
 
     def sort_admin_users(users: list, sort_mode: str) -> list:
         def platform_priority(user: object) -> int:
@@ -1378,7 +1476,6 @@ def build_dispatcher(
         else:
             await send_schedule_menu(bot, chat_id)
             return
-
         await send_new_context_message(
             bot,
             chat_id,
@@ -1774,11 +1871,14 @@ def build_dispatcher(
             if not file_path.exists():
                 await safe_callback_answer(callback, "Файл базы не найден.", show_alert=True)
                 return
-            await callback.message.bot.send_document(
-                callback.message.chat.id,
-                document=FSInputFile(file_path),
-                caption="bot.db",
-            )
+            sent = await send_admin_document(callback.message.bot, callback.message.chat.id, file_path, "bot.db")
+            if not sent:
+                await safe_callback_answer(
+                    callback,
+                    "Файл слишком большой для Telegram. Сожми базу или скачай с сервера вручную.",
+                    show_alert=True,
+                )
+                return
             await safe_callback_answer(callback, "База отправлена")
             return
         if action == "download_counters":
@@ -1786,11 +1886,19 @@ def build_dispatcher(
             if not file_path.exists():
                 await safe_callback_answer(callback, "Файл счетчиков не найден.", show_alert=True)
                 return
-            await callback.message.bot.send_document(
+            sent = await send_admin_document(
+                callback.message.bot,
                 callback.message.chat.id,
-                document=FSInputFile(file_path),
-                caption="lesson_counters.json",
+                file_path,
+                "lesson_counters.json",
             )
+            if not sent:
+                await safe_callback_answer(
+                    callback,
+                    "Файл слишком большой для Telegram. Сожми JSON или скачай с сервера вручную.",
+                    show_alert=True,
+                )
+                return
             await safe_callback_answer(callback, "Файл отправлен")
             return
         if action == "lesson_add":
@@ -1816,6 +1924,134 @@ def build_dispatcher(
                 reply_markup=ADMIN_KEYBOARD,
             )
             await safe_callback_answer(callback, "Отменено")
+            return
+        if action == "lesson_delete":
+            admin_lesson_delete_drafts[callback.from_user.id] = {"step": "group"}
+            awaiting_admin_lesson_delete_input.add(callback.from_user.id)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_lesson_delete",
+                format_admin_lesson_delete_prompt("group"),
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "lesson_delete_one":
+            admin_lesson_delete_one_drafts[callback.from_user.id] = {"step": "group"}
+            awaiting_admin_lesson_delete_one_input.add(callback.from_user.id)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_lesson_delete_one",
+                format_admin_lesson_delete_one_prompt("group"),
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "lesson_delete_cancel":
+            admin_lesson_delete_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_delete_input.discard(callback.from_user.id)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson_delete")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Отменено")
+            return
+        if action == "lesson_delete_one_cancel":
+            admin_lesson_delete_one_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_delete_one_input.discard(callback.from_user.id)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson_delete_one")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Отменено")
+            return
+        if action == "lesson_delete_confirm":
+            draft = admin_lesson_delete_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
+                return
+            schedule_id = int(draft.get("schedule_id") or 0)
+            payload = load_lesson_config(settings.lesson_counters_path)
+            groups = payload.setdefault("groups", [])
+            before_count = len(groups)
+            groups[:] = [
+                item
+                for item in groups
+                if not (isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id)
+            ]
+            if len(groups) == before_count:
+                await safe_callback_answer(callback, "Группа не найдена в конфиге.", show_alert=True)
+                return
+            save_lesson_config(settings.lesson_counters_path, payload)
+            admin_lesson_delete_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_delete_input.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Пары удалены.</b>",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Удалено")
+            return
+        if action == "lesson_delete_one_confirm":
+            draft = admin_lesson_delete_one_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
+                return
+            payload = load_lesson_config(settings.lesson_counters_path)
+            schedule_id = int(draft.get("schedule_id") or 0)
+            subject_input = str(draft.get("subject") or "").strip()
+            teacher_input = str(draft.get("teacher") or "").strip()
+            groups = payload.setdefault("groups", [])
+            group = next(
+                (
+                    item
+                    for item in groups
+                    if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
+                ),
+                None,
+            )
+            if group is None:
+                await safe_callback_answer(callback, "Группа не найдена в конфиге.", show_alert=True)
+                return
+            subjects = group.get("subjects", [])
+            if not isinstance(subjects, list):
+                await safe_callback_answer(callback, "Некорректная структура subjects.", show_alert=True)
+                return
+            subject_norm = normalize_lesson_text(subject_input)
+            teacher_norm = normalize_lesson_text(teacher_input)
+            kept: list[dict[str, object]] = []
+            removed = 0
+            for item in subjects:
+                if not isinstance(item, dict):
+                    kept.append(item)
+                    continue
+                item_subject = str(item.get("subject") or "")
+                item_teacher = str(item.get("teacher") or "")
+                if subject_matches(subject_norm, item_subject) and teacher_matches(teacher_norm, item_teacher):
+                    removed += 1
+                    continue
+                kept.append(item)
+            if removed == 0:
+                await safe_callback_answer(callback, "Пара не найдена в конфиге.", show_alert=True)
+                return
+            group["subjects"] = kept
+            save_lesson_config(settings.lesson_counters_path, payload)
+            admin_lesson_delete_one_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_delete_one_input.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Пара удалена.</b>",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Удалено")
             return
         if action == "lesson_confirm":
             draft = admin_lesson_drafts.get(callback.from_user.id)
@@ -2261,6 +2497,133 @@ def build_dispatcher(
                     "admin_lesson",
                     format_admin_lesson_preview(draft),
                     reply_markup=admin_lesson_confirm_keyboard(),
+                )
+                return
+
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_lesson_delete_input:
+            draft = admin_lesson_delete_drafts.get(message.from_user.id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            text = message.text.strip()
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "confirm",
+                        }
+                    )
+                    admin_lesson_delete_drafts[message.from_user.id] = draft
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete",
+                        format_admin_lesson_delete_prompt("confirm", draft),
+                        reply_markup=admin_lesson_delete_confirm_keyboard(),
+                    )
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete",
+                        format_admin_lesson_delete_prompt("group", draft, "Группа не найдена."),
+                    )
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "confirm"})
+                admin_lesson_delete_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson_delete",
+                    format_admin_lesson_delete_prompt("confirm", draft),
+                    reply_markup=admin_lesson_delete_confirm_keyboard(),
+                )
+                return
+
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_lesson_delete_one_input:
+            draft = admin_lesson_delete_one_drafts.get(message.from_user.id, {"step": "group"})
+            step = str(draft.get("step") or "group")
+            text = message.text.strip()
+            if step == "group":
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+                await active_catalog.ensure_loaded()
+                if text.isdigit():
+                    schedule_id = int(text)
+                    group = await active_catalog.get_by_schedule_id(schedule_id)
+                    draft.update(
+                        {
+                            "schedule_id": schedule_id,
+                            "group_name": group.group_name if group else str(schedule_id),
+                            "step": "subject",
+                        }
+                    )
+                    admin_lesson_delete_one_drafts[message.from_user.id] = draft
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete_one",
+                        format_admin_lesson_delete_one_prompt("subject", draft),
+                    )
+                    return
+                group = await active_catalog.find_group(text)
+                if group is None:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete_one",
+                        format_admin_lesson_delete_one_prompt("group", draft, "Группа не найдена."),
+                    )
+                    return
+                draft.update({"schedule_id": group.schedule_id, "group_name": group.group_name, "step": "subject"})
+                admin_lesson_delete_one_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson_delete_one",
+                    format_admin_lesson_delete_one_prompt("subject", draft),
+                )
+                return
+            if step == "subject":
+                if not text:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete_one",
+                        format_admin_lesson_delete_one_prompt("subject", draft, "Дисциплина не может быть пустой."),
+                    )
+                    return
+                draft.update({"subject": text, "step": "teacher"})
+                admin_lesson_delete_one_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson_delete_one",
+                    format_admin_lesson_delete_one_prompt("teacher", draft),
+                )
+                return
+            if step == "teacher":
+                if not text:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_lesson_delete_one",
+                        format_admin_lesson_delete_one_prompt("teacher", draft, "Преподаватель не может быть пустым."),
+                    )
+                    return
+                draft.update({"teacher": text, "step": "confirm"})
+                admin_lesson_delete_one_drafts[message.from_user.id] = draft
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_lesson_delete_one",
+                    format_admin_lesson_delete_one_prompt("confirm", draft),
+                    reply_markup=admin_lesson_delete_one_confirm_keyboard(),
                 )
                 return
 

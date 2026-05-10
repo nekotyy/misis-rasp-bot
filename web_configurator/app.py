@@ -149,11 +149,15 @@ async def save_lessons_json(
         parser = ScheduleParser(Settings.from_env().schedule_url)
         normalized, problems = await validate_lesson_config(raw_payload, group_catalog=group_catalog, parser=parser)
         saved = False
+        forced = mode == "save_force"
         if mode == "save" and not any(problem["level"] == "error" for problem in problems):
             save_lesson_config(Settings.from_env().lesson_counters_path, normalized)
             saved = True
-        editor_value = json_dumps(normalized if saved else raw_payload)
-        report = problems_html(problems, saved)
+        elif forced:
+            save_lesson_config(Settings.from_env().lesson_counters_path, raw_payload)
+            saved = True
+        editor_value = json_dumps(normalized if saved and not forced else raw_payload)
+        report = problems_html(problems, saved, forced)
     except Exception as exc:
         editor_value = payload
         report = f"<div class='alert bad'>Ошибка: {html_escape(str(exc))}</div>"
@@ -209,6 +213,7 @@ async def upsert_lesson_subject(
     total: Annotated[int, Form()] = 0,
     original_subject: Annotated[str, Form()] = "",
     original_teacher: Annotated[str, Form()] = "",
+    force: Annotated[str, Form()] = "",
 ):
     payload = load_lesson_config(Settings.from_env().lesson_counters_path)
     group = find_config_group(payload, schedule_id)
@@ -226,9 +231,10 @@ async def upsert_lesson_subject(
     if not replaced:
         subjects.append(replacement)
     normalized, problems = await validate_payload_for_save(payload)
-    if any(problem["level"] == "error" for problem in problems):
+    has_errors = any(problem["level"] == "error" for problem in problems)
+    if has_errors and force != "1":
         return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
-    save_lesson_config(Settings.from_env().lesson_counters_path, normalized)
+    save_lesson_config(Settings.from_env().lesson_counters_path, payload if has_errors else normalized)
     return RedirectResponse("/lessons", status_code=303)
 
 
@@ -237,6 +243,7 @@ async def upsert_lesson_subjects_bulk(
     user: Annotated[WebUser, Depends(require("config_lesson_counters"))],
     schedule_id: Annotated[int, Form()],
     bulk_payload: Annotated[str, Form()],
+    force: Annotated[str, Form()] = "",
 ):
     payload = load_lesson_config(Settings.from_env().lesson_counters_path)
     group = find_config_group(payload, schedule_id)
@@ -250,9 +257,10 @@ async def upsert_lesson_subjects_bulk(
     subjects = group.setdefault("subjects", [])
     upsert_bulk_subjects(subjects, items)
     normalized, problems = await validate_payload_for_save(payload)
-    if any(problem["level"] == "error" for problem in problems):
+    has_errors = any(problem["level"] == "error" for problem in problems)
+    if has_errors and force != "1":
         return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
-    save_lesson_config(Settings.from_env().lesson_counters_path, normalized)
+    save_lesson_config(Settings.from_env().lesson_counters_path, payload if has_errors else normalized)
     return RedirectResponse("/lessons", status_code=303)
 
 
@@ -375,6 +383,7 @@ def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: st
         <div class="actions">
           <button class="secondary" name="mode" value="validate" type="submit">{icon("scan")} Проверить</button>
           <button name="mode" value="save" type="submit">{icon("save")} Проверить и сохранить JSON</button>
+                    <button class="secondary" name="mode" value="save_force" type="submit">{icon("alert-triangle")} Сохранить несмотря на ошибки</button>
         </div>
       </form>
     </details>
@@ -407,7 +416,8 @@ def lesson_group_card(group: dict[str, Any]) -> str:
         <label>Преподаватель <input name="teacher" placeholder="Иванов И. И." required></label>
         <label>Прошло <input name="passed" type="number" min="0" value="0"></label>
         <label>Всего <input name="total" type="number" min="0" value="0"></label>
-        <button type="submit">{icon("save")} Добавить дисциплину</button>
+                <button type="submit">{icon("save")} Добавить дисциплину</button>
+                <button class="secondary" name="force" value="1" type="submit">{icon("alert-triangle")} Сохранить несмотря на ошибки</button>
       </form>
             <form method="post" action="/lessons/subjects/bulk" class="bulk-form">
                 <input type="hidden" name="schedule_id" value="{schedule_id}">
@@ -415,7 +425,8 @@ def lesson_group_card(group: dict[str, Any]) -> str:
                     <textarea name="bulk_payload" placeholder="Информатика | Иванов И. И. | 0 | 16&#10;Физика | Петров П. П."></textarea>
                 </label>
                 <p class="muted">Формат: дисциплина | преподаватель | прошли | всего. Прошли/всего можно пропустить. Строки с # игнорируются.</p>
-                <button type="submit">{icon("save")} Добавить списком</button>
+                                <button type="submit">{icon("save")} Добавить списком</button>
+                                <button class="secondary" name="force" value="1" type="submit">{icon("alert-triangle")} Сохранить несмотря на ошибки</button>
             </form>
     </article>
     """
@@ -946,7 +957,12 @@ def parse_json_payload(value: str) -> dict:
     return payload
 
 
-def problems_html(problems: list[dict], saved: bool) -> str:
+def problems_html(problems: list[dict], saved: bool, forced: bool = False) -> str:
+    if saved and forced:
+        if not problems:
+            return "<div class='alert good'>Сохранено без ошибок.</div>"
+        rows = "".join(f"<li class='{problem['level']}'>{html_escape(problem['message'])}</li>" for problem in problems)
+        return f"<div class='alert bad'><b>Сохранено несмотря на ошибки</b><ul>{rows}</ul></div>"
     if saved:
         return "<div class='alert good'>Проверено и сохранено.</div>"
     if not problems:
