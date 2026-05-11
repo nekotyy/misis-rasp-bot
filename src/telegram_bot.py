@@ -32,7 +32,7 @@ from src.subscription_utils import (
     subscription_caption,
 )
 
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
+from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config
 
 logger = logging.getLogger(__name__)
 
@@ -144,9 +144,10 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Добавить пару", callback_data="admin:lesson_add"),
-            InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
+            InlineKeyboardButton(text="Изменить пару", callback_data="admin:lesson_edit"),
         ],
         [
+            InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
             InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
         ],
         [
@@ -488,7 +489,7 @@ def build_dispatcher(
         ])
 
     def format_admin_lesson_prompt(step: str, draft: dict[str, object] | None = None, error_text: str | None = None) -> str:
-        header = "<b>Добавление пары</b>"
+        header = "<b>Изменение пары</b>" if draft and draft.get("mode") == "edit" else "<b>Добавление пары</b>"
         prompt_map = {
             "group": "Шаг 1/5. Укажи группу или schedule_id.",
             "subject": "Шаг 2/5. Укажи дисциплину.",
@@ -520,10 +521,26 @@ def build_dispatcher(
             ]
         )
 
+    def admin_lesson_input_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Пропустить", callback_data="admin:lesson_skip_passed")],
+                [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_cancel")],
+            ]
+        )
+
     def admin_lesson_confirm_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Подтвердить", callback_data="admin:lesson_confirm")],
+                [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_cancel")],
+            ]
+        )
+
+    def admin_lesson_force_confirm_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Сохранить несмотря на ошибки", callback_data="admin:lesson_confirm_force")],
                 [InlineKeyboardButton(text="Отменить", callback_data="admin:lesson_cancel")],
             ]
         )
@@ -610,6 +627,15 @@ def build_dispatcher(
                 return True
             except TelegramEntityTooLarge:
                 return False
+
+    async def sync_lesson_counters_from_file() -> None:
+        try:
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
+            await active_catalog.ensure_loaded()
+            counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
+            await lesson_counter_service.sync_config(counters)
+        except Exception:
+            logger.exception("Lesson counters sync failed after admin update.")
 
     def sort_admin_users(users: list, sort_mode: str) -> list:
         def platform_priority(user: object) -> int:
@@ -1912,6 +1938,28 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback)
             return
+        if action == "lesson_edit":
+            draft = {"step": "group", "mode": "edit"}
+            admin_lesson_drafts[callback.from_user.id] = draft
+            awaiting_admin_lesson_input.add(callback.from_user.id)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_lesson",
+                format_admin_lesson_prompt("group", draft),
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "lesson_skip_passed":
+            draft = admin_lesson_drafts.get(callback.from_user.id)
+            if not draft or draft.get("step") != "passed":
+                await safe_callback_answer(callback, 'Пропустить можно только на шаге прошедших пар.', show_alert=True)
+                return
+            draft.update({"passed": 0, "step": "total"})
+            admin_lesson_drafts[callback.from_user.id] = draft
+            await safe_edit_message_text(callback.message, format_admin_lesson_prompt("total", draft))
+            await safe_callback_answer(callback, 'Пропущено')
+            return
         if action == "lesson_cancel":
             admin_lesson_drafts.pop(callback.from_user.id, None)
             awaiting_admin_lesson_input.discard(callback.from_user.id)
@@ -1991,6 +2039,7 @@ def build_dispatcher(
                 await safe_callback_answer(callback, "Группа не найдена в конфиге.", show_alert=True)
                 return
             save_lesson_config(settings.lesson_counters_path, payload)
+            await sync_lesson_counters_from_file()
             admin_lesson_delete_drafts.pop(callback.from_user.id, None)
             awaiting_admin_lesson_delete_input.discard(callback.from_user.id)
             await safe_edit_message_text(
@@ -2044,6 +2093,7 @@ def build_dispatcher(
                 return
             group["subjects"] = kept
             save_lesson_config(settings.lesson_counters_path, payload)
+            await sync_lesson_counters_from_file()
             admin_lesson_delete_one_drafts.pop(callback.from_user.id, None)
             awaiting_admin_lesson_delete_one_input.discard(callback.from_user.id)
             await safe_edit_message_text(
@@ -2065,27 +2115,15 @@ def build_dispatcher(
             teacher = str(draft.get("teacher") or "").strip()
             passed = int(draft.get("passed") or 0)
             total = int(draft.get("total") or 0)
-            groups = payload.setdefault("groups", [])
-            group = next(
-                (
-                    item
-                    for item in groups
-                    if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
-                ),
-                None,
+            replaced = upsert_lesson_subject(
+                payload,
+                schedule_id=schedule_id,
+                group_name=group_name,
+                subject=subject,
+                teacher=teacher,
+                passed=passed,
+                total=total,
             )
-            if group is None:
-                group = {"schedule_id": schedule_id, "group_name": group_name, "subjects": []}
-                groups.append(group)
-            subjects = group.setdefault("subjects", [])
-            replaced = False
-            for index, item in enumerate(subjects):
-                if item.get("subject") == subject and item.get("teacher") == teacher:
-                    subjects[index] = {"subject": subject, "teacher": teacher, "passed": passed, "total": total}
-                    replaced = True
-                    break
-            if not replaced:
-                subjects.append({"subject": subject, "teacher": teacher, "passed": passed, "total": total})
 
             active_catalog = group_catalog or GroupCatalog(settings.schedule_url)
             await active_catalog.ensure_loaded()
@@ -2100,17 +2138,49 @@ def build_dispatcher(
                 await safe_edit_message_text(
                     callback.message,
                     "<b>Ошибка валидации</b>\n\n" + escape(errors),
-                    reply_markup=ADMIN_KEYBOARD,
+                    reply_markup=admin_lesson_force_confirm_keyboard(),
                 )
-                admin_lesson_drafts.pop(callback.from_user.id, None)
-                awaiting_admin_lesson_input.discard(callback.from_user.id)
                 return
             save_lesson_config(settings.lesson_counters_path, normalized)
+            await sync_lesson_counters_from_file()
             admin_lesson_drafts.pop(callback.from_user.id, None)
             awaiting_admin_lesson_input.discard(callback.from_user.id)
             await safe_edit_message_text(
                 callback.message,
-                "<b>Пара добавлена.</b>",
+                "<b>Пара изменена.</b>" if replaced or draft.get("mode") == "edit" else "<b>Пара добавлена.</b>",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Сохранено")
+            return
+        if action == "lesson_confirm_force":
+            draft = admin_lesson_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Черновик не найден.", show_alert=True)
+                return
+            payload = load_lesson_config(settings.lesson_counters_path)
+            schedule_id = int(draft.get("schedule_id") or 0)
+            group_name = str(draft.get("group_name") or schedule_id)
+            subject = str(draft.get("subject") or "").strip()
+            teacher = str(draft.get("teacher") or "").strip()
+            passed = int(draft.get("passed") or 0)
+            total = int(draft.get("total") or 0)
+            replaced = upsert_lesson_subject(
+                payload,
+                schedule_id=schedule_id,
+                group_name=group_name,
+                subject=subject,
+                teacher=teacher,
+                passed=passed,
+                total=total,
+            )
+
+            save_lesson_config(settings.lesson_counters_path, payload)
+            await sync_lesson_counters_from_file()
+            admin_lesson_drafts.pop(callback.from_user.id, None)
+            awaiting_admin_lesson_input.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Пара изменена (без строгой валидации).</b>" if replaced or draft.get("mode") == "edit" else "<b>Пара добавлена (без строгой валидации).</b>",
                 reply_markup=ADMIN_KEYBOARD,
             )
             await safe_callback_answer(callback, "Сохранено")
@@ -2460,6 +2530,7 @@ def build_dispatcher(
                     message.chat.id,
                     "admin_lesson",
                     format_admin_lesson_prompt("passed", draft),
+                    reply_markup=admin_lesson_input_keyboard(),
                 )
                 return
             if step == "passed":
@@ -2469,6 +2540,7 @@ def build_dispatcher(
                         message.chat.id,
                         "admin_lesson",
                         format_admin_lesson_prompt("passed", draft, "Нужно число."),
+                        reply_markup=admin_lesson_input_keyboard(),
                     )
                     return
                 draft.update({"passed": int(text), "step": "total"})
