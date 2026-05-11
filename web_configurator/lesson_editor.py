@@ -29,6 +29,43 @@ def save_lesson_config(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def upsert_lesson_subject(
+    payload: dict[str, Any],
+    *,
+    schedule_id: int,
+    group_name: str,
+    subject: str,
+    teacher: str,
+    passed: int,
+    total: int,
+) -> bool:
+    groups = payload.setdefault("groups", [])
+    group = next(
+        (
+            item
+            for item in groups
+            if isinstance(item, dict) and int(item.get("schedule_id") or 0) == schedule_id
+        ),
+        None,
+    )
+    if group is None:
+        group = {"schedule_id": schedule_id, "group_name": group_name, "subjects": []}
+        groups.append(group)
+    subjects = group.setdefault("subjects", [])
+    subject_norm = normalize_lesson_text(subject)
+    teacher_norm = normalize_lesson_text(teacher)
+    for index, item in enumerate(subjects):
+        if not isinstance(item, dict):
+            continue
+        item_subject = str(item.get("subject") or "")
+        item_teacher = str(item.get("teacher") or "")
+        if subject_matches(subject_norm, item_subject) and teacher_matches(teacher_norm, item_teacher):
+            subjects[index] = {"subject": subject, "teacher": teacher, "passed": passed, "total": total}
+            return True
+    subjects.append({"subject": subject, "teacher": teacher, "passed": passed, "total": total})
+    return False
+
+
 async def validate_lesson_config(
     payload: dict[str, Any],
     *,
