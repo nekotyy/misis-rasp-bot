@@ -156,6 +156,26 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_KEYBOARD_LIMITED = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Статус", callback_data="admin:status"),
+            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
+        ],
+        [
+            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
+            InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
+        ],
+        [
+            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
+            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
+        ],
+        [
+            InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
+        ],
+    ]
+)
+
 ADMIN_FILE_MAX_BYTES = 49 * 1024 * 1024
 
 ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
@@ -227,7 +247,9 @@ def build_dispatcher(
         if user is None:
             return
         full_name = " ".join(part for part in [user.first_name, user.last_name] if part).strip() or None
-        is_admin = bool(settings.admin_telegram_id and user.id == settings.admin_telegram_id)
+        is_admin = bool(
+            user.id in settings.admin_telegram_ids or user.id in settings.limited_admin_telegram_ids
+        )
         existing = await db.get_user("telegram", user.id)
         await db.upsert_user(
             platform="telegram",
@@ -343,7 +365,14 @@ def build_dispatcher(
         return "\n".join(lines)
 
     def user_is_admin(user_id: int | None) -> bool:
-        return bool(user_id and settings.admin_telegram_id and user_id == settings.admin_telegram_id)
+        if user_id is None:
+            return False
+        return user_id in settings.admin_telegram_ids or user_id in settings.limited_admin_telegram_ids
+
+    def user_is_full_admin(user_id: int | None) -> bool:
+        if user_id is None:
+            return False
+        return user_id in settings.admin_telegram_ids
 
     async def user_is_editor(user_id: int | None) -> bool:
         if user_id is None:
@@ -1609,7 +1638,8 @@ def build_dispatcher(
             awaiting_admin_broadcast_text.discard(message.from_user.id)
             admin_broadcast_drafts.pop(message.from_user.id, None)
         await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
-        await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), ADMIN_KEYBOARD)
+        keyboard = ADMIN_KEYBOARD if user_is_full_admin(message.from_user.id) else ADMIN_KEYBOARD_LIMITED
+        await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), keyboard)
 
     @dispatcher.message(Command("group_setup"))
     async def handle_group_setup_command(message: Message) -> None:
@@ -1840,6 +1870,16 @@ def build_dispatcher(
             return
 
         action = callback.data.split(":", 1)[1]
+        is_full_admin = user_is_full_admin(callback.from_user.id)
+        if not is_full_admin and action in {
+            "broadcast", "broadcast_send", "baseline", "editors", "test",
+            "download_db", "lesson_add", "lesson_edit",
+            "lesson_delete", "lesson_delete_one",
+            "lesson_confirm", "lesson_confirm_force",
+            "lesson_delete_confirm", "lesson_delete_one_confirm",
+        }:
+            await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
+            return
         admin_user = await get_user_record(callback.from_user.id)
         if action == "broadcast":
             awaiting_admin_broadcast_text.add(callback.from_user.id)
@@ -2356,7 +2396,7 @@ def build_dispatcher(
         if await callback_is_rate_limited(callback, cooldown=1.2):
             return
         await register_callback_user(callback)
-        if not user_is_admin(callback.from_user.id):
+        if not user_is_full_admin(callback.from_user.id):
             await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
             return
         user_id = int(callback.data.split(":")[-1])
