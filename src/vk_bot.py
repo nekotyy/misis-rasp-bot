@@ -10,10 +10,11 @@ from time import monotonic
 from traceback import format_exception
 
 import httpx
-from aiohttp import TCPConnector
+from aiohttp import ClientError, TCPConnector
 from vkbottle import API, Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
+from vkbottle.exception_factory.base_exceptions import VKAPIError
 from vkbottle.http import AiohttpClient
 from vkbottle.tools import DocUploader
 
@@ -218,7 +219,11 @@ def build_vk_bot(
         unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
         if not unique_ids:
             return {}
-        profiles = await bot.api.users.get(user_ids=unique_ids)
+        try:
+            profiles = await bot.api.users.get(user_ids=unique_ids)
+        except (ClientError, OSError) as exc:
+            logger.warning("Failed to fetch VK names for %s users: %s", len(unique_ids), exc)
+            return {}
         result: dict[int, str] = {}
         for profile in profiles:
             full_name = " ".join(part for part in [profile.first_name, profile.last_name] if part).strip()
@@ -263,14 +268,50 @@ def build_vk_bot(
             is_editor=existing.is_editor if existing else False,
         )
 
+    async def send_vk_message(
+        peer_id: int,
+        message: str,
+        *,
+        keyboard: str | None = None,
+        attachment: str | None = None,
+        max_attempts: int = 3,
+    ) -> None:
+        delay_seconds = 1.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await bot.api.messages.send(
+                    peer_ids=[peer_id],
+                    message=message,
+                    keyboard=keyboard,
+                    attachment=attachment,
+                    random_id=0,
+                )
+                return
+            except VKAPIError as exc:
+                if getattr(exc, "code", None) != 10 or attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "VK messages.send temporary error for peer %s on attempt %s/%s: %s",
+                    peer_id,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+            except (ClientError, OSError) as exc:
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "VK messages.send network error for peer %s on attempt %s/%s: %s",
+                    peer_id,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+            await asyncio.sleep(delay_seconds)
+            delay_seconds *= 2
+
     async def show_screen(peer_id: int, text: str, keyboard: str | None = None, attachment: str | None = None) -> None:
-        await bot.api.messages.send(
-            peer_ids=[peer_id],
-            message=text,
-            keyboard=keyboard,
-            attachment=attachment,
-            random_id=0,
-        )
+        await send_vk_message(peer_id=peer_id, message=text, keyboard=keyboard, attachment=attachment)
     def menu_keyboard(user, is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Дополнительно"]]
         if user and user.subscription_type == "teacher":
