@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+import re
 from urllib.parse import urlsplit
 
 import httpx
@@ -38,6 +39,7 @@ class GroupCatalog:
         self._lock = asyncio.Lock()
         self._loaded = False
         self._groups_by_name: dict[str, GroupInfo] = {}
+        self._groups_by_compact_name: dict[str, GroupInfo] = {}
         self._groups_by_schedule_id: dict[int, GroupInfo] = {}
 
     async def ensure_loaded(self) -> None:
@@ -95,10 +97,16 @@ class GroupCatalog:
                             schedule_id=int(schedule_id),
                             url=f"{self.base_origin}/rasp/{schedule_id}",
                         )
-                        groups_by_name[self.normalize(group_name)] = group
+                        normalized_name = self.normalize(group_name)
+                        groups_by_name[normalized_name] = group
                         groups_by_schedule_id[group.schedule_id] = group
+                groups_by_compact_name = {
+                    self._compact_name_key(group.group_name): group
+                    for group in groups_by_schedule_id.values()
+                }
 
                 self._groups_by_name = groups_by_name
+                self._groups_by_compact_name = groups_by_compact_name
                 self._groups_by_schedule_id = groups_by_schedule_id
                 self._loaded = True
 
@@ -126,7 +134,11 @@ class GroupCatalog:
 
     async def find_group(self, group_name: str) -> GroupInfo | None:
         await self.ensure_loaded()
-        return self._groups_by_name.get(self.normalize(group_name))
+        normalized_name = self.normalize(group_name)
+        group = self._groups_by_name.get(normalized_name)
+        if group is not None:
+            return group
+        return self._groups_by_compact_name.get(self._compact_name_key(group_name))
 
     async def get_by_schedule_id(self, schedule_id: int | None) -> GroupInfo | None:
         if schedule_id is None:
@@ -136,7 +148,37 @@ class GroupCatalog:
 
     @staticmethod
     def normalize(value: str) -> str:
-        normalized = value.strip().casefold().replace("ё", "е")
+        normalized = value.strip().translate(_LATIN_TO_CYRILLIC).casefold().replace("ё", "е")
         for dash in ("—", "–", "‑", "−"):
             normalized = normalized.replace(dash, "-")
+        normalized = re.sub(r"\s*-\s*", "-", normalized, flags=re.UNICODE)
         return " ".join(normalized.split())
+
+    @staticmethod
+    def _compact_name_key(value: str) -> str:
+        return re.sub(r"[^\w]+", "", GroupCatalog.normalize(value), flags=re.UNICODE)
+
+
+_LATIN_TO_CYRILLIC = str.maketrans(
+    {
+        "A": "А",
+        "a": "а",
+        "B": "В",
+        "E": "Е",
+        "e": "е",
+        "K": "К",
+        "k": "к",
+        "M": "М",
+        "H": "Н",
+        "O": "О",
+        "o": "о",
+        "P": "Р",
+        "p": "р",
+        "C": "С",
+        "c": "с",
+        "T": "Т",
+        "y": "у",
+        "X": "Х",
+        "x": "х",
+    }
+)

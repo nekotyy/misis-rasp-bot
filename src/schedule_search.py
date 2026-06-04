@@ -201,9 +201,35 @@ class ScheduleSearchCatalog:
 
     @staticmethod
     def normalize(value: str) -> str:
-        normalized = unicodedata.normalize("NFKC", value).strip().casefold().replace("ё", "е")
+        normalized = unicodedata.normalize("NFKC", value).strip().translate(_LATIN_TO_CYRILLIC).casefold().replace("ё", "е")
         for dash in ("—", "–", "‑", "−"):
             normalized = normalized.replace(dash, "-")
+        normalized = re.sub(r"\s*-\s*", "-", normalized, flags=re.UNICODE)
         normalized = re.sub(r"(?<=\w)\.(?=\w)", ". ", normalized, flags=re.UNICODE)
         normalized = re.sub(r"[^\w\s.-]+", " ", normalized, flags=re.UNICODE)
         return " ".join(normalized.split())
+
+
+_LATIN_TO_CYRILLIC = str.maketrans(
+    {
+        "A": "А",
+        "a": "а",
+        "B": "В",
+        "E": "Е",
+        "e": "е",
+        "K": "К",
+        "k": "к",
+        "M": "М",
+        "H": "Н",
+        "O": "О",
+        "o": "о",
+        "P": "Р",
+        "p": "р",
+        "C": "С",
+        "c": "с",
+        "T": "Т",
+        "y": "у",
+        "X": "Х",
+        "x": "х",
+    }
+)
