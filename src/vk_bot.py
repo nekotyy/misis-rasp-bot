@@ -36,6 +36,15 @@ from web_configurator.lesson_editor import load_lesson_config, save_lesson_confi
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
+SEARCH_NOT_FOUND_TEXT = (
+    "Ничего не найдено.\n\n"
+    "Что я пробовал найти:\n"
+    "- группу, например: ИСП-25-1;\n"
+    "- преподавателя по фамилии;\n"
+    "- кабинет, например: 101.\n\n"
+    "Проверь раскладку, дефисы и пробелы.\n"
+    "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -840,7 +849,7 @@ def build_vk_bot(
                 return False
             target = await search_catalog.find(text)
             if target is None or target.kind != "teacher":
-                await prompt_group_selection(peer_id, "Ничего не найдено. Проверь написание и попробуй еще раз.")
+                await prompt_group_selection(peer_id, SEARCH_NOT_FOUND_TEXT)
                 return False
             subscription_data = make_teacher_subscription(target)
             await db.set_user_subscription("vk", user_id, **subscription_data)
@@ -923,7 +932,7 @@ def build_vk_bot(
             return False
         if target is None:
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text("Ничего не найдено. Проверь запрос и попробуй еще раз."))
+            await show_screen(peer_id, schedule_search_prompt_text(SEARCH_NOT_FOUND_TEXT))
             return False
         try:
             snapshot_obj, _ = await parser.parse_from_url(target.url)

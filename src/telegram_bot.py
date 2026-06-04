@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
 GROUP_CHAT_TYPES = {"group", "supergroup"}
+SEARCH_NOT_FOUND_TEXT = (
+    "Ничего не найдено.\n\n"
+    "Что я пробовал найти:\n"
+    "- группу, например: ИСП-25-1;\n"
+    "- преподавателя по фамилии;\n"
+    "- кабинет, например: 101.\n\n"
+    "Проверь раскладку, дефисы и пробелы.\n"
+    "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
+)
 
 
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
@@ -326,7 +335,7 @@ def build_dispatcher(
         except httpx.HTTPError:
             return None, "Сайт расписания временно недоступен. Попробуй еще раз через минуту."
         if target is None or target.kind != "teacher":
-            return None, "Ничего не найдено. Проверь написание и попробуй еще раз."
+            return None, SEARCH_NOT_FOUND_TEXT
         return make_teacher_subscription(target), None
 
     async def resolve_audience_input(raw_text: str) -> tuple[dict | None, str | None]:
@@ -1289,7 +1298,7 @@ def build_dispatcher(
             )
             return False
         if target is None:
-            await bot.send_message(chat_id, "Ничего не найдено. Проверь запрос и попробуй еще раз.")
+            await bot.send_message(chat_id, SEARCH_NOT_FOUND_TEXT)
             return False
         try:
             snapshot_obj, _ = await parser.parse_from_url(target.url)
