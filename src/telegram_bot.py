@@ -400,11 +400,20 @@ def build_dispatcher(
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
         if snapshot is not None:
             return snapshot
-        if user.subscription_type == "teacher" and user.subscription_url:
-            snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
-        elif user.schedule_id is not None:
-            snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-        else:
+        try:
+            if user.subscription_type == "teacher" and user.subscription_url:
+                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+            elif user.schedule_id is not None:
+                snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+            else:
+                return None
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to fetch Telegram subscription snapshot for user %s (%s): %s",
+                user_id,
+                user.subscription_key,
+                exc,
+            )
             return None
         return {
             "source_type": user.subscription_type,
