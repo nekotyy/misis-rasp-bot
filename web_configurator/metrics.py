@@ -167,7 +167,17 @@ async def _rabbitmq_status(url: str) -> dict[str, Any]:
 
 
 def _user_row(user: aiosqlite.Row, new_threshold: str) -> dict[str, Any]:
-    row = dict(user)
+    source = dict(user)
+    row = {
+        "platform": source.get("platform"),
+        "user_id": source.get("user_id"),
+        "username": source.get("username"),
+        "full_name": source.get("full_name"),
+        "subscription_title": source.get("subscription_title"),
+        "subscription_type": source.get("subscription_type"),
+        "created_at": source.get("created_at"),
+        "last_seen_at": source.get("last_seen_at"),
+    }
     row["is_new"] = str(row.get("created_at") or "") >= new_threshold
     return row
 

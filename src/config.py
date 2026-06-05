@@ -42,6 +42,8 @@ class Settings:
     rabbitmq_prefetch_count: int
     lesson_counters_enabled: bool
     lesson_counters_path: Path
+    web_cookie_secure: bool
+    web_session_ttl_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,6 +72,8 @@ class Settings:
             rabbitmq_prefetch_count=int(os.getenv("RABBITMQ_PREFETCH_COUNT", "20").strip()),
             lesson_counters_enabled=_env_bool("LESSON_COUNTERS_ENABLED", default=False),
             lesson_counters_path=Path(os.getenv("LESSON_COUNTERS_PATH", "storage/lesson_counters.json")).resolve(),
+            web_cookie_secure=_env_bool("WEB_COOKIE_SECURE", default=True),
+            web_session_ttl_seconds=max(300, int(os.getenv("WEB_SESSION_TTL_SECONDS", str(60 * 60 * 12)).strip())),
         )
 
 

@@ -38,6 +38,11 @@ PERMISSION_LABELS = {
     "manage_bot_admin": "Управление ботом",
 }
 
+INSECURE_SECRET_VALUES = {"", "change-me", "change-me-long-random-secret", "dev-secret-change-me"}
+INSECURE_SUPERUSER_PASSWORDS = {"", "change-me", "admin", "password", "12345678"}
+LOGIN_GUARD_MAX_ATTEMPTS = 3
+LOGIN_GUARD_BLOCK_SECONDS = 6 * 60 * 60
+
 
 @dataclass(slots=True)
 class WebUser:
@@ -259,6 +264,210 @@ class SessionSigner:
         if int(time.time()) - int(payload.get("iat", 0)) > max_age_seconds:
             return None
         return str(payload.get("login") or "")
+
+
+class LoginRateLimiter:
+    def __init__(self, database_path: Path, *, max_attempts: int = LOGIN_GUARD_MAX_ATTEMPTS, block_seconds: int = LOGIN_GUARD_BLOCK_SECONDS) -> None:
+        self.database_path = database_path
+        self.max_attempts = max_attempts
+        self.block_seconds = block_seconds
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_schema()
+
+    def is_blocked(self, keys: list[str]) -> bool:
+        now = int(time.time())
+        normalized = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+        if not normalized:
+            return False
+        placeholders = ",".join("?" for _ in normalized)
+        with closing(self._connect()) as connection:
+            self._cleanup_expired(connection, now)
+            row = connection.execute(
+                f"""
+                SELECT 1
+                FROM web_login_guard
+                WHERE fingerprint_key IN ({placeholders}) AND blocked_until > ?
+                LIMIT 1
+                """,
+                (*normalized, now),
+            ).fetchone()
+            return row is not None
+
+    def register_failure(self, keys: list[str]) -> None:
+        now = int(time.time())
+        normalized = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+        if not normalized:
+            return
+        blocked_until = 0
+        with closing(self._connect()) as connection:
+            self._cleanup_expired(connection, now)
+            for key in normalized:
+                row = connection.execute(
+                    """
+                    SELECT fail_count, blocked_until
+                    FROM web_login_guard
+                    WHERE fingerprint_key = ?
+                    LIMIT 1
+                    """,
+                    (key,),
+                ).fetchone()
+                fail_count = 1
+                previous_block = 0
+                if row is not None:
+                    previous_block = int(row["blocked_until"] or 0)
+                    fail_count = int(row["fail_count"] or 0) + 1
+                if fail_count >= self.max_attempts:
+                    blocked_until = max(blocked_until, now + self.block_seconds, previous_block)
+                connection.execute(
+                    """
+                    INSERT INTO web_login_guard (fingerprint_key, fail_count, blocked_until, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(fingerprint_key) DO UPDATE SET
+                        fail_count = excluded.fail_count,
+                        blocked_until = CASE
+                            WHEN excluded.blocked_until > web_login_guard.blocked_until THEN excluded.blocked_until
+                            ELSE web_login_guard.blocked_until
+                        END,
+                        updated_at = excluded.updated_at
+                    """,
+                    (key, fail_count, previous_block, now),
+                )
+            if blocked_until > now:
+                placeholders = ",".join("?" for _ in normalized)
+                connection.execute(
+                    f"""
+                    UPDATE web_login_guard
+                    SET blocked_until = ?, updated_at = ?
+                    WHERE fingerprint_key IN ({placeholders})
+                    """,
+                    (blocked_until, now, *normalized),
+                )
+            connection.commit()
+
+    def reset(self, keys: list[str]) -> None:
+        normalized = list(dict.fromkeys(key.strip() for key in keys if key.strip()))
+        if not normalized:
+            return
+        placeholders = ",".join("?" for _ in normalized)
+        with closing(self._connect()) as connection:
+            connection.execute(f"DELETE FROM web_login_guard WHERE fingerprint_key IN ({placeholders})", normalized)
+            connection.commit()
+
+    def record_attempt(
+        self,
+        *,
+        requested_login: str,
+        ip: str,
+        user_agent: str,
+        device_id_hash: str,
+        fingerprint_hash: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        now = int(time.time())
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO web_login_attempts (
+                    created_at,
+                    requested_login,
+                    ip,
+                    user_agent,
+                    device_id_hash,
+                    fingerprint_hash,
+                    outcome,
+                    reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    requested_login.strip()[:128],
+                    ip.strip()[:128],
+                    user_agent.strip()[:512],
+                    device_id_hash[:96],
+                    fingerprint_hash[:96],
+                    outcome[:32],
+                    reason[:64],
+                ),
+            )
+            connection.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path, timeout=5)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _ensure_schema(self) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS web_login_guard (
+                    fingerprint_key TEXT PRIMARY KEY,
+                    fail_count INTEGER NOT NULL,
+                    blocked_until INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_web_login_guard_blocked_until
+                ON web_login_guard(blocked_until)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS web_login_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at INTEGER NOT NULL,
+                    requested_login TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    user_agent TEXT NOT NULL,
+                    device_id_hash TEXT NOT NULL,
+                    fingerprint_hash TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    reason TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_web_login_attempts_created_at
+                ON web_login_attempts(created_at DESC)
+                """
+            )
+            connection.commit()
+
+    def _cleanup_expired(self, connection: sqlite3.Connection, now: int) -> None:
+        connection.execute(
+            """
+            DELETE FROM web_login_guard
+            WHERE blocked_until > 0 AND blocked_until <= ?
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            DELETE FROM web_login_guard
+            WHERE blocked_until = 0 AND updated_at <= ?
+            """,
+            (now - self.block_seconds,),
+        )
+
+
+def validate_security_config(secret: str, superuser_password: str) -> None:
+    issues: list[str] = []
+    normalized_secret = (secret or "").strip()
+    normalized_password = (superuser_password or "").strip()
+
+    if normalized_secret in INSECURE_SECRET_VALUES or len(normalized_secret) < 32:
+        issues.append("WEB_CONFIG_SECRET must be unique and at least 32 characters long.")
+    if normalized_password in INSECURE_SUPERUSER_PASSWORDS or len(normalized_password) < 12:
+        issues.append("WEB_SUPERUSER_PASSWORD must be set and at least 12 characters long.")
+
+    if issues:
+        raise RuntimeError("Unsafe web admin configuration: " + " ".join(issues))
 
 
 def hash_password(password: str) -> str:

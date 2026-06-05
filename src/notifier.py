@@ -4,6 +4,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from vkbottle.bot import Bot as VkBot
 
 from src.db import Database
@@ -14,6 +15,17 @@ logger = logging.getLogger(__name__)
 CAMPAIGN_NOTIFICATION = "notification"
 CAMPAIGN_ADMIN_BROADCAST = "admin_broadcast"
 CAMPAIGN_ADMIN_NOTIFY = "admin_notify"
+
+SCHEDULE_NOTIFICATION_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Расписание на сегодня", callback_data="schedule:today")],
+        [InlineKeyboardButton(text="Расписание на завтра", callback_data="schedule:tomorrow")],
+        [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="schedule:day_after")],
+        [InlineKeyboardButton(text="Расписание звонков", callback_data="schedule:bells")],
+        [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
+    ]
+)
 
 
 class Broadcaster:
@@ -225,8 +237,9 @@ class Broadcaster:
     ) -> bool:
         if self.telegram_bot is None:
             return False
+        reply_markup = SCHEDULE_NOTIFICATION_KEYBOARD if campaign_type == CAMPAIGN_NOTIFICATION else None
         try:
-            await self.telegram_bot.send_message(chat_id=user_id, text=message)
+            await self.telegram_bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(
