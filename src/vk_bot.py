@@ -228,11 +228,31 @@ def build_vk_bot(
         unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
         if not unique_ids:
             return {}
-        try:
-            profiles = await bot.api.users.get(user_ids=unique_ids)
-        except (ClientError, OSError) as exc:
-            logger.warning("Failed to fetch VK names for %s users: %s", len(unique_ids), exc)
-            return {}
+        delay_seconds = 1.0
+        for attempt in range(1, 4):
+            try:
+                profiles = await bot.api.users.get(user_ids=unique_ids)
+                break
+            except VKAPIError as exc:
+                if getattr(exc, "code", None) != 10:
+                    raise
+                logger.warning(
+                    "VK users.get temporary error for %s users on attempt %s/3: %s",
+                    len(unique_ids),
+                    attempt,
+                    exc,
+                )
+            except (ClientError, OSError) as exc:
+                logger.warning(
+                    "Failed to fetch VK names for %s users on attempt %s/3: %s",
+                    len(unique_ids),
+                    attempt,
+                    exc,
+                )
+            if attempt >= 3:
+                return {}
+            await asyncio.sleep(delay_seconds)
+            delay_seconds *= 2
         result: dict[int, str] = {}
         for profile in profiles:
             full_name = " ".join(part for part in [profile.first_name, profile.last_name] if part).strip()
@@ -881,11 +901,20 @@ def build_vk_bot(
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
         if snapshot is not None:
             return snapshot
-        if user.subscription_type in {"teacher", "audience"} and user.subscription_url:
-            snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
-        elif user.schedule_id is not None:
-            snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-        else:
+        try:
+            if user.subscription_type in {"teacher", "audience"} and user.subscription_url:
+                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+            elif user.schedule_id is not None:
+                snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+            else:
+                return None
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to fetch VK subscription snapshot for user %s (%s): %s",
+                user_id,
+                user.subscription_key,
+                exc,
+            )
             return None
         return {
             "source_type": user.subscription_type,
