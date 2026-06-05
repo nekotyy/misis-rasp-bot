@@ -89,7 +89,7 @@
 1. `src/` — основная логика бота, парсер, планировщик, доставка, БД.
 2. `web_configurator/` — FastAPI-дашборд и веб-авторизация.
 3. `runtime/` — рабочие данные в Docker: SQLite, JSON счетчиков, вложения.
-4. `deploy/nginx/` — шаблон optional nginx для публичного доступа к дашборду.
+4. `deploy/nginx/` — шаблон nginx для публичного доступа к дашборду.
 
 Сквозной поток данных:
 
@@ -116,7 +116,7 @@
 - `python-dotenv`
 - `alembic`
 - Docker / Docker Compose
-- optional `nginx`
+- `nginx` для публичного reverse proxy по желанию
 
 ## Структура проекта
 
@@ -322,6 +322,12 @@ docker compose logs -f bot
 - `CI/CD` — `compileall`, `pip check`, unit tests и smoke-проверка через `docker compose config`;
 - `Docker Publish` — сборка и публикация образа в `ghcr.io/<owner>/<repo>` на `push` в `main` и `development`.
 
+Публикуемые теги:
+
+- `main` и `development` — branch tags;
+- `sha-<commit>` — тег конкретного коммита;
+- `latest` — только для ветки `main`.
+
 Образ можно тянуть, например, так:
 
 ```bash
@@ -377,12 +383,15 @@ docker compose up -d --build --remove-orphans
 - `WEB_CONFIG_SECRET` — секрет подписи cookie-сессий.
 - `WEB_SUPERUSER_LOGIN` — логин встроенного суперпользователя.
 - `WEB_SUPERUSER_PASSWORD` — пароль встроенного суперпользователя.
+- `WEB_COOKIE_SECURE` — принудительный `Secure` для cookie вне локального запуска.
+- `WEB_SESSION_TTL_SECONDS` — срок жизни web-сессии в секундах.
 - `WEB_USERS_JSON_IMPORT_PATH` — optional путь для одноразового импорта веб-пользователей.
+- `WEB_BIND_IP` — IP/host, на который публикуется прямой порт web-сервиса.
 - `WEB_PORT` — внешний порт FastAPI-дашборда без nginx.
 
 ### Nginx
 
-- `COMPOSE_PROFILES` — если поставить `nginx`, compose поднимет optional nginx-профиль.
+- `COMPOSE_PROFILES` — если поставить `nginx`, compose поднимет nginx-профиль.
 - `NGINX_SERVER_NAME` — домен дашборда.
 - `NGINX_HTTP_PORT` — внешний HTTP-порт.
 - `NGINX_HTTPS_PORT` — внешний HTTPS-порт.
@@ -559,7 +568,7 @@ Consumer:
 
 Веб-модуль живет в `web_configurator/` и запускается на FastAPI + Uvicorn.
 
-OpenAPI и `/docs` отключены, чтобы не выставлять внутренние схемы наружу в проде.
+OpenAPI и `/docs` отключены, чтобы не публиковать внутренние схемы наружу в продовой конфигурации.
 
 Основные разделы:
 
@@ -650,7 +659,7 @@ OpenAPI и `/docs` отключены, чтобы не выставлять вн
 
 ## Админка внутри ботов
 
-Кроме вебки, часть управления остается внутри Telegram/VK-админки:
+Кроме веб-дашборда, часть управления остается внутри Telegram/VK-админки:
 
 - просмотр статуса;
 - поиск пользователей;
@@ -669,9 +678,9 @@ OpenAPI и `/docs` отключены, чтобы не выставлять вн
 - Telegram и VK стартуют независимо;
 - для каждого канала есть supervisor-цикл с перезапуском;
 - RabbitMQ не является жесткой единственной точкой отказа;
-- вебка вынесена отдельно от логики самих ботов;
+- веб-дашборд вынесен отдельно от логики самих ботов;
 - счетчики пар идут через отдельную очередь и журнал событий;
-- optional `nginx` не нужен для работы ядра проекта.
+- nginx не нужен для работы ядра проекта.
 
 Сценарии отказа:
 
@@ -679,7 +688,7 @@ OpenAPI и `/docs` отключены, чтобы не выставлять вн
 - падает VK — Telegram и вебка продолжают жить;
 - падает RabbitMQ — проект продолжает базовую работу и прямую доставку там, где она предусмотрена;
 - падает вебка — бот и очереди продолжают работать;
-- не поднялся nginx — дашборд доступен напрямую через `WEB_PORT`.
+- не поднялся nginx — дашборд доступен напрямую через `WEB_PORT`, если порт опубликован на внешний интерфейс, а не только на `127.0.0.1`.
 
 ## Автобекапы админу
 
@@ -717,7 +726,13 @@ docker compose config
 Проверка синтаксиса:
 
 ```bash
-python -m compileall src web_configurator
+python -m compileall src web_configurator tests
+```
+
+Базовые тесты:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ## Рекомендации для прод-эксплуатации
@@ -728,7 +743,8 @@ python -m compileall src web_configurator
 - сменить все тестовые секреты и пароли;
 - ограничить доступ к RabbitMQ management UI;
 - не хранить сертификаты и продовые `.env` в публичном репозитории;
-- перед выкладкой проверять `docker compose config` и `compileall`.
+- для внешнего доступа к дашборду использовать HTTPS и reverse proxy;
+- перед выкладкой проверять `docker compose config`, `compileall` и базовые unit tests.
 
 ## Roadmap
 
@@ -741,6 +757,9 @@ python -m compileall src web_configurator
 ## Безопасность
 
 - Веб-дашборд запускается без `/docs` и `/openapi.json` в продовой конфигурации.
+- Сессии веб-дашборда подписаны, ограничены по времени и используют защитные cookie-флаги.
+- Для формы входа действует защита от brute force с тихой блокировкой и аудитом попыток входа.
+- Для публичного доступа к веб-интерфейсу рекомендуется HTTPS через nginx или другой reverse proxy.
 - Храните `.env` и TLS-ключи вне публичного доступа.
 - Используйте уникальные секреты и пароли для `WEB_CONFIG_SECRET` и суперпользователя.
 
