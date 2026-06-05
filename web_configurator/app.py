@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.config import Settings
@@ -17,7 +20,15 @@ from src.notifier import CAMPAIGN_ADMIN_BROADCAST
 from src.parser import ScheduleParser
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 from web_configurator.metrics import collect_metrics
-from web_configurator.security import ALL_PERMISSIONS, PERMISSION_LABELS, SessionSigner, WebAuthStore, WebUser
+from web_configurator.security import (
+    ALL_PERMISSIONS,
+    PERMISSION_LABELS,
+    LoginRateLimiter,
+    SessionSigner,
+    WebAuthStore,
+    WebUser,
+    validate_security_config,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +45,11 @@ auth_store = WebAuthStore(
         os.getenv("WEB_USERS_JSON_IMPORT_PATH", os.getenv("WEB_USERS_PATH", "storage/web_users.json"))
     ).resolve(),
 )
-signer = SessionSigner(os.getenv("WEB_CONFIG_SECRET", "change-me"))
+web_config_secret = os.getenv("WEB_CONFIG_SECRET", "")
+web_superuser_password = os.getenv("WEB_SUPERUSER_PASSWORD", "")
+validate_security_config(web_config_secret, web_superuser_password)
+signer = SessionSigner(web_config_secret)
+login_rate_limiter = LoginRateLimiter(settings.database_path)
 
 app = FastAPI(
     title="MISIS bot configurator",
@@ -42,6 +57,155 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+SESSION_COOKIE_NAME = "web_config_session"
+LOGIN_DEVICE_COOKIE_NAME = "web_login_device"
+LOGIN_DEVICE_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def session_cookie_secure(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    if forwarded_proto:
+        return forwarded_proto == "https"
+    host = (request.url.hostname or "").strip("[]").lower()
+    if host in LOCAL_HOSTS:
+        return False
+    if request.url.scheme == "https":
+        return True
+    return settings.web_cookie_secure
+
+
+def get_or_create_login_device_id(request: Request) -> str:
+    existing = (request.cookies.get(LOGIN_DEVICE_COOKIE_NAME) or "").strip()
+    if existing:
+        return existing[:128]
+    return secrets.token_urlsafe(24)
+
+
+def apply_login_device_cookie(response: Response, request: Request, device_id: str) -> None:
+    response.set_cookie(
+        LOGIN_DEVICE_COOKIE_NAME,
+        device_id,
+        httponly=True,
+        secure=session_cookie_secure(request),
+        samesite="lax",
+        max_age=LOGIN_DEVICE_COOKIE_MAX_AGE,
+        path="/",
+    )
+
+
+def client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    if forwarded_for:
+        return forwarded_for
+    if request.client is not None and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def hashed_guard_key(kind: str, value: str) -> str:
+    normalized = " ".join((value or "").strip().lower().split())
+    digest = hashlib.sha256(f"{kind}:{normalized}".encode("utf-8")).hexdigest()
+    return f"{kind}:{digest}"
+
+
+def audit_hash(kind: str, value: str) -> str:
+    return hashed_guard_key(kind, value)
+
+
+def login_guard_keys(request: Request, login: str) -> list[str]:
+    ip = client_ip(request)
+    device_id = get_or_create_login_device_id(request)
+    user_agent = request.headers.get("user-agent", "")
+    accept_language = request.headers.get("accept-language", "")
+    sec_ch_ua = request.headers.get("sec-ch-ua", "")
+    sec_ch_platform = request.headers.get("sec-ch-ua-platform", "")
+    normalized_login = login.strip().lower()
+
+    raw_keys = [
+        ("ip", ip),
+        ("device", device_id),
+        ("ip_device", f"{ip}|{device_id}"),
+        ("ip_ua", f"{ip}|{user_agent}"),
+        ("fingerprint", f"{device_id}|{user_agent}|{accept_language}|{sec_ch_ua}|{sec_ch_platform}"),
+        ("login_ip", f"{normalized_login}|{ip}"),
+        ("login_device", f"{normalized_login}|{device_id}"),
+    ]
+    return [hashed_guard_key(kind, value) for kind, value in raw_keys if value.strip()]
+
+
+def record_login_attempt(
+    request: Request,
+    *,
+    login: str,
+    device_id: str,
+    outcome: str,
+    reason: str,
+) -> None:
+    user_agent = request.headers.get("user-agent", "")
+    accept_language = request.headers.get("accept-language", "")
+    sec_ch_ua = request.headers.get("sec-ch-ua", "")
+    sec_ch_platform = request.headers.get("sec-ch-ua-platform", "")
+    fingerprint_source = f"{device_id}|{user_agent}|{accept_language}|{sec_ch_ua}|{sec_ch_platform}"
+    login_rate_limiter.record_attempt(
+        requested_login=login,
+        ip=client_ip(request),
+        user_agent=user_agent,
+        device_id_hash=audit_hash("device", device_id),
+        fingerprint_hash=audit_hash("fingerprint", fingerprint_source),
+        outcome=outcome,
+        reason=reason,
+    )
+
+
+def expected_origin(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    scheme = forwarded_proto or request.url.scheme
+    host = request.headers.get("x-forwarded-host", "").split(",", 1)[0].strip() or request.headers.get("host", "")
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def is_same_origin(request: Request, candidate: str) -> bool:
+    parsed = urlparse(candidate)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/") == expected_origin(request)
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
+        if origin:
+            if not is_same_origin(request, origin):
+                return HTMLResponse("Forbidden", status_code=403)
+        elif referer:
+            if not is_same_origin(request, referer):
+                return HTMLResponse("Forbidden", status_code=403)
+        else:
+            return HTMLResponse("Forbidden", status_code=403)
+
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    if session_cookie_secure(request):
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 PERMISSION_DESCRIPTIONS = {
     "stats_overview": "Главные карточки на верхней строке дашборда: аптайм, аудитория, новые пользователи и общая активность.",
@@ -56,7 +220,10 @@ PERMISSION_DESCRIPTIONS = {
 }
 
 def current_user(request: Request) -> WebUser:
-    login = signer.unsign(request.cookies.get("web_config_session"))
+    login = signer.unsign(
+        request.cookies.get(SESSION_COOKIE_NAME),
+        max_age_seconds=settings.web_session_ttl_seconds,
+    )
     user = auth_store.get_user(login or "")
     if user is None:
         raise HTTPException(status_code=401)
@@ -83,8 +250,8 @@ async def index(user: Annotated[WebUser, Depends(current_user)]) -> str:
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_form() -> str:
-    return base_page(
+async def login_form(request: Request) -> Response:
+    response = HTMLResponse(base_page(
         "Вход",
         f"""
         <main class="login">
@@ -96,23 +263,53 @@ async def login_form() -> str:
           </form>
         </main>
         """,
-    )
+    ))
+    apply_login_device_cookie(response, request, get_or_create_login_device_id(request))
+    return response
 
 
 @app.post("/login")
-async def login(login: Annotated[str, Form()], password: Annotated[str, Form()]) -> RedirectResponse:
+async def login(request: Request, login: Annotated[str, Form()], password: Annotated[str, Form()]) -> Response:
+    device_id = get_or_create_login_device_id(request)
+    guard_keys = login_guard_keys(request, login)
+    if login_rate_limiter.is_blocked(guard_keys):
+        record_login_attempt(request, login=login, device_id=device_id, outcome="blocked", reason="guard_active")
+        response = RedirectResponse("/login?error=1", status_code=303)
+        apply_login_device_cookie(response, request, device_id)
+        return response
     user = auth_store.authenticate(login, password)
     if user is None:
-        return RedirectResponse("/login?error=1", status_code=303)
+        login_rate_limiter.register_failure(guard_keys)
+        record_login_attempt(request, login=login, device_id=device_id, outcome="failed", reason="invalid_credentials")
+        response = RedirectResponse("/login?error=1", status_code=303)
+        apply_login_device_cookie(response, request, device_id)
+        return response
+    login_rate_limiter.reset(guard_keys)
+    record_login_attempt(request, login=login, device_id=device_id, outcome="success", reason="authenticated")
     response = RedirectResponse("/", status_code=303)
-    response.set_cookie("web_config_session", signer.sign(user.login), httponly=True, samesite="lax")
+    apply_login_device_cookie(response, request, device_id)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        signer.sign(user.login),
+        httponly=True,
+        secure=session_cookie_secure(request),
+        samesite="strict",
+        max_age=settings.web_session_ttl_seconds,
+        path="/",
+    )
     return response
 
 
 @app.post("/logout")
-async def logout() -> RedirectResponse:
+async def logout(request: Request) -> RedirectResponse:
     response = RedirectResponse("/login", status_code=303)
-    response.delete_cookie("web_config_session")
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=session_cookie_secure(request),
+        samesite="strict",
+        path="/",
+    )
     return response
 
 

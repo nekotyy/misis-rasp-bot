@@ -35,7 +35,7 @@ services:
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
     command: ["uv", "run", "--frozen", "uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
-      - "${WEB_PORT:-8080}:8080"
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8080}:8080"
     volumes:
       - ./runtime:/app/runtime
 
