@@ -317,6 +317,17 @@ docker compose logs -f bot
 
 ## CI/CD
 
+В GitHub Actions уже настроены два базовых workflow:
+
+- `CI/CD` — `compileall`, `pip check`, unit tests и smoke-проверка через `docker compose config`;
+- `Docker Publish` — сборка и публикация образа в `ghcr.io/<owner>/<repo>` на `push` в `main` и `development`.
+
+Образ можно тянуть, например, так:
+
+```bash
+docker pull ghcr.io/nekotyy/misis-rasp-bot:development
+```
+
 Если в репозитории используется self-hosted runner, схема деплоя может быть такой:
 
 1. На `push` в рабочую ветку запускается CI.
@@ -721,8 +732,6 @@ python -m compileall src web_configurator
 
 ## Roadmap
 
-- добавить базовые тесты и smoke-проверки для ключевых сценариев;
-- добавить публикацию Docker-образа в Registry;
 - расширить настройки расписания бэкапов из `.env`.
 
 ## Contributing
