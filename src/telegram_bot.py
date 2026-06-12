@@ -216,6 +216,7 @@ def build_dispatcher(
     awaiting_audience_subscription_input: set[int] = set()
     awaiting_admin_broadcast_text: set[int] = set()
     awaiting_admin_user_search: set[int] = set()
+    admin_user_search_state: dict[int, dict[str, str]] = {}
     admin_broadcast_drafts: dict[int, str] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
     awaiting_admin_lesson_input: set[int] = set()
@@ -821,6 +822,7 @@ def build_dispatcher(
         page: int,
         title: str,
         summary: str | None = None,
+        search_results_mode: bool = False,
     ) -> tuple[str, InlineKeyboardMarkup]:
         sorted_users = sort_admin_users(users, sort_mode)
         user_rows = [format_admin_user_row(user) for user in sorted_users]
@@ -838,14 +840,26 @@ def build_dispatcher(
             lines.extend(["", summary])
         lines.extend(["", f"Страница {page + 1}/{total_pages}", ""])
         lines.extend(user_rows[start:end] or ["Ничего не найдено."])
-        return "\n".join(lines), build_admin_users_keyboard(page=page, total_pages=total_pages, sort_mode=sort_mode)
+        return "\n".join(lines), build_admin_users_keyboard(
+            page=page,
+            total_pages=total_pages,
+            sort_mode=sort_mode,
+            search_results_mode=search_results_mode,
+        )
 
-    def build_admin_users_keyboard(page: int, total_pages: int, sort_mode: str) -> InlineKeyboardMarkup:
+    def build_admin_users_keyboard(
+        page: int,
+        total_pages: int,
+        sort_mode: str,
+        *,
+        search_results_mode: bool = False,
+    ) -> InlineKeyboardMarkup:
         nav_row: list[InlineKeyboardButton] = []
+        callback_prefix = "admin:users_found" if search_results_mode else "admin:users"
         if page > 0:
-            nav_row.append(InlineKeyboardButton(text="<", callback_data=f"admin:users:{sort_mode}:{page - 1}"))
+            nav_row.append(InlineKeyboardButton(text="<", callback_data=f"{callback_prefix}:{sort_mode}:{page - 1}"))
         if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton(text=">", callback_data=f"admin:users:{sort_mode}:{page + 1}"))
+            nav_row.append(InlineKeyboardButton(text=">", callback_data=f"{callback_prefix}:{sort_mode}:{page + 1}"))
 
         next_kind_mode, next_platform_mode = get_admin_users_toggle_modes(sort_mode)
         kind_button_text = "Сначала преподы" if next_kind_mode == "kind_teacher" else "Сначала группы"
@@ -855,10 +869,51 @@ def build_dispatcher(
         if nav_row:
             rows.append(nav_row)
         rows.append([InlineKeyboardButton(text="Поиск", callback_data=f"admin:users_search:{sort_mode}")])
-        rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"admin:users:{next_kind_mode}:0")])
-        rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"admin:users:{next_platform_mode}:0")])
+        rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"{callback_prefix}:{next_kind_mode}:0")])
+        rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"{callback_prefix}:{next_platform_mode}:0")])
+        if search_results_mode:
+            rows.append([InlineKeyboardButton(text="\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438", callback_data="admin:users:kind_group:0")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    async def format_admin_search_results(
+        user_id: int,
+        *,
+        page: int,
+        sort_mode: str | None = None,
+    ) -> tuple[str, InlineKeyboardMarkup] | None:
+        state = admin_user_search_state.get(user_id)
+        if state is None:
+            return None
+
+        users = await db.list_users()
+        matches = filter_admin_users(users, state["query"])
+        resolved_sort_mode = sort_mode or state.get("sort_mode") or "kind_group"
+        if not matches:
+            admin_user_search_state.pop(user_id, None)
+            return (
+                (
+                    "<b>\u041f\u043e\u0438\u0441\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f</b>\n\n"
+                    f"\u041f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443 <b>{escape(state['query'])}</b> \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e."
+                ),
+                InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430", callback_data=f"admin:users_search:{resolved_sort_mode}")],
+                        [InlineKeyboardButton(text="\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438", callback_data="admin:users:kind_group:0")],
+                    ]
+                ),
+            )
+
+        state["sort_mode"] = resolved_sort_mode
+        text, reply_markup = format_admin_users_list(
+            matches,
+            sort_mode=resolved_sort_mode,
+            page=page,
+            title=f"\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u043f\u043e\u0438\u0441\u043a\u0430: {escape(state['query'])}",
+            summary=f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439: {len(matches)}",
+            search_results_mode=True,
+        )
+        return text, reply_markup
 
     def build_editors_keyboard(users: list) -> InlineKeyboardMarkup:
         def sort_key(user: object) -> tuple[int, str]:
@@ -2275,6 +2330,7 @@ def build_dispatcher(
         if action == "close":
             editor = await user_is_editor(callback.from_user.id)
             awaiting_admin_user_search.discard(callback.from_user.id)
+            admin_user_search_state.pop(callback.from_user.id, None)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             awaiting_admin_lesson_input.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
@@ -2287,6 +2343,7 @@ def build_dispatcher(
             return
         if action == "back":
             awaiting_admin_user_search.discard(callback.from_user.id)
+            admin_user_search_state.pop(callback.from_user.id, None)
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             awaiting_admin_lesson_input.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
@@ -2309,6 +2366,7 @@ def build_dispatcher(
             reply_markup = ADMIN_KEYBOARD
         elif action == "users" or action.startswith("users:"):
             awaiting_admin_user_search.discard(callback.from_user.id)
+            admin_user_search_state.pop(callback.from_user.id, None)
             users = await db.list_users()
             sort_mode = "kind_group"
             if not users:
@@ -2350,9 +2408,30 @@ def build_dispatcher(
 
                 text = "\n".join(lines)
                 reply_markup = build_admin_users_keyboard(page=page, total_pages=total_pages, sort_mode=sort_mode)
+        elif action.startswith("users_found:"):
+            awaiting_admin_user_search.discard(callback.from_user.id)
+            action_parts = action.split(":")
+            sort_mode = "kind_group"
+            page = 0
+            if len(action_parts) >= 2 and action_parts[1] in {"kind_group", "kind_teacher", "platform_tg", "platform_vk"}:
+                sort_mode = action_parts[1]
+                if len(action_parts) >= 3 and action_parts[2].isdigit():
+                    page = int(action_parts[2])
+            search_result = await format_admin_search_results(callback.from_user.id, page=page, sort_mode=sort_mode)
+            if search_result is None:
+                text = "<b>РџРѕРёСЃРє РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ</b>\n\nРџРѕРёСЃРє СѓР¶Рµ РЅРµР°РєС‚СѓР°Р»РµРЅ. Р—Р°РїСѓСЃС‚Рё РµРіРѕ РµС‰Рµ СЂР°Р·."
+                reply_markup = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="РџРѕРёСЃРє", callback_data="admin:users_search:kind_group")],
+                        [InlineKeyboardButton(text="Р’СЃРµ РїРѕР»СЊР·РѕРІР°С‚РµР»Рё", callback_data="admin:users:kind_group:0")],
+                    ]
+                )
+            else:
+                text, reply_markup = search_result
         elif action.startswith("users_search:"):
             sort_mode = action.split(":", 1)[1] if ":" in action else "kind_group"
             awaiting_admin_user_search.add(callback.from_user.id)
+            admin_user_search_state.pop(callback.from_user.id, None)
             text = (
                 "<b>Поиск пользователя</b>\n\n"
                 "Пришли запрос одним сообщением.\n"
@@ -2786,6 +2865,7 @@ def build_dispatcher(
             users = await db.list_users()
             matches = filter_admin_users(users, query)
             awaiting_admin_user_search.discard(message.from_user.id)
+            admin_user_search_state.pop(message.from_user.id, None)
             if not matches:
                 await send_new_context_message(
                     message.bot,
@@ -2803,12 +2883,14 @@ def build_dispatcher(
                     ),
                 )
                 return
+            admin_user_search_state[message.from_user.id] = {"query": query, "sort_mode": "kind_group"}
             text, reply_markup = format_admin_users_list(
                 matches,
                 sort_mode="kind_group",
                 page=0,
                 title=f"Результаты поиска: {escape(query)}",
                 summary=f"Найдено пользователей: {len(matches)}",
+                search_results_mode=True,
             )
             await send_new_context_message(
                 message.bot,

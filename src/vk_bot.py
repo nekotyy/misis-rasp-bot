@@ -116,6 +116,7 @@ def build_vk_bot(
     search_results: dict[int, dict[str, object]] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
+    admin_user_search_state: dict[int, dict[str, str]] = {}
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     admin_broadcast_drafts: dict[int, str] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
@@ -1135,6 +1136,77 @@ def build_vk_bot(
         rows.append(["Назад в админку"])
 
         await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard(rows))
+
+    async def show_admin_user_search_results(peer_id: int, page: int = 0) -> bool:
+        state = admin_user_search_state.get(peer_id)
+        if state is None:
+            return False
+
+        users = await db.list_users()
+        await sync_vk_user_names([user.user_id for user in users if user.platform == "vk"])
+        users = await db.list_users()
+        matches = filter_admin_users(users, state["query"])
+        if not matches:
+            admin_user_search_state.pop(peer_id, None)
+            peer_pages[peer_id].pop("admin_user_search", None)
+            peer_modes[peer_id] = "admin_user_search"
+            await show_screen(
+                peer_id,
+                f"\u041f\u043e\u0438\u0441\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f\n\n\u041f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443 \u00ab{state['query']}\u00bb \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e.",
+                keyboard=make_keyboard([["\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430"], ["\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438"], ["\u041d\u0430\u0437\u0430\u0434 \u0432 \u0430\u0434\u043c\u0438\u043d\u043a\u0443"]]),
+            )
+            return True
+
+        user_rows: list[str] = []
+        for user in matches:
+            platform_label = "tg" if user.platform == "telegram" else user.platform
+            user_label = user.full_name or "\u0411\u0435\u0437 \u0438\u043c\u0435\u043d\u0438"
+            nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
+            group_label = user.subscription_title or user.group_name or "-"
+            role_flags: list[str] = []
+            if user.is_admin:
+                role_flags.append("\u0430\u0434\u043c\u0438\u043d")
+            if user.is_editor:
+                role_flags.append("\u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440")
+            role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
+            user_rows.append(f"- {platform_label} | {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {admin_user_profile_link(user)}")
+
+        page_size = 20
+        total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+        peer_pages[peer_id]["admin_user_search"] = page
+        peer_modes[peer_id] = "admin_user_search_results"
+
+        start = page * page_size
+        end = start + page_size
+        lines = [
+            "\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u043f\u043e\u0438\u0441\u043a\u0430",
+            "",
+            f"\u0417\u0430\u043f\u0440\u043e\u0441: {state['query']}",
+            f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e: {len(matches)}",
+            "",
+            "\u0424\u043e\u0440\u043c\u0430\u0442: \u043f\u043b\u0430\u0442\u0444\u043e\u0440\u043c\u0430 | \u044e\u0437\u0435\u0440 | \u043d\u0438\u043a/\u0424\u0418 | \u0430\u0439\u0434\u0438 | \u0433\u0440\u0443\u043f\u043f\u0430 (\u0440\u043e\u043b\u0438)",
+            "",
+            f"\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 {page + 1}/{total_pages}",
+            "",
+            *user_rows[start:end],
+        ]
+
+        rows: list[list[str]] = []
+        nav: list[str] = []
+        if page > 0:
+            nav.append("\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430")
+        if page < total_pages - 1:
+            nav.append("\u0421\u043b\u0435\u0434\u0443\u044e\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430")
+        if nav:
+            rows.append(nav)
+        rows.append(["\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430"])
+        rows.append(["\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438"])
+        rows.append(["\u041d\u0430\u0437\u0430\u0434 \u0432 \u0430\u0434\u043c\u0438\u043d\u043a\u0443"])
+
+        await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard(rows))
+        return True
+
     def build_editor_keyboard(peer_id: int, users: list, page: int) -> str:
         labels: dict[str, int] = {}
         button_texts: list[str] = []
@@ -1547,6 +1619,8 @@ def build_vk_bot(
 
         if text in {"Назад в меню", "Закрыть админку"}:
             search_results.pop(peer_id, None)
+            admin_user_search_state.pop(peer_id, None)
+            peer_pages[peer_id].pop("admin_user_search", None)
             admin_broadcast_drafts.pop(peer_id, None)
             admin_lesson_drafts.pop(peer_id, None)
             admin_lesson_delete_drafts.pop(peer_id, None)
@@ -1743,9 +1817,13 @@ def build_vk_bot(
                 await show_screen(peer_id, response, keyboard=admin_keyboard())
                 return
             if text == "Пользователи":
+                admin_user_search_state.pop(peer_id, None)
+                peer_pages[peer_id].pop("admin_user_search", None)
                 await show_admin_users(peer_id, 0)
                 return
             if text == "Поиск пользователя":
+                admin_user_search_state.pop(peer_id, None)
+                peer_pages[peer_id].pop("admin_user_search", None)
                 peer_modes[peer_id] = "admin_user_search"
                 await show_screen(
                     peer_id,
@@ -1764,6 +1842,8 @@ def build_vk_bot(
                     await show_admin_users(peer_id, peer_pages[peer_id].get("admin_users", 0) - 1)
                     return
                 if text == "Поиск пользователя":
+                    admin_user_search_state.pop(peer_id, None)
+                    peer_pages[peer_id].pop("admin_user_search", None)
                     peer_modes[peer_id] = "admin_user_search"
                     await show_screen(
                         peer_id,
@@ -1771,8 +1851,15 @@ def build_vk_bot(
                         keyboard=make_keyboard([["Все пользователи"], ["Назад в админку"]]),
                     )
                     return
-            if mode == "admin_user_search":
+            if mode == "admin_user_search_results":
+                if text == "Следующая страница":
+                    if await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) + 1):
+                        return
+                if text == "Предыдущая страница":
+                    if await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) - 1):
+                        return
                 if text == "Искать снова":
+                    peer_modes[peer_id] = "admin_user_search"
                     await show_screen(
                         peer_id,
                         "Поиск пользователя\n\nНапиши запрос одним сообщением. Поддерживается поиск по айди, @username, имени, фамилии и названию группы.",
@@ -1780,6 +1867,23 @@ def build_vk_bot(
                     )
                     return
                 if text == "Все пользователи":
+                    admin_user_search_state.pop(peer_id, None)
+                    peer_pages[peer_id].pop("admin_user_search", None)
+                    await show_admin_users(peer_id, 0)
+                    return
+            if mode == "admin_user_search":
+                if text == "Искать снова":
+                    admin_user_search_state.pop(peer_id, None)
+                    peer_pages[peer_id].pop("admin_user_search", None)
+                    await show_screen(
+                        peer_id,
+                        "Поиск пользователя\n\nНапиши запрос одним сообщением. Поддерживается поиск по айди, @username, имени, фамилии и названию группы.",
+                        keyboard=make_keyboard([["Все пользователи"], ["Назад в админку"]]),
+                    )
+                    return
+                if text == "Все пользователи":
+                    admin_user_search_state.pop(peer_id, None)
+                    peer_pages[peer_id].pop("admin_user_search", None)
                     await show_admin_users(peer_id, 0)
                     return
                 users = await db.list_users()
@@ -1787,6 +1891,8 @@ def build_vk_bot(
                 users = await db.list_users()
                 matches = filter_admin_users(users, text)
                 peer_modes[peer_id] = "admin_user_search"
+                admin_user_search_state.pop(peer_id, None)
+                peer_pages[peer_id].pop("admin_user_search", None)
                 if not matches:
                     await show_screen(
                         peer_id,
@@ -1794,35 +1900,8 @@ def build_vk_bot(
                         keyboard=make_keyboard([["Искать снова"], ["Все пользователи"], ["Назад в админку"]]),
                     )
                     return
-                lines = [
-                    "Результаты поиска",
-                    "",
-                    f"Запрос: {text}",
-                    f"Найдено: {len(matches)}",
-                    "",
-                    "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
-                    "",
-                ]
-                for user in matches[:20]:
-                    platform_label = "tg" if user.platform == "telegram" else user.platform
-                    user_label = user.full_name or "Без имени"
-                    nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
-                    group_label = user.subscription_title or user.group_name or "-"
-                    role_flags: list[str] = []
-                    if user.is_admin:
-                        role_flags.append("админ")
-                    if user.is_editor:
-                        role_flags.append("редактор")
-                    role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-                    lines.append(f"- {platform_label} | {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}")
-                    lines.append(f"  {admin_user_profile_link(user)}")
-                if len(matches) > 20:
-                    lines.extend(["", f"Показаны первые 20 из {len(matches)}."])
-                await show_screen(
-                    peer_id,
-                    "\n".join(lines),
-                    keyboard=make_keyboard([["Искать снова"], ["Все пользователи"], ["Назад в админку"]]),
-                )
+                admin_user_search_state[peer_id] = {"query": text}
+                await show_admin_user_search_results(peer_id, 0)
                 return
             if text == "Редакторы":
                 users = await db.list_users("vk")
