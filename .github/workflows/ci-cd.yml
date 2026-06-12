@@ -29,25 +29,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-          cache: "pip"
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv sync --frozen --no-install-project
 
       - name: Validate Python syntax
-        run: python -m compileall -q src web_configurator tests
+        run: uv run --frozen python -m compileall -q src web_configurator tests
 
       - name: Validate installed dependencies
-        run: python -m pip check
+        run: uv pip check
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -p "test_*.py" -v
+        run: uv run --frozen python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Prepare CI env file
         run: cp .env.example .env
