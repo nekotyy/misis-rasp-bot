@@ -1718,6 +1718,9 @@ def build_dispatcher(
             reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
+    async def send_reply(message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> Message | None:
+        return await safe_send_message(message.bot, message.chat.id, text, reply_markup=reply_markup)
+
     async def send_stars_invoice(bot_inst: Bot, chat_id: int, user_id: int, stars: int) -> None:
         prices = [LabeledPrice(label="Пожертвование", amount=stars)]
         await bot_inst.send_invoice(
