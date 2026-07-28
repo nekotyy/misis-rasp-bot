@@ -57,5 +57,27 @@ class StarDonationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(refund_again)
 
 
+class StarDonationsCustomAmountTests(unittest.TestCase):
+    def test_custom_amount_validation(self):
+        def validate_custom_stars(text: str) -> int | None:
+            try:
+                stars = int(text.strip())
+                if 15 <= stars <= 2000:
+                    return stars
+            except ValueError:
+                pass
+            return None
+
+        self.assertEqual(validate_custom_stars("15"), 15)
+        self.assertEqual(validate_custom_stars("500"), 500)
+        self.assertEqual(validate_custom_stars("2000"), 2000)
+
+        # Invalid cases
+        self.assertIsNone(validate_custom_stars("14"))
+        self.assertIsNone(validate_custom_stars("2001"))
+        self.assertIsNone(validate_custom_stars("abc"))
+        self.assertIsNone(validate_custom_stars("-100"))
+
+
 if __name__ == "__main__":
     unittest.main()

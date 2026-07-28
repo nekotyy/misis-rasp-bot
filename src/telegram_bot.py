@@ -2141,6 +2141,46 @@ def build_dispatcher(
             await safe_callback_answer(callback, "Группа сброшена")
             return
 
+    @dispatcher.callback_query(F.data.startswith("donate:"))
+    async def handle_donate_callback(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback, cooldown=0.5):
+            return
+        await register_callback_user(callback)
+        if callback.message is None:
+            await safe_callback_answer(callback)
+            return
+
+        if callback.data == "donate:cancel":
+            awaiting_custom_donate_stars.discard(callback.from_user.id)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
+            await safe_callback_answer(callback, "Отменено")
+            return
+
+        if callback.data and callback.data.startswith("donate:stars:"):
+            val = callback.data.split(":", 2)[2]
+            if val == "custom":
+                awaiting_custom_donate_stars.add(callback.from_user.id)
+                await send_new_context_message(
+                    callback.bot,
+                    callback.message.chat.id,
+                    "donate",
+                    "Введи количество звезд для пожертвования (от 15 до 2000 звезд):",
+                    reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
+                )
+                await safe_callback_answer(callback)
+                return
+
+            try:
+                stars = int(val)
+            except ValueError:
+                await safe_callback_answer(callback, "Некорректное значение", show_alert=True)
+                return
+
+            await send_stars_invoice(callback.bot, callback.message.chat.id, callback.from_user.id, stars)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
+            await safe_callback_answer(callback)
+            return
+
     @dispatcher.callback_query(F.data.startswith("admin:"))
     async def handle_admin_callback(callback: CallbackQuery) -> None:
         if await callback_is_rate_limited(callback, cooldown=1.2):
@@ -2267,37 +2307,6 @@ def build_dispatcher(
                 return
             await safe_callback_answer(callback, "Файл отправлен")
             return
-        if callback.data == "donate:cancel":
-            awaiting_custom_donate_stars.discard(callback.from_user.id)
-            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
-            await safe_callback_answer(callback, "Отменено")
-            return
-
-        if callback.data and callback.data.startswith("donate:stars:"):
-            val = callback.data.split(":", 2)[2]
-            if val == "custom":
-                awaiting_custom_donate_stars.add(callback.from_user.id)
-                await send_new_context_message(
-                    callback.bot,
-                    callback.message.chat.id,
-                    "donate",
-                    "Введи количество звезд для пожертвования (от 15 до 2000 звезд):",
-                    reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
-                )
-                await safe_callback_answer(callback)
-                return
-
-            try:
-                stars = int(val)
-            except ValueError:
-                await safe_callback_answer(callback, "Некорректное значение", show_alert=True)
-                return
-
-            await send_stars_invoice(callback.bot, callback.message.chat.id, callback.from_user.id, stars)
-            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
-            await safe_callback_answer(callback)
-            return
-
         if action == "import_lessons":
             awaiting_admin_import_lessons.add(callback.from_user.id)
             admin_import_lessons_drafts.pop(callback.from_user.id, None)
