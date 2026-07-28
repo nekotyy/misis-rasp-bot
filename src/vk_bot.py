@@ -300,6 +300,8 @@ def build_vk_bot(
             is_editor=existing.is_editor if existing else False,
         )
 
+    last_pers_menu_message_id: dict[int, int] = {}
+
     async def send_vk_message(
         peer_id: int,
         message: str,
@@ -307,18 +309,26 @@ def build_vk_bot(
         keyboard: str | None = None,
         attachment: str | None = None,
         max_attempts: int = 3,
-    ) -> None:
+    ) -> int | None:
         delay_seconds = 1.0
         for attempt in range(1, max_attempts + 1):
             try:
-                await bot.api.messages.send(
+                res = await bot.api.messages.send(
                     peer_ids=[peer_id],
                     message=message,
                     keyboard=keyboard,
                     attachment=attachment,
                     random_id=0,
                 )
-                return
+                if isinstance(res, list) and res:
+                    item = res[0]
+                    if isinstance(item, dict):
+                        return item.get("message_id")
+                    if isinstance(item, int):
+                        return item
+                if isinstance(res, int):
+                    return res
+                return None
             except VKAPIError as exc:
                 if getattr(exc, "code", None) != 10 or attempt >= max_attempts:
                     raise
@@ -341,6 +351,7 @@ def build_vk_bot(
                 )
             await asyncio.sleep(delay_seconds)
             delay_seconds *= 2
+        return None
 
     async def show_screen(peer_id: int, text: str, keyboard: str | None = None, attachment: str | None = None) -> None:
         await send_vk_message(peer_id=peer_id, message=text, keyboard=keyboard, attachment=attachment)
@@ -476,8 +487,13 @@ def build_vk_bot(
         rows = [["Установить стикер"]]
         if has_sticker:
             rows.append(["Предпросмотр стикера", "Сбросить стикер"])
-        rows.append(["Назад в меню"])
+        rows.append(["Назад к настройкам"])
         return make_keyboard(rows)
+
+    async def show_pers_screen(peer_id: int, text: str, keyboard: str | None = None) -> None:
+        msg_id = await send_vk_message(peer_id=peer_id, message=text, keyboard=keyboard)
+        if msg_id:
+            last_pers_menu_message_id[peer_id] = msg_id
 
     def admin_keyboard() -> str:
         return make_keyboard(
@@ -1846,7 +1862,7 @@ def build_vk_bot(
         if mode == "awaiting_custom_sticker":
             if text == "Отменить":
                 peer_modes[peer_id] = "personalization_menu"
-                await show_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
+                await show_pers_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
                 return
             sticker_id = None
             if message.attachments:
@@ -1858,14 +1874,14 @@ def build_vk_bot(
                 await db.set_user_custom_sticker("vk", user_id, str(sticker_id))
                 peer_modes[peer_id] = "personalization_menu"
                 text_out = "Стикер установлен.\n\n" + await format_vk_personalization_text(peer_id)
-                await show_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
+                await show_pers_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
                 return
             await show_screen(peer_id, "Пришли стикер. Если передумал, нажми Отменить.", keyboard=make_keyboard([["Отменить"]]))
             return
 
         if text in {"Персонализация", "Персонализация уведомлений"}:
             peer_modes[peer_id] = "personalization_menu"
-            await show_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
+            await show_pers_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
             return
 
         if text == "Установить стикер":
@@ -1877,19 +1893,26 @@ def build_vk_bot(
             user = await db.get_user("vk", user_id)
             if user and user.custom_sticker_file_id:
                 try:
-                    await bot.api.messages.send(peer_id=peer_id, sticker_id=int(user.custom_sticker_file_id), random_id=0)
+                    await bot.api.messages.send(peer_ids=[peer_id], sticker_id=int(user.custom_sticker_file_id), random_id=0)
                 except Exception as exc:
                     logger.warning("Failed to preview VK sticker for %s: %s", user_id, exc)
-                    await show_screen(peer_id, "Не удалось отправить стикер.")
+
+                old_msg_id = last_pers_menu_message_id.get(peer_id)
+                if old_msg_id:
+                    try:
+                        await bot.api.messages.delete(message_ids=[old_msg_id], delete_for_all=True)
+                    except Exception as del_exc:
+                        logger.warning("Failed to delete previous VK pers menu message for %s: %s", peer_id, del_exc)
+                await show_pers_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
             return
 
         if text == "Сбросить стикер":
             await db.clear_user_custom_sticker("vk", user_id)
             text_out = "Стикер сброшен.\n\n" + await format_vk_personalization_text(peer_id)
-            await show_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
+            await show_pers_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
             return
 
-        if text == "Назад к настройкам":
+        if text in {"Назад к настройкам", "Назад в меню"} and mode == "personalization_menu":
             await show_settings(peer_id, user_id)
             return
 
