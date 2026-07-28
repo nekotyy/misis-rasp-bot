@@ -47,7 +47,6 @@ class UserRecord:
     delivery_disabled_auto: bool
     created_at: str
     last_seen_at: str
-    custom_notification_text: str | None = None
     custom_sticker_file_id: str | None = None
 
 

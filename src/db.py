@@ -146,7 +146,6 @@ class Database:
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "users", "delivery_disabled_auto", "INTEGER NOT NULL DEFAULT 0")
-            await self._ensure_column(db, "users", "custom_notification_text", "TEXT")
             await self._ensure_column(db, "users", "custom_sticker_file_id", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_type", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_key", "TEXT")
@@ -420,8 +419,7 @@ class Database:
                 delivery_disabled_auto=bool(row[16]),
                 created_at=row[17],
                 last_seen_at=row[18],
-                custom_notification_text=row[19] if len(row) > 19 else None,
-                custom_sticker_file_id=row[20] if len(row) > 20 else None,
+                custom_sticker_file_id=row[19] if len(row) > 19 else None,
             )
             for row in rows
         ]
@@ -464,7 +462,6 @@ class Database:
                     delivery_disabled_auto,
                     created_at,
                     last_seen_at,
-                    custom_notification_text,
                     custom_sticker_file_id
                 FROM users
                 WHERE platform = ? AND user_id = ?
@@ -495,8 +492,7 @@ class Database:
             delivery_disabled_auto=bool(row[16]),
             created_at=row[17],
             last_seen_at=row[18],
-            custom_notification_text=row[19] if len(row) > 19 else None,
-            custom_sticker_file_id=row[20] if len(row) > 20 else None,
+            custom_sticker_file_id=row[19] if len(row) > 19 else None,
         )
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
@@ -1448,22 +1444,6 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount > 0
-
-    async def set_user_custom_notification_text(self, platform: str, user_id: int, text: str) -> None:
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute(
-                "UPDATE users SET custom_notification_text = ? WHERE platform = ? AND user_id = ?",
-                (text, platform, user_id),
-            )
-            await db.commit()
-
-    async def clear_user_custom_notification_text(self, platform: str, user_id: int) -> None:
-        async with aiosqlite.connect(self.path) as db:
-            await db.execute(
-                "UPDATE users SET custom_notification_text = NULL WHERE platform = ? AND user_id = ?",
-                (platform, user_id),
-            )
-            await db.commit()
 
     async def set_user_custom_sticker(self, platform: str, user_id: int, sticker_file_id: str) -> None:
         async with aiosqlite.connect(self.path) as db:
