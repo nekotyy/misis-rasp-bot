@@ -195,7 +195,11 @@ ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
 
 ADMIN_BROADCAST_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Отправить", callback_data="admin:broadcast_send")],
+        [
+            InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
+            InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
+        ],
+        [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
         [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
     ]
 )
@@ -1061,6 +1065,21 @@ def build_dispatcher(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
+            if source["source_type"] == "audience":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+                await db.save_snapshot(
+                    "current",
+                    snapshot_hash,
+                    snapshot,
+                    source["schedule_id"],
+                    source["group_name"],
+                    source_type=source["source_type"],
+                    source_key=source["source_key"],
+                    source_title=source["source_title"],
+                    source_url=source["source_url"],
+                )
+                rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "РїРµСЂРµРїР°СЂСЃРµРЅРѕ"))
+                continue
             if source["source_type"] == "teacher":
                 snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
@@ -1086,6 +1105,21 @@ def build_dispatcher(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
+            if source["source_type"] == "audience":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+                await db.save_snapshot(
+                    "daily_baseline",
+                    snapshot_hash,
+                    snapshot,
+                    source["schedule_id"],
+                    source["group_name"],
+                    source_type=source["source_type"],
+                    source_key=source["source_key"],
+                    source_title=source["source_title"],
+                    source_url=source["source_url"],
+                )
+                rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "СЌС‚Р°Р»РѕРЅ СЃРѕС…СЂР°РЅРµРЅ"))
+                continue
             if source["source_type"] == "teacher":
                 snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
@@ -1945,7 +1979,7 @@ def build_dispatcher(
         action = callback.data.split(":", 1)[1]
         is_full_admin = user_is_full_admin(callback.from_user.id)
         if not is_full_admin and action in {
-            "broadcast", "broadcast_send", "baseline", "editors", "test",
+            "broadcast", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk", "baseline", "editors", "test",
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
             "lesson_confirm", "lesson_confirm_force",
@@ -1979,7 +2013,7 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Рассылка отменена")
             return
-        if action == "broadcast_send":
+        if action in {"broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
             draft_text = admin_broadcast_drafts.get(callback.from_user.id)
             if not draft_text:
                 await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
@@ -1987,20 +2021,36 @@ def build_dispatcher(
             if broadcaster is None:
                 await safe_callback_answer(callback, "Сервис рассылки сейчас недоступен.", show_alert=True)
                 return
+
+            target_platform = "all"
+            if action == "broadcast_send_tg":
+                target_platform = "telegram"
+            elif action == "broadcast_send_vk":
+                target_platform = "vk"
+
             await broadcaster.broadcast(
                 draft_text,
                 telegram_message=escape(draft_text),
                 vk_message=draft_text,
                 campaign_type=CAMPAIGN_ADMIN_BROADCAST,
+                target_platform=target_platform,
             )
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
+
+            if target_platform == "telegram":
+                sent_msg = "<b>Рассылка отправлена в Telegram.</b>\n\nСообщение поставлено в очередь доставки."
+            elif target_platform == "vk":
+                sent_msg = "<b>Рассылка отправлена в VK.</b>\n\nСообщение поставлено в очередь доставки."
+            else:
+                sent_msg = "<b>Рассылка отправлена на все платформы.</b>\n\nСообщение поставлено в очередь доставки."
+
             await send_new_context_message(
                 callback.bot,
                 callback.message.chat.id,
                 "admin",
-                "<b>Рассылка отправлена.</b>\n\nСообщение поставлено в очередь доставки.",
+                sent_msg,
                 reply_markup=ADMIN_KEYBOARD,
             )
             await safe_callback_answer(callback, "Отправлено")

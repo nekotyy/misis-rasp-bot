@@ -43,10 +43,12 @@ class ScheduleParser:
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
-    def build_schedule_url(self, schedule_id: int) -> str:
+    def build_schedule_url(self, schedule_id: int | None) -> str:
+        if schedule_id is None:
+            raise ValueError("schedule_id is required to build a schedule URL")
         return f"{self.schedule_base_url}/{schedule_id}"
 
-    async def fetch_html(self, schedule_id: int) -> str:
+    async def fetch_html(self, schedule_id: int | None) -> str:
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await self._get_with_retry(client, self.build_schedule_url(schedule_id))
             response.encoding = "utf-8"
@@ -74,7 +76,7 @@ class ScheduleParser:
         assert last_exc is not None
         raise last_exc
 
-    async def parse(self, schedule_id: int) -> tuple[ScheduleSnapshot, str]:
+    async def parse(self, schedule_id: int | None) -> tuple[ScheduleSnapshot, str]:
         html = await self.fetch_html(schedule_id)
         snapshot = self.parse_html(html)
         return snapshot, self.compute_hash(snapshot)

@@ -69,19 +69,22 @@ class Broadcaster:
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
+        target_platform: str = "all",
     ) -> None:
-        await self._broadcast_telegram(
-            telegram_message or message,
-            schedule_id=schedule_id,
-            subscription_key=subscription_key,
-            campaign_type=campaign_type,
-        )
-        await self._broadcast_vk(
-            vk_message or message,
-            schedule_id=schedule_id,
-            subscription_key=subscription_key,
-            campaign_type=campaign_type,
-        )
+        if target_platform in {"all", "telegram"}:
+            await self._broadcast_telegram(
+                telegram_message or message,
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+                campaign_type=campaign_type,
+            )
+        if target_platform in {"all", "vk"}:
+            await self._broadcast_vk(
+                vk_message or message,
+                schedule_id=schedule_id,
+                subscription_key=subscription_key,
+                campaign_type=campaign_type,
+            )
 
     async def broadcast_test_message(self) -> None:
         await self.broadcast(
