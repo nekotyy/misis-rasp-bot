@@ -1875,8 +1875,10 @@ def build_dispatcher(
                 f"<b>Дата и время:</b> {now_str}\n"
                 f"<b>ID операции:</b> <code>#{donation_id}</code>\n"
                 f"<b>Telegram Charge ID:</b> <code>{charge_id}</code>\n\n"
-                f"Для возврата средств используй команду:\n"
-                f"<code>/dnremove {donation_id}</code>"
+                f"Для возврата средств скопируй команду:\n"
+                f"<code>/dnremove {donation_id}</code>\n"
+                f"или по Charge ID:\n"
+                f"<code>/dnremove {charge_id}</code>"
             )
             try:
                 await message.bot.send_message(settings.admin_telegram_id, admin_msg)
