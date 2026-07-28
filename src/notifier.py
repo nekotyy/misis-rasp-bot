@@ -371,23 +371,19 @@ class Broadcaster:
             return False
         reply_markup = SCHEDULE_NOTIFICATION_KEYBOARD if campaign_type == CAMPAIGN_NOTIFICATION else None
 
-        send_text = message
         if campaign_type == CAMPAIGN_NOTIFICATION:
             try:
                 user = await self.db.get_user("telegram", user_id)
-                if user is not None:
-                    if user.custom_sticker_file_id:
-                        try:
-                            await self.telegram_bot.send_sticker(chat_id=user_id, sticker=user.custom_sticker_file_id)
-                        except Exception as sticker_exc:
-                            logger.warning("Failed to send custom sticker for user %s: %s", user_id, sticker_exc)
-                    if user.custom_notification_text:
-                        send_text = f"{user.custom_notification_text}\n\n{message}"
+                if user is not None and user.custom_sticker_file_id:
+                    try:
+                        await self.telegram_bot.send_sticker(chat_id=user_id, sticker=user.custom_sticker_file_id)
+                    except Exception as sticker_exc:
+                        logger.warning("Failed to send custom sticker for user %s: %s", user_id, sticker_exc)
             except Exception as user_exc:
                 logger.warning("Failed to fetch custom notification settings for %s: %s", user_id, user_exc)
 
         try:
-            await self.telegram_bot.send_message(chat_id=user_id, text=send_text, reply_markup=reply_markup)
+            await self.telegram_bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(

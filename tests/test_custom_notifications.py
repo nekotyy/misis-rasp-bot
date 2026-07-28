@@ -18,29 +18,17 @@ class CustomNotificationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
 
-    async def test_record_and_get_custom_notification_text_and_sticker(self):
+    async def test_record_and_get_custom_sticker(self):
         await self.db.upsert_user("telegram", 12345, username="testuser", full_name="Test User")
 
         # Initial state should be None
         user = await self.db.get_user("telegram", 12345)
         self.assertIsNotNone(user)
-        self.assertIsNone(user.custom_notification_text)
         self.assertIsNone(user.custom_sticker_file_id)
-
-        # Set custom text
-        await self.db.set_user_custom_notification_text("telegram", 12345, "Внимание! Расписание изменилось.")
-        user = await self.db.get_user("telegram", 12345)
-        self.assertEqual(user.custom_notification_text, "Внимание! Расписание изменилось.")
 
         # Set custom sticker
         await self.db.set_user_custom_sticker("telegram", 12345, "sticker_file_id_abc123")
         user = await self.db.get_user("telegram", 12345)
-        self.assertEqual(user.custom_sticker_file_id, "sticker_file_id_abc123")
-
-        # Clear custom text
-        await self.db.clear_user_custom_notification_text("telegram", 12345)
-        user = await self.db.get_user("telegram", 12345)
-        self.assertIsNone(user.custom_notification_text)
         self.assertEqual(user.custom_sticker_file_id, "sticker_file_id_abc123")
 
         # Clear custom sticker
@@ -50,7 +38,7 @@ class CustomNotificationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CustomNotificationsNotifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_custom_sticker_and_text_in_notifier(self):
+    async def test_custom_sticker_in_notifier(self):
         mock_db = MagicMock()
         mock_user = UserRecord(
             platform="telegram",
@@ -72,7 +60,6 @@ class CustomNotificationsNotifierTests(unittest.IsolatedAsyncioTestCase):
             delivery_disabled_auto=False,
             created_at="2026-01-01T00:00:00",
             last_seen_at="2026-01-01T00:00:00",
-            custom_notification_text="Мое предупреждение:",
             custom_sticker_file_id="sticker_123_xyz",
         )
         mock_db.get_user = AsyncMock(return_value=mock_user)
@@ -95,7 +82,7 @@ class CustomNotificationsNotifierTests(unittest.IsolatedAsyncioTestCase):
         mock_bot.send_sticker.assert_awaited_once_with(chat_id=999, sticker="sticker_123_xyz")
         mock_bot.send_message.assert_awaited_once()
         sent_text = mock_bot.send_message.call_args.kwargs["text"]
-        self.assertTrue(sent_text.startswith("Мое предупреждение:\n\nИзменения на 29.07.2026"))
+        self.assertEqual(sent_text, "Изменения на 29.07.2026: Добавлена пара Литература")
 
 
 class SmokeCustomNotificationsTests(unittest.IsolatedAsyncioTestCase):
@@ -124,6 +111,9 @@ class SmokeCustomNotificationsTests(unittest.IsolatedAsyncioTestCase):
         kbd = await build_personalization_keyboard(888, self.db)
 
         self.assertIsNone(emoji_pattern.search(text), f"Emoji found in text: {text}")
+
+        btn_texts = [btn.text for row in kbd.inline_keyboard for btn in row]
+        self.assertIn("Установить стикер", btn_texts)
 
         for row in kbd.inline_keyboard:
             for btn in row:

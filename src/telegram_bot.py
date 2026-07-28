@@ -149,38 +149,27 @@ def format_broadcast_progress_status(
 
 async def format_personalization_settings_text(user_id: int, db: Database) -> str:
     user = await db.get_user("telegram", user_id)
-    has_text = bool(user and user.custom_notification_text)
     has_sticker = bool(user and user.custom_sticker_file_id)
-
-    text_status = f"<b>{escape(user.custom_notification_text)}</b>" if (has_text and user and user.custom_notification_text) else "<i>Не установлен</i>"
     sticker_status = "<b>Прикреплен</b>" if has_sticker else "<i>Не установлен</i>"
 
     return "\n".join([
         "<b>Персонализация уведомлений</b>",
         "",
-        f"• Ваш текст уведомления: {text_status}",
         f"• Ваш стикер: {sticker_status}",
         "",
-        "Вы можете задать свой текст и прислать стикер. Стикер будет отправляться перед уведомлениями об изменениях и при открытии меню расписания.",
+        "Вы можете установить свой стикер. Он будет отправляться перед уведомлениями об изменениях и при вызове меню расписания.",
     ])
 
 
 async def build_personalization_keyboard(user_id: int, db: Database) -> InlineKeyboardMarkup:
     user = await db.get_user("telegram", user_id)
-    has_text = bool(user and user.custom_notification_text)
     has_sticker = bool(user and user.custom_sticker_file_id)
 
     rows = [
-        [InlineKeyboardButton(text="Задать свой текст", callback_data="settings:pers_set_text")],
-        [InlineKeyboardButton(text="Прислать стикер", callback_data="settings:pers_set_sticker")],
+        [InlineKeyboardButton(text="Установить стикер", callback_data="settings:pers_set_sticker")],
     ]
-    clear_row = []
-    if has_text:
-        clear_row.append(InlineKeyboardButton(text="Сбросить текст", callback_data="settings:pers_clear_text"))
     if has_sticker:
-        clear_row.append(InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker"))
-    if clear_row:
-        rows.append(clear_row)
+        rows.append([InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -440,7 +429,6 @@ def build_dispatcher(
     awaiting_admin_import_lessons: set[int] = set()
     admin_import_lessons_drafts: dict[int, dict] = {}
     awaiting_custom_donate_stars: set[int] = set()
-    awaiting_custom_notification_text: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
@@ -2379,46 +2367,23 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         if action == "personalization":
-            awaiting_custom_notification_text.discard(callback.from_user.id)
             awaiting_custom_sticker.discard(callback.from_user.id)
             await safe_edit_message_text(
                 callback.message,
                 await format_personalization_settings_text(callback.from_user.id, db),
                 reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
-            )
-            await safe_callback_answer(callback)
-            return
-
-        if action == "pers_set_text":
-            awaiting_custom_notification_text.add(callback.from_user.id)
-            awaiting_custom_sticker.discard(callback.from_user.id)
-            await safe_edit_message_text(
-                callback.message,
-                "Отправь текст, который будет высылаться перед уведомлениями об изменениях расписания:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
             )
             await safe_callback_answer(callback)
             return
 
         if action == "pers_set_sticker":
             awaiting_custom_sticker.add(callback.from_user.id)
-            awaiting_custom_notification_text.discard(callback.from_user.id)
             await safe_edit_message_text(
                 callback.message,
                 "Пришли стикер, который будет высылаться перед уведомлениями и при вызове меню расписания:",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
             )
             await safe_callback_answer(callback)
-            return
-
-        if action == "pers_clear_text":
-            await db.clear_user_custom_notification_text("telegram", callback.from_user.id)
-            await safe_edit_message_text(
-                callback.message,
-                await format_personalization_settings_text(callback.from_user.id, db),
-                reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
-            )
-            await safe_callback_answer(callback, "Текст сброшен")
             return
 
         if action == "pers_clear_sticker":
@@ -3512,28 +3477,6 @@ def build_dispatcher(
                     reply_markup=admin_lesson_delete_one_confirm_keyboard(),
                 )
                 return
-
-        if message.from_user and message.from_user.id in awaiting_custom_notification_text:
-            text = (message.text or "").strip()
-            if not text:
-                await send_new_context_message(
-                    message.bot,
-                    message.chat.id,
-                    "settings",
-                    "Текст не должен быть пустым. Попробуй еще раз:",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
-                )
-                return
-            awaiting_custom_notification_text.discard(message.from_user.id)
-            await db.set_user_custom_notification_text("telegram", message.from_user.id, text)
-            await send_new_context_message(
-                message.bot,
-                message.chat.id,
-                "settings",
-                await format_personalization_settings_text(message.from_user.id, db),
-                reply_markup=await build_personalization_keyboard(message.from_user.id, db),
-            )
-            return
 
         if message.from_user and message.from_user.id in awaiting_custom_donate_stars:
             text = (message.text or "").strip()
