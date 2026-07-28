@@ -120,6 +120,18 @@ class Database:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS star_donations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    full_name TEXT,
+                    stars INTEGER NOT NULL,
+                    charge_id TEXT NOT NULL,
+                    refunded INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    refunded_at TEXT
+                );
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -1334,7 +1346,7 @@ class Database:
                             "number": lesson.number,
                             "subject": lesson.subject,
                             "teacher": lesson.teacher,
-                            "classroom": lesson.classroom,
+                    "classroom": lesson.classroom,
                         }
                         for lesson in day.lessons
                     ],
@@ -1342,3 +1354,63 @@ class Database:
                 for day in snapshot.days
             ],
         }
+
+    async def record_star_donation(
+        self,
+        *,
+        user_id: int,
+        username: str | None,
+        full_name: str | None,
+        stars: int,
+        charge_id: str,
+    ) -> int:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO star_donations (user_id, username, full_name, stars, charge_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, username, full_name, stars, charge_id, now),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_star_donation(self, donation_id: int) -> dict | None:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                """
+                SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at
+                FROM star_donations
+                WHERE id = ?
+                """,
+                (donation_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "username": row[2],
+                    "full_name": row[3],
+                    "stars": row[4],
+                    "charge_id": row[5],
+                    "refunded": bool(row[6]),
+                    "created_at": row[7],
+                    "refunded_at": row[8],
+                }
+
+    async def refund_star_donation(self, donation_id: int) -> bool:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE star_donations
+                SET refunded = 1, refunded_at = ?
+                WHERE id = ? AND refunded = 0
+                """,
+                (now, donation_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0

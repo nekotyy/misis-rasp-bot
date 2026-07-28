@@ -15,7 +15,7 @@ import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
 
 from src.config import Settings
 from src.db import Database
@@ -220,6 +220,28 @@ ADMIN_IMPORT_LESSONS_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+DONATE_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⭐ 15", callback_data="donate:stars:15"),
+            InlineKeyboardButton(text="⭐ 25", callback_data="donate:stars:25"),
+        ],
+        [
+            InlineKeyboardButton(text="⭐ 50", callback_data="donate:stars:50"),
+            InlineKeyboardButton(text="⭐ 100", callback_data="donate:stars:100"),
+        ],
+        [
+            InlineKeyboardButton(text="Отправить свое количество", callback_data="donate:stars:custom"),
+        ],
+    ]
+)
+
+DONATE_CUSTOM_CANCEL_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить", callback_data="donate:cancel")],
+    ]
+)
+
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -246,6 +268,7 @@ def build_dispatcher(
     awaiting_admin_lesson_delete_one_input: set[int] = set()
     awaiting_admin_import_lessons: set[int] = set()
     admin_import_lessons_drafts: dict[int, dict] = {}
+    awaiting_custom_donate_stars: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -1695,6 +1718,139 @@ def build_dispatcher(
             reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
+    async def send_stars_invoice(bot_inst: Bot, chat_id: int, user_id: int, stars: int) -> None:
+        prices = [LabeledPrice(label="Пожертвование", amount=stars)]
+        await bot_inst.send_invoice(
+            chat_id=chat_id,
+            title="Пожертвование проекту",
+            description=f"Поддержка бота ({stars} ⭐)",
+            payload=f"star_donate:{user_id}:{stars}",
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+        )
+
+    @dispatcher.message(Command("donate"))
+    async def handle_donate_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type in GROUP_CHAT_TYPES:
+            await send_reply(message, "Команда /donate доступна только в личных сообщениях с ботом.")
+            return
+        if message.from_user:
+            awaiting_custom_donate_stars.discard(message.from_user.id)
+        prompt_text = (
+            "⭐️ <b>Пожертвование проекту (Telegram Stars)</b>\n\n"
+            "Выбери количество звезд для поддержки бота или отправь свое количество:"
+        )
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "donate",
+            prompt_text,
+            reply_markup=DONATE_KEYBOARD,
+        )
+
+    @dispatcher.message(Command("dnremove"))
+    async def handle_dnremove_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None or not user_is_admin(message.from_user.id):
+            return
+
+        args = (message.text or "").strip().split()
+        if len(args) < 2:
+            await send_reply(message, "Использование: <code>/dnremove &lt;id_операции&gt;</code>")
+            return
+
+        try:
+            donation_id = int(args[1])
+        except ValueError:
+            await send_reply(message, "ID операции должен быть целым числом.")
+            return
+
+        donation = await db.get_star_donation(donation_id)
+        if not donation:
+            await send_reply(message, f"❌ Пожертвование с ID <code>#{donation_id}</code> не найдено.")
+            return
+
+        if donation["refunded"]:
+            await send_reply(message, f"⚠️ Пожертвование с ID <code>#{donation_id}</code> уже было возвращено ранее.")
+            return
+
+        try:
+            await message.bot.refund_star_payment(
+                user_id=donation["user_id"],
+                telegram_payment_charge_id=donation["charge_id"],
+            )
+        except Exception as exc:
+            logger.error("Failed to refund star payment %s: %s", donation_id, exc)
+            await send_reply(message, f"❌ Ошибка при возврате средств в Telegram API:\n<code>{escape(str(exc))}</code>")
+            return
+
+        await db.refund_star_donation(donation_id)
+
+        user_id = donation["user_id"]
+        stars = donation["stars"]
+        await send_reply(
+            message,
+            f"✅ <b>Возврат выполнен!</b>\n\nСредства за пожертвование <b>#{donation_id}</b> ({stars} ⭐) успешно возвращены пользователю <code>{user_id}</code>."
+        )
+
+        try:
+            user_notify_msg = (
+                f"⭐️ <b>Возврат средств</b>\n\n"
+                f"Средства за пожертвование #{donation_id} ({stars} ⭐) возвращены на ваш баланс Telegram Stars."
+            )
+            await message.bot.send_message(user_id, user_notify_msg)
+        except Exception as exc:
+            logger.warning("Failed to notify user about star refund: %s", exc)
+
+    @dispatcher.pre_checkout_query()
+    async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
+        await pre_checkout_query.answer(ok=True)
+
+    @dispatcher.message(F.successful_payment)
+    async def process_successful_payment(message: Message) -> None:
+        if message.successful_payment is None or message.from_user is None:
+            return
+        payment = message.successful_payment
+        stars = payment.total_amount
+        charge_id = payment.telegram_payment_charge_id
+        user_id = message.from_user.id
+        username = message.from_user.username
+        full_name = message.from_user.full_name or ""
+
+        donation_id = await db.record_star_donation(
+            user_id=user_id,
+            username=username,
+            full_name=full_name,
+            stars=stars,
+            charge_id=charge_id,
+        )
+
+        thank_you_msg = (
+            f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
+            f"Вы пожертвовали <b>{stars} ⭐</b>. Благодаря вашей помощи бот продолжает развиваться!"
+        )
+        await send_reply(message, thank_you_msg)
+
+        if settings.admin_telegram_id:
+            user_ref = f"@{username}" if username else f"<a href=\"tg://user?id={user_id}\">{escape(full_name or 'Пользователь')}</a>"
+            now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            admin_msg = (
+                f"⭐️ <b>Новое пожертвование (Stars)!</b>\n\n"
+                f"<b>Отправитель:</b> {user_ref} (ID: <code>{user_id}</code>)\n"
+                f"<b>Количество:</b> {stars} ⭐\n"
+                f"<b>Дата и время:</b> {now_str}\n"
+                f"<b>ID операции:</b> <code>#{donation_id}</code>\n"
+                f"<b>Telegram Charge ID:</b> <code>{charge_id}</code>\n\n"
+                f"Для возврата средств используй команду:\n"
+                f"<code>/dnremove {donation_id}</code>"
+            )
+            try:
+                await message.bot.send_message(settings.admin_telegram_id, admin_msg)
+            except Exception as exc:
+                logger.warning("Failed to send admin donation notification: %s", exc)
+
     @dispatcher.message(Command("settings"))
     async def handle_settings_command(message: Message) -> None:
         await register_message_user(message)
@@ -1739,6 +1895,9 @@ def build_dispatcher(
         search_results.pop(message.from_user.id, None)
         awaiting_schedule_search.discard(message.from_user.id)
         awaiting_admin_lesson_input.discard(message.from_user.id)
+        if message.from_user:
+            awaiting_custom_donate_stars.discard(message.from_user.id)
+        await clear_context_messages(message.bot, message.chat.id, "donate")
         admin_lesson_drafts.pop(message.from_user.id, None)
         await send_new_context_message(
             message.bot,
@@ -2108,6 +2267,37 @@ def build_dispatcher(
                 return
             await safe_callback_answer(callback, "Файл отправлен")
             return
+        if callback.data == "donate:cancel":
+            awaiting_custom_donate_stars.discard(callback.from_user.id)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
+            await safe_callback_answer(callback, "Отменено")
+            return
+
+        if callback.data and callback.data.startswith("donate:stars:"):
+            val = callback.data.split(":", 2)[2]
+            if val == "custom":
+                awaiting_custom_donate_stars.add(callback.from_user.id)
+                await send_new_context_message(
+                    callback.bot,
+                    callback.message.chat.id,
+                    "donate",
+                    "Введи количество звезд для пожертвования (от 15 до 2000 звезд):",
+                    reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
+                )
+                await safe_callback_answer(callback)
+                return
+
+            try:
+                stars = int(val)
+            except ValueError:
+                await safe_callback_answer(callback, "Некорректное значение", show_alert=True)
+                return
+
+            await send_stars_invoice(callback.bot, callback.message.chat.id, callback.from_user.id, stars)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "donate")
+            await safe_callback_answer(callback)
+            return
+
         if action == "import_lessons":
             awaiting_admin_import_lessons.add(callback.from_user.id)
             admin_import_lessons_drafts.pop(callback.from_user.id, None)
@@ -2972,6 +3162,27 @@ def build_dispatcher(
                     reply_markup=admin_lesson_delete_one_confirm_keyboard(),
                 )
                 return
+
+        if message.from_user and message.from_user.id in awaiting_custom_donate_stars:
+            text = (message.text or "").strip()
+            try:
+                stars = int(text)
+                if not (15 <= stars <= 2000):
+                    raise ValueError("out of range")
+            except ValueError:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "donate",
+                    "Количество звезд должно быть целым числом от 15 до 2000 звезд. Попробуй еще раз:",
+                    reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
+                )
+                return
+
+            awaiting_custom_donate_stars.discard(message.from_user.id)
+            await clear_context_messages(message.bot, message.chat.id, "donate")
+            await send_stars_invoice(message.bot, message.chat.id, message.from_user.id, stars)
+            return
 
         if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_import_lessons:
             raw_data = ""
