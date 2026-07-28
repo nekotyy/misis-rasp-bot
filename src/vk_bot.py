@@ -22,7 +22,8 @@ from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
-from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
+from src.telegram_bot import format_broadcast_progress_status
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -491,15 +492,22 @@ def build_vk_bot(
             return users
         return [user for user in users if normalized in admin_user_search_haystack(user)]
 
-    def admin_broadcast_preview_keyboard(target_audience: str = "all") -> str:
+    def admin_broadcast_preview_keyboard(
+        target_platform: str = "all",
+        target_audience: str = "all",
+    ) -> str:
+        plat_all = "Платформа: ✅ Везде" if target_platform == "all" else "Платформа: Везде"
+        plat_tg = "Платформа: ✅ В ТГ" if target_platform == "telegram" else "Платформа: В ТГ"
+        plat_vk = "Платформа: ✅ В ВК" if target_platform == "vk" else "Платформа: В ВК"
+
         aud_all = "Кому: ✅ Всем" if target_audience == "all" else "Кому: Всем"
         aud_students = "Кому: ✅ Студентам" if target_audience == "students" else "Кому: Студентам"
         aud_teachers = "Кому: ✅ Преподавателям" if target_audience == "teachers" else "Кому: Преподавателям"
 
         return make_keyboard([
+            [plat_all, plat_tg, plat_vk],
             [aud_all, aud_students, aud_teachers],
-            ["Отправить в ТГ", "Отправить в ВК"],
-            ["Отправить везде"],
+            ["Подтвердить рассылку"],
             ["Отменить"],
         ])
 
@@ -1305,50 +1313,88 @@ def build_vk_bot(
 
             draft = admin_broadcast_drafts.get(peer_id)
             if not isinstance(draft, dict):
-                draft = {"text": str(draft or ""), "target_audience": "all"}
+                draft = {"text": str(draft or ""), "target_platform": "all", "target_audience": "all"}
                 admin_broadcast_drafts[peer_id] = draft
+
+            if text in {"Платформа: Везде", "Платформа: ✅ Везде"}:
+                draft["target_platform"] = "all"
+                target_aud = draft.get("target_audience", "all")
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(draft["text"], target_platform="all", target_audience=target_aud),
+                    keyboard=admin_broadcast_preview_keyboard("all", target_aud),
+                )
+                return
+
+            if text in {"Платформа: В ТГ", "Платформа: ✅ В ТГ"}:
+                draft["target_platform"] = "telegram"
+                target_aud = draft.get("target_audience", "all")
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(draft["text"], target_platform="telegram", target_audience=target_aud),
+                    keyboard=admin_broadcast_preview_keyboard("telegram", target_aud),
+                )
+                return
+
+            if text in {"Платформа: В ВК", "Платформа: ✅ В ВК"}:
+                draft["target_platform"] = "vk"
+                target_aud = draft.get("target_audience", "all")
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(draft["text"], target_platform="vk", target_audience=target_aud),
+                    keyboard=admin_broadcast_preview_keyboard("vk", target_aud),
+                )
+                return
 
             if text in {"Кому: Всем", "Кому: ✅ Всем", "Всем"}:
                 draft["target_audience"] = "all"
+                target_plat = draft.get("target_platform", "all")
                 await show_screen(
                     peer_id,
-                    admin_broadcast_preview_text(draft["text"], target_audience="all"),
-                    keyboard=admin_broadcast_preview_keyboard("all"),
-                )
-                return
-            if text in {"Кому: Студентам", "Кому: ✅ Студентам", "Студентам"}:
-                draft["target_audience"] = "students"
-                await show_screen(
-                    peer_id,
-                    admin_broadcast_preview_text(draft["text"], target_audience="students"),
-                    keyboard=admin_broadcast_preview_keyboard("students"),
-                )
-                return
-            if text in {"Кому: Преподавателям", "Кому: ✅ Преподавателям", "Преподавателям"}:
-                draft["target_audience"] = "teachers"
-                await show_screen(
-                    peer_id,
-                    admin_broadcast_preview_text(draft["text"], target_audience="teachers"),
-                    keyboard=admin_broadcast_preview_keyboard("teachers"),
+                    admin_broadcast_preview_text(draft["text"], target_platform=target_plat, target_audience="all"),
+                    keyboard=admin_broadcast_preview_keyboard(target_plat, "all"),
                 )
                 return
 
-            if text in {"Отправить", "Отправить везде", "Отправить в ТГ", "Отправить в ВК"}:
+            if text in {"Кому: Студентам", "Кому: ✅ Студентам", "Студентам"}:
+                draft["target_audience"] = "students"
+                target_plat = draft.get("target_platform", "all")
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(draft["text"], target_platform=target_plat, target_audience="students"),
+                    keyboard=admin_broadcast_preview_keyboard(target_plat, "students"),
+                )
+                return
+
+            if text in {"Кому: Преподавателям", "Кому: ✅ Преподавателям", "Преподавателям"}:
+                draft["target_audience"] = "teachers"
+                target_plat = draft.get("target_platform", "all")
+                await show_screen(
+                    peer_id,
+                    admin_broadcast_preview_text(draft["text"], target_platform=target_plat, target_audience="teachers"),
+                    keyboard=admin_broadcast_preview_keyboard(target_plat, "teachers"),
+                )
+                return
+
+            if text in {"Подтвердить", "Подтвердить рассылку", "Отправить", "Отправить везде"}:
                 draft_text = draft.get("text")
                 if not draft_text:
                     peer_modes[peer_id] = "admin_broadcast_input"
                     await show_screen(peer_id, admin_broadcast_prompt_text("Сначала отправь текст рассылки."), keyboard=make_keyboard([["Отменить"]]))
                     return
                 if broadcaster is None:
-                    await show_screen(peer_id, "Сервис рассылки сейчас недоступен.", keyboard=admin_broadcast_preview_keyboard(draft.get("target_audience", "all")))
+                    await show_screen(peer_id, "Сервис рассылки сейчас недоступен.", keyboard=admin_broadcast_preview_keyboard(draft.get("target_platform", "all"), draft.get("target_audience", "all")))
                     return
 
                 target_audience = draft.get("target_audience", "all")
-                target_platform = "all"
-                if text == "Отправить в ТГ":
-                    target_platform = "telegram"
-                elif text == "Отправить в ВК":
-                    target_platform = "vk"
+                target_platform = draft.get("target_platform", "all")
+
+                admin_broadcast_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+
+                async def on_vk_progress(prog: BroadcastProgress) -> None:
+                    report = format_broadcast_progress_status(draft_text, prog, html=False)
+                    await show_screen(peer_id, report, keyboard=admin_keyboard() if prog.is_finished else None)
 
                 await broadcaster.broadcast(
                     draft_text,
@@ -1357,19 +1403,8 @@ def build_vk_bot(
                     campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                     target_platform=target_platform,
                     target_audience=target_audience,
+                    progress_callback=on_vk_progress,
                 )
-                admin_broadcast_drafts.pop(peer_id, None)
-                peer_modes[peer_id] = "admin_menu"
-
-                platform_str = "в Telegram" if target_platform == "telegram" else ("в VK" if target_platform == "vk" else "на все платформы")
-                audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
-                sent_msg = (
-                    f"Рассылка отправлена {platform_str}.\n"
-                    f"• Аудитория: {audience_str}\n\n"
-                    f"Сообщение поставлено в очередь доставки."
-                )
-
-                await show_screen(peer_id, sent_msg, keyboard=admin_keyboard())
                 return
 
             if text:

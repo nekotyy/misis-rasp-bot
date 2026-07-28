@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.config import Settings
 from src.db import Database
+from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.message_broker import OutboundMessage, RabbitMQBroker
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST
@@ -22,6 +23,8 @@ from web_configurator.lesson_editor import load_lesson_config, save_lesson_confi
 from web_configurator.metrics import collect_metrics
 from web_configurator.security import (
     ALL_PERMISSIONS,
+    INSECURE_SECRET_VALUES,
+    INSECURE_SUPERUSER_PASSWORDS,
     PERMISSION_LABELS,
     LoginRateLimiter,
     SessionSigner,
@@ -37,22 +40,37 @@ load_dotenv(ENV_PATH)
 
 settings = Settings.from_env()
 started_at = datetime.now()
+
+web_config_secret = (os.getenv("WEB_CONFIG_SECRET") or "").strip()
+web_superuser_password = (os.getenv("WEB_SUPERUSER_PASSWORD") or "").strip()
+
+DEFAULT_DEV_SECRET = "default-dev-secret-key-change-in-production-32chars"
+DEFAULT_DEV_PASSWORD = "admin-password-change-me"
+
+if not web_config_secret or web_config_secret in INSECURE_SECRET_VALUES or len(web_config_secret) < 32:
+    print(
+        "WARNING: WEB_CONFIG_SECRET is missing or insecure. Using default dev secret. Set WEB_CONFIG_SECRET in .env for production!"
+    )
+    web_config_secret = DEFAULT_DEV_SECRET
+
+if not web_superuser_password or web_superuser_password in INSECURE_SUPERUSER_PASSWORDS or len(web_superuser_password) < 12:
+    print(
+        f"WARNING: WEB_SUPERUSER_PASSWORD is missing or insecure (<12 chars). Using default dev password '{DEFAULT_DEV_PASSWORD}'. Set WEB_SUPERUSER_PASSWORD in .env for production!"
+    )
+    web_superuser_password = DEFAULT_DEV_PASSWORD
+
 auth_store = WebAuthStore(
     settings.database_path,
     os.getenv("WEB_SUPERUSER_LOGIN", "admin"),
-    os.getenv("WEB_SUPERUSER_PASSWORD", ""),
+    web_superuser_password,
     Path(
         os.getenv("WEB_USERS_JSON_IMPORT_PATH", os.getenv("WEB_USERS_PATH", "storage/web_users.json"))
     ).resolve(),
 )
-web_config_secret = os.getenv("WEB_CONFIG_SECRET", "")
-web_superuser_password = os.getenv("WEB_SUPERUSER_PASSWORD", "")
-validate_security_config(web_config_secret, web_superuser_password)
 signer = SessionSigner(web_config_secret)
 login_rate_limiter = LoginRateLimiter(settings.database_path)
 
 app = FastAPI(
-    title="MISIS bot configurator",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,

@@ -21,7 +21,7 @@ from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
-from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -35,6 +35,117 @@ from src.subscription_utils import (
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
 
 logger = logging.getLogger(__name__)
+
+def generate_progress_bar(percent: int, length: int = 10) -> str:
+    percent = max(0, min(100, percent))
+    filled_length = int(round(length * percent / 100))
+    bar = "█" * filled_length + "░" * (length - filled_length)
+    return f"[{bar}] {percent}%"
+
+
+def format_broadcast_progress_status(
+    text: str,
+    progress: BroadcastProgress,
+    html: bool = True,
+) -> str:
+    platform_map = {
+        "all": "Глобально (везде)",
+        "telegram": "Telegram",
+        "vk": "ВКонтакте",
+    }
+    audience_map = {
+        "all": "Всем",
+        "students": "Студентам",
+        "teachers": "Преподавателям",
+    }
+    platform_str = platform_map.get(progress.target_platform, "Глобально (везде)")
+    audience_str = audience_map.get(progress.target_audience, "Всем")
+
+    total = progress.total_users
+    processed = progress.processed_count
+    percent = int(round(processed / total * 100)) if total > 0 else 100
+    bar_str = generate_progress_bar(percent)
+
+    if html:
+        escaped_text = escape(text)
+        if not progress.is_finished:
+            return "\n".join([
+                "<b>Рассылка выполняется...</b>",
+                "",
+                "ℹ️ <b>Служебная информация:</b>",
+                f"• <b>Платформа:</b> {platform_str}",
+                f"• <b>Кому:</b> {audience_str}",
+                f"• <b>Время начала:</b> {progress.started_at}",
+                "",
+                "<b>Текст рассылки:</b>",
+                escaped_text,
+                "",
+                "🔄 <b>Прогресс рассылки:</b>",
+                "• <b>Состояние:</b> В процессе...",
+                f"• <b>Отправлено:</b> {processed} / {total} ({percent}%)",
+                f"• <b>Прогресс:</b> <code>{bar_str}</code>",
+            ])
+        else:
+            success_pct = int(round(progress.success_count / total * 100)) if total > 0 else 100
+            return "\n".join([
+                "<b>Рассылка завершена</b>",
+                "",
+                "ℹ️ <b>Служебная информация:</b>",
+                f"• <b>Платформа:</b> {platform_str}",
+                f"• <b>Кому:</b> {audience_str}",
+                f"• <b>Время начала:</b> {progress.started_at}",
+                f"• <b>Время окончания:</b> {progress.finished_at or '-'}",
+                "",
+                "<b>Текст рассылки:</b>",
+                escaped_text,
+                "",
+                "📊 <b>Итоги рассылки:</b>",
+                f"• <b>Всего получателей:</b> {total}",
+                f"• <b>Успешно доставлено:</b> {progress.success_count}",
+                f"• <b>Ошибки доставки:</b> {progress.failed_count}",
+                f"• <b>Процент успеха:</b> {success_pct}%",
+                f"• <b>Прогресс:</b> <code>{generate_progress_bar(100)}</code>",
+            ])
+    else:
+        if not progress.is_finished:
+            return "\n".join([
+                "Рассылка выполняется...",
+                "",
+                "Служебная информация:",
+                f"• Платформа: {platform_str}",
+                f"• Кому: {audience_str}",
+                f"• Время начала: {progress.started_at}",
+                "",
+                "Текст рассылки:",
+                text,
+                "",
+                "Прогресс рассылки:",
+                "• Состояние: В процессе...",
+                f"• Отправлено: {processed} / {total} ({percent}%)",
+                f"• Прогресс: {bar_str}",
+            ])
+        else:
+            success_pct = int(round(progress.success_count / total * 100)) if total > 0 else 100
+            return "\n".join([
+                "Рассылка завершена",
+                "",
+                "Служебная информация:",
+                f"• Платформа: {platform_str}",
+                f"• Кому: {audience_str}",
+                f"• Время начала: {progress.started_at}",
+                f"• Время окончания: {progress.finished_at or '-'}",
+                "",
+                "Текст рассылки:",
+                text,
+                "",
+                "Итоги рассылки:",
+                f"• Всего получателей: {total}",
+                f"• Успешно доставлено: {progress.success_count}",
+                f"• Ошибки доставки: {progress.failed_count}",
+                f"• Процент успеха: {success_pct}%",
+                f"• Прогресс: {generate_progress_bar(100)}",
+            ])
+
 
 async def format_personalization_settings_text(user_id: int, db: Database) -> str:
     user = await db.get_user("telegram", user_id)
@@ -235,7 +346,14 @@ ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> InlineKeyboardMarkup:
+def build_admin_broadcast_preview_keyboard(
+    target_platform: str = "all",
+    target_audience: str = "all",
+) -> InlineKeyboardMarkup:
+    plat_all = "✅ Везде" if target_platform == "all" else "Везде"
+    plat_tg = "✅ В ТГ" if target_platform == "telegram" else "В ТГ"
+    plat_vk = "✅ В ВК" if target_platform == "vk" else "В ВК"
+
     aud_all = "✅ Всем" if target_audience == "all" else "Всем"
     aud_students = "✅ Студентам" if target_audience == "students" else "Студентам"
     aud_teachers = "✅ Преподавателям" if target_audience == "teachers" else "Преподавателям"
@@ -243,21 +361,22 @@ def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> Inli
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text=plat_all, callback_data="admin:broadcast_plat:all"),
+                InlineKeyboardButton(text=plat_tg, callback_data="admin:broadcast_plat:telegram"),
+                InlineKeyboardButton(text=plat_vk, callback_data="admin:broadcast_plat:vk"),
+            ],
+            [
                 InlineKeyboardButton(text=aud_all, callback_data="admin:broadcast_aud:all"),
                 InlineKeyboardButton(text=aud_students, callback_data="admin:broadcast_aud:students"),
                 InlineKeyboardButton(text=aud_teachers, callback_data="admin:broadcast_aud:teachers"),
             ],
-            [
-                InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
-                InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
-            ],
-            [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
+            [InlineKeyboardButton(text="Подтвердить", callback_data="admin:broadcast_confirm")],
             [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
         ]
     )
 
 
-ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all")
+ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all", "all")
 
 ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -627,6 +746,8 @@ def build_dispatcher(
         if error_text:
             lines.extend(["", error_text])
         return "\n".join(lines)
+
+
 
     def format_admin_broadcast_preview(
         text: str,
@@ -1692,42 +1813,6 @@ def build_dispatcher(
         )
         return True
 
-    async def format_personalization_settings_text(user_id: int) -> str:
-        user = await db.get_user("telegram", user_id)
-        has_text = bool(user and user.custom_notification_text)
-        has_sticker = bool(user and user.custom_sticker_file_id)
-
-        text_status = f"<b>{escape(user.custom_notification_text)}</b>" if (has_text and user and user.custom_notification_text) else "<i>Не установлен</i>"
-        sticker_status = "<b>Прикреплен</b>" if has_sticker else "<i>Не установлен</i>"
-
-        return "\n".join([
-            "<b>Персонализация уведомлений</b>",
-            "",
-            f"• Ваш текст уведомления: {text_status}",
-            f"• Ваш стикер: {sticker_status}",
-            "",
-            "Вы можете задать свой текст и прислать стикер. Стикер будет отправляться перед уведомлениями об изменениях и при открытии меню расписания.",
-        ])
-
-    async def build_personalization_keyboard(user_id: int) -> InlineKeyboardMarkup:
-        user = await db.get_user("telegram", user_id)
-        has_text = bool(user and user.custom_notification_text)
-        has_sticker = bool(user and user.custom_sticker_file_id)
-
-        rows = [
-            [InlineKeyboardButton(text="Задать свой текст", callback_data="settings:pers_set_text")],
-            [InlineKeyboardButton(text="Прислать стикер", callback_data="settings:pers_set_sticker")],
-        ]
-        clear_row = []
-        if has_text:
-            clear_row.append(InlineKeyboardButton(text="Сбросить текст", callback_data="settings:pers_clear_text"))
-        if has_sticker:
-            clear_row.append(InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker"))
-        if clear_row:
-            rows.append(clear_row)
-        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
         try:
             user = await db.get_user("telegram", chat_id)
@@ -2455,6 +2540,24 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Рассылка отменена")
             return
+        if action.startswith("broadcast_plat:"):
+            plat = action.split(":", 1)[1]
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
+                return
+            if plat in {"all", "telegram", "vk"}:
+                draft["target_platform"] = plat
+                text = draft.get("text", "")
+                target_aud = draft.get("target_audience", "all")
+                await safe_edit_message_text(
+                    callback.message,
+                    format_admin_broadcast_preview(text, target_platform=plat, target_audience=target_aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(plat, target_aud),
+                )
+            await safe_callback_answer(callback)
+            return
+
         if action.startswith("broadcast_aud:"):
             aud = action.split(":", 1)[1]
             draft = admin_broadcast_drafts.get(callback.from_user.id)
@@ -2464,17 +2567,16 @@ def build_dispatcher(
             if aud in {"all", "students", "teachers"}:
                 draft["target_audience"] = aud
                 text = draft.get("text", "")
-                await send_new_context_message(
-                    callback.bot,
-                    callback.message.chat.id,
-                    "admin_broadcast",
-                    format_admin_broadcast_preview(text, target_audience=aud),
-                    reply_markup=build_admin_broadcast_preview_keyboard(aud),
+                target_plat = draft.get("target_platform", "all")
+                await safe_edit_message_text(
+                    callback.message,
+                    format_admin_broadcast_preview(text, target_platform=target_plat, target_audience=aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(target_plat, aud),
                 )
             await safe_callback_answer(callback)
             return
 
-        if action in {"broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
+        if action in {"broadcast_confirm", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
             draft = admin_broadcast_drafts.get(callback.from_user.id)
             if not draft or not draft.get("text"):
                 await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
@@ -2485,11 +2587,21 @@ def build_dispatcher(
 
             draft_text = draft["text"]
             target_audience = draft.get("target_audience", "all")
-            target_platform = "all"
-            if action == "broadcast_send_tg":
-                target_platform = "telegram"
-            elif action == "broadcast_send_vk":
-                target_platform = "vk"
+            target_platform = draft.get("target_platform", "all")
+
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await safe_callback_answer(callback, "Рассылка запущена")
+
+            status_msg = callback.message
+
+            async def on_broadcast_progress(prog: BroadcastProgress) -> None:
+                report = format_broadcast_progress_status(draft_text, prog, html=True)
+                await safe_edit_message_text(
+                    status_msg,
+                    report,
+                    reply_markup=None,
+                )
 
             await broadcaster.broadcast(
                 draft_text,
@@ -2498,27 +2610,8 @@ def build_dispatcher(
                 campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                 target_platform=target_platform,
                 target_audience=target_audience,
+                progress_callback=on_broadcast_progress,
             )
-            awaiting_admin_broadcast_text.discard(callback.from_user.id)
-            admin_broadcast_drafts.pop(callback.from_user.id, None)
-            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
-
-            platform_str = "Telegram" if target_platform == "telegram" else ("VK" if target_platform == "vk" else "на все платформы")
-            audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
-            sent_msg = (
-                f"<b>Рассылка отправлена {platform_str}.</b>\n"
-                f"• <b>Аудитория:</b> {audience_str}\n\n"
-                f"Сообщение поставлено в очередь доставки."
-            )
-
-            await send_new_context_message(
-                callback.bot,
-                callback.message.chat.id,
-                "admin",
-                sent_msg,
-                reply_markup=ADMIN_KEYBOARD,
-            )
-            await safe_callback_answer(callback, "Отправлено")
             return
         if action == "download_db":
             file_path = settings.database_path
