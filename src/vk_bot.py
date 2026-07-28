@@ -32,7 +32,7 @@ from src.subscription_utils import (
     make_teacher_subscription,
     subscription_caption,
 )
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config
+from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
@@ -122,6 +122,7 @@ def build_vk_bot(
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
     admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
     admin_lesson_delete_one_drafts: dict[int, dict[str, object]] = {}
+    admin_import_lessons_drafts: dict[int, dict] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
@@ -436,6 +437,7 @@ def build_vk_bot(
                 ["Сохранить эталон", "Последнее изменение"],
                 ["Скачать БД", "Скачать пары"],
                 ['Добавить пару', 'Изменить пару'],
+                ['Импорт пар из JSON'],
                 ['Удалить пару', 'Удалить пары'],
                 ["Пользователи", "Информация по группам"],
                 ["Разослать", "Тестовая рассылка"],
@@ -1318,6 +1320,72 @@ def build_vk_bot(
             )
             return
 
+        if user_is_admin(user_id) and mode in {"admin_import_lessons_input", "admin_import_lessons_preview"}:
+            if text == "Отменить":
+                admin_import_lessons_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+
+            if mode == "admin_import_lessons_input":
+                raw_data = ""
+                if message.attachments:
+                    doc = next((att.doc for att in message.attachments if att.doc), None)
+                    if doc and doc.url:
+                        try:
+                            import httpx
+                            async with httpx.AsyncClient(timeout=10.0) as client:
+                                resp = await client.get(doc.url)
+                                raw_data = resp.text
+                        except Exception as exc:
+                            await show_screen(peer_id, f"Не удалось прочитать документ: {exc}\nПришли JSON-текст сообщением.", keyboard=make_keyboard([["Отменить"]]))
+                            return
+                if not raw_data and text:
+                    raw_data = text
+
+                if not raw_data:
+                    await show_screen(peer_id, "Отправь JSON-файл или пришли JSON-текст сообщением.", keyboard=make_keyboard([["Отменить"]]))
+                    return
+
+                parsed_data, error_msg = parse_imported_json_payload(raw_data)
+                if error_msg or not parsed_data:
+                    await show_screen(peer_id, f"Ошибка обработки JSON:\n{error_msg}\n\nПроверь формат и отправь повторно.", keyboard=make_keyboard([["Отменить"]]))
+                    return
+
+                admin_import_lessons_drafts[peer_id] = parsed_data
+                peer_modes[peer_id] = "admin_import_lessons_preview"
+
+                active_catalog = search_catalog or group_catalog
+                preview_text, _, _ = await format_import_preview(parsed_data, active_catalog, html=False)
+
+                await show_screen(peer_id, preview_text, keyboard=make_keyboard([["Подтвердить импорт"], ["Отменить"]]))
+                return
+
+            if mode == "admin_import_lessons_preview":
+                parsed_data = admin_import_lessons_drafts.get(peer_id)
+                if text == "Подтвердить импорт":
+                    if not parsed_data:
+                        peer_modes[peer_id] = "admin_import_lessons_input"
+                        await show_screen(peer_id, "Данные импорта устарели. Отправь JSON заново.", keyboard=make_keyboard([["Отменить"]]))
+                        return
+
+                    active_catalog = search_catalog or group_catalog
+                    current_payload = load_lesson_config(settings.lesson_counters_path)
+                    updated_payload, total_groups, total_subjects = await apply_imported_lessons_config(
+                        parsed_data, current_payload, active_catalog
+                    )
+                    save_lesson_config(settings.lesson_counters_path, updated_payload)
+
+                    lesson_counter_config = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
+                    await lesson_counter_service.sync_config(lesson_counter_config)
+
+                    admin_import_lessons_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+
+                    msg = f"Импорт пар успешно завершен!\n\nИмпортировано/обновлено: {total_groups} групп, {total_subjects} пар."
+                    await show_screen(peer_id, msg, keyboard=admin_keyboard())
+                    return
+
         if user_is_admin(user_id) and mode == "admin_lesson_add":
             if text == "Отменить":
                 admin_lesson_drafts.pop(peer_id, None)
@@ -1774,6 +1842,26 @@ def build_vk_bot(
                 return
             if text == "Скачать пары":
                 await send_admin_document(peer_id, settings.lesson_counters_path, "lesson_counters.json")
+                return
+            if text == "Импорт пар из JSON":
+                admin_import_lessons_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_import_lessons_input"
+                prompt_text = (
+                    "Импорт пар из JSON\n\n"
+                    "Отправь JSON-файл документа или пришли JSON-текст сообщением.\n\n"
+                    "Пример формата:\n"
+                    "{\n"
+                    '  "groups": [\n'
+                    '    {\n'
+                    '      "group_name": "ИСП-25-1",\n'
+                    '      "subjects": [\n'
+                    '        {"subject": "Литература", "teacher": "Волошина Н. В.", "passed": 10, "total": 62}\n'
+                    "      ]\n"
+                    "    }\n"
+                    "  ]\n"
+                    "}"
+                )
+                await show_screen(peer_id, prompt_text, keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Добавить пару":
                 admin_lesson_drafts[peer_id] = {"step": "group"}

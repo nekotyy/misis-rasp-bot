@@ -32,7 +32,7 @@ from src.subscription_utils import (
     subscription_caption,
 )
 
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config
+from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +156,9 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Изменить пару", callback_data="admin:lesson_edit"),
         ],
         [
+            InlineKeyboardButton(text="Импорт пар из JSON", callback_data="admin:import_lessons"),
+        ],
+        [
             InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
             InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
         ],
@@ -204,6 +207,19 @@ ADMIN_BROADCAST_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:import_lessons_cancel")],
+    ]
+)
+
+ADMIN_IMPORT_LESSONS_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить импорт", callback_data="admin:import_lessons_confirm")],
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:import_lessons_cancel")],
+    ]
+)
+
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -228,6 +244,8 @@ def build_dispatcher(
     awaiting_admin_lesson_delete_input: set[int] = set()
     admin_lesson_delete_one_drafts: dict[int, dict[str, object]] = {}
     awaiting_admin_lesson_delete_one_input: set[int] = set()
+    awaiting_admin_import_lessons: set[int] = set()
+    admin_import_lessons_drafts: dict[int, dict] = {}
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -1983,7 +2001,7 @@ def build_dispatcher(
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
             "lesson_confirm", "lesson_confirm_force",
-            "lesson_delete_confirm", "lesson_delete_one_confirm",
+            "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
@@ -2089,6 +2107,75 @@ def build_dispatcher(
                 )
                 return
             await safe_callback_answer(callback, "Файл отправлен")
+            return
+        if action == "import_lessons":
+            awaiting_admin_import_lessons.add(callback.from_user.id)
+            admin_import_lessons_drafts.pop(callback.from_user.id, None)
+            prompt_text = (
+                "<b>Импорт пар из JSON</b>\n\n"
+                "Отправь <b>JSON-файл</b> документа или пришли JSON-текст сообщением.\n\n"
+                "Пример формата JSON:\n"
+                "<code>{\n"
+                '  "groups": [\n'
+                '    {\n'
+                '      "group_name": "ИСП-25-1",\n'
+                '      "subjects": [\n'
+                '        {"subject": "Литература", "teacher": "Волошина Н. В.", "passed": 10, "total": 62}\n'
+                "      ]\n"
+                "    }\n"
+                "  ]\n"
+                "}</code>"
+            )
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_import_lessons",
+                prompt_text,
+                reply_markup=ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD,
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "import_lessons_cancel":
+            awaiting_admin_import_lessons.discard(callback.from_user.id)
+            admin_import_lessons_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_import_lessons")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Импорт отменен")
+            return
+        if action == "import_lessons_confirm":
+            parsed_data = admin_import_lessons_drafts.get(callback.from_user.id)
+            if not parsed_data:
+                await safe_callback_answer(callback, "Данные для импорта устарели. Начни заново.", show_alert=True)
+                return
+
+            active_catalog = search_catalog or group_catalog
+            current_payload = load_lesson_config(settings.lesson_counters_path)
+            updated_payload, total_groups, total_subjects = await apply_imported_lessons_config(
+                parsed_data, current_payload, active_catalog
+            )
+            save_lesson_config(settings.lesson_counters_path, updated_payload)
+
+            lesson_counter_config = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
+            await lesson_counter_service.sync_config(lesson_counter_config)
+
+            awaiting_admin_import_lessons.discard(callback.from_user.id)
+            admin_import_lessons_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_import_lessons")
+
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                f"<b>Импорт пар успешно завершен!</b>\n\nИмпортировано/обновлено: <b>{total_groups}</b> групп, <b>{total_subjects}</b> пар.",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Импорт завершен")
             return
         if action == "lesson_add":
             admin_lesson_drafts[callback.from_user.id] = {"step": "group"}
@@ -2885,6 +2972,61 @@ def build_dispatcher(
                     reply_markup=admin_lesson_delete_one_confirm_keyboard(),
                 )
                 return
+
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_import_lessons:
+            raw_data = ""
+            if message.document:
+                try:
+                    file_info = await message.bot.get_file(message.document.file_id)
+                    file_bytes = await message.bot.download_file(file_info.file_path)
+                    raw_data = file_bytes.read().decode("utf-8")
+                except Exception as exc:
+                    await send_new_context_message(
+                        message.bot,
+                        message.chat.id,
+                        "admin_import_lessons",
+                        f"Не удалось прочитать документ: {exc}\nПришли JSON-текст сообщением.",
+                        reply_markup=ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD,
+                    )
+                    return
+            elif message.text:
+                raw_data = message.text.strip()
+
+            if not raw_data:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_import_lessons",
+                    "Пришли JSON-файл или отправь JSON-текст сообщением.",
+                    reply_markup=ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD,
+                )
+                return
+
+            parsed_data, error_msg = parse_imported_json_payload(raw_data)
+            if error_msg or not parsed_data:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "admin_import_lessons",
+                    f"<b>Ошибка обработки JSON:</b>\n{error_msg}\n\nПроверь формат и отправь повторно.",
+                    reply_markup=ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD,
+                )
+                return
+
+            admin_import_lessons_drafts[message.from_user.id] = parsed_data
+            awaiting_admin_import_lessons.discard(message.from_user.id)
+
+            active_catalog = search_catalog or group_catalog
+            preview_text, _, _ = await format_import_preview(parsed_data, active_catalog, html=True)
+
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_import_lessons",
+                preview_text,
+                reply_markup=ADMIN_IMPORT_LESSONS_PREVIEW_KEYBOARD,
+            )
+            return
 
         if (
             user_is_admin(message.from_user.id)

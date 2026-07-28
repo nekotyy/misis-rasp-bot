@@ -186,3 +186,199 @@ def _teacher_exists_for_subject(teacher: str, canonical_subject: str, teachers_b
     subject_norm = normalize_lesson_text(canonical_subject)
     expected_teacher_norm = normalize_lesson_text(teacher)
     return any(teacher_matches(expected_teacher_norm, teacher_from_schedule) for teacher_from_schedule in teachers_by_subject.get(subject_norm, set()))
+
+
+def parse_imported_json_payload(raw_input: str | bytes | dict | list) -> tuple[dict[str, Any] | None, str | None]:
+    if isinstance(raw_input, (str, bytes)):
+        try:
+            payload = json.loads(raw_input)
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"Ошибка парсинга JSON: {exc}"
+    else:
+        payload = raw_input
+
+    if isinstance(payload, list):
+        groups = payload
+    elif isinstance(payload, dict):
+        groups = payload.get("groups") or payload.get("counters")
+        if groups is None and ("subject" in payload or "subjects" in payload or "schedule_id" in payload or "group_name" in payload):
+            groups = [payload]
+    else:
+        return None, "JSON должен быть объектом или списком групп."
+
+    if not isinstance(groups, list) or not groups:
+        return None, "В JSON не найдено списка групп ('groups')."
+
+    normalized_groups: list[dict[str, Any]] = []
+    for g_item in groups:
+        if not isinstance(g_item, dict):
+            continue
+        schedule_id = g_item.get("schedule_id")
+        if schedule_id not in (None, ""):
+            try:
+                schedule_id = int(schedule_id)
+            except (ValueError, TypeError):
+                schedule_id = None
+        else:
+            schedule_id = None
+
+        group_name = str(g_item.get("group_name") or g_item.get("group") or "").strip()
+        raw_subjects = g_item.get("subjects") or g_item.get("counters") or []
+        if isinstance(raw_subjects, dict):
+            raw_subjects = [raw_subjects]
+        if not isinstance(raw_subjects, list):
+            raw_subjects = []
+
+        norm_subjects: list[dict[str, Any]] = []
+        for s_item in raw_subjects:
+            if not isinstance(s_item, dict):
+                continue
+            subject = str(s_item.get("subject") or "").strip()
+            teacher = str(s_item.get("teacher") or "").strip()
+            if not subject or not teacher:
+                continue
+            try:
+                passed = max(0, int(s_item.get("passed", 0) or 0))
+                total = max(0, int(s_item.get("total", 0) or 0))
+            except (ValueError, TypeError):
+                passed, total = 0, 0
+
+            norm_subjects.append({
+                "subject": subject,
+                "teacher": teacher,
+                "passed": passed,
+                "total": total,
+            })
+
+        if norm_subjects:
+            normalized_groups.append({
+                "schedule_id": schedule_id,
+                "group_name": group_name,
+                "subjects": norm_subjects,
+            })
+
+    if not normalized_groups:
+        return None, "В предоставленном JSON нет корректных пар/дисциплин."
+
+    return {"groups": normalized_groups}, None
+
+
+async def format_import_preview(
+    parsed_payload: dict[str, Any],
+    group_catalog: GroupCatalog,
+    *,
+    html: bool = True,
+    max_groups_preview: int = 5,
+    max_subjects_per_group: int = 4,
+) -> tuple[str, int, int]:
+    groups = parsed_payload.get("groups", [])
+    total_groups = len(groups)
+    total_subjects = sum(len(g.get("subjects", [])) for g in groups)
+
+    header = "<b>Предпросмотр импорта пар из JSON</b>\n" if html else "Предпросмотр импорта пар из JSON\n"
+    stats = (
+        f"\nНайдено групп: <b>{total_groups}</b>\nНайдено пар/дисциплин: <b>{total_subjects}</b>\n\n"
+        if html
+        else f"\nНайдено групп: {total_groups}\nНайдено пар/дисциплин: {total_subjects}\n\n"
+    )
+
+    lines = [header, stats]
+    lines.append("<b>Группы и пары для добавления:</b>\n" if html else "Группы и пары для добавления:\n")
+
+    for group_item in groups[:max_groups_preview]:
+        raw_schedule_id = group_item.get("schedule_id")
+        raw_group_name = group_item.get("group_name")
+        group_display = raw_group_name
+        if not group_display and raw_schedule_id is not None:
+            catalog_g = await group_catalog.get_by_schedule_id(int(raw_schedule_id))
+            group_display = catalog_g.group_name if catalog_g else f"ID {raw_schedule_id}"
+        if not group_display:
+            group_display = "Неизвестная группа"
+
+        subjects = group_item.get("subjects", [])
+        sub_count = len(subjects)
+
+        if html:
+            group_title = f"• <b>{group_display}</b> ({sub_count} пар):"
+        else:
+            group_title = f"• {group_display} ({sub_count} пар):"
+        lines.append(group_title)
+
+        for s_item in subjects[:max_subjects_per_group]:
+            subj = s_item.get("subject")
+            teach = s_item.get("teacher")
+            passed = s_item.get("passed", 0)
+            total = s_item.get("total", 0)
+            sub_line = f"  — {subj} ({teach}) [{passed}/{total}]"
+            lines.append(sub_line)
+
+        if len(subjects) > max_subjects_per_group:
+            more_subs = len(subjects) - max_subjects_per_group
+            lines.append(f"  <i>...и еще {more_subs} пар</i>" if html else f"  ...и еще {more_subs} пар")
+
+    if total_groups > max_groups_preview:
+        more_groups = total_groups - max_groups_preview
+        lines.append(f"\n<i>...и еще {more_groups} групп(ы).</i>" if html else f"\n...и еще {more_groups} групп(ы).")
+
+    lines.append("\n<b>Подтвердить импорт пар в базу данных?</b>" if html else "\nПодтвердить импорт пар в базу данных?")
+
+    return "\n".join(lines), total_groups, total_subjects
+
+
+async def apply_imported_lessons_config(
+    parsed_payload: dict[str, Any],
+    current_payload: dict[str, Any],
+    group_catalog: GroupCatalog,
+) -> tuple[dict[str, Any], int, int]:
+    imported_groups_set = set()
+    imported_subjects_count = 0
+
+    for group_item in parsed_payload.get("groups", []):
+        schedule_id = group_item.get("schedule_id")
+        group_name = group_item.get("group_name") or ""
+
+        resolved_schedule_id = None
+        resolved_group_name = None
+
+        if schedule_id is not None:
+            try:
+                resolved_schedule_id = int(schedule_id)
+            except (ValueError, TypeError):
+                resolved_schedule_id = None
+
+        if resolved_schedule_id is not None:
+            cat_g = await group_catalog.get_by_schedule_id(resolved_schedule_id)
+            resolved_group_name = cat_g.group_name if cat_g else (group_name or str(resolved_schedule_id))
+        elif group_name:
+            cat_g = await group_catalog.find_group(group_name)
+            if cat_g:
+                resolved_schedule_id = cat_g.schedule_id
+                resolved_group_name = cat_g.group_name
+            else:
+                resolved_group_name = group_name
+
+        if resolved_schedule_id is None and not resolved_group_name:
+            continue
+
+        if resolved_schedule_id is None:
+            continue
+
+        imported_groups_set.add(resolved_schedule_id)
+        for s_item in group_item.get("subjects", []):
+            subj = s_item.get("subject")
+            teach = s_item.get("teacher")
+            passed = s_item.get("passed", 0)
+            total = s_item.get("total", 0)
+            if subj and teach:
+                upsert_lesson_subject(
+                    current_payload,
+                    schedule_id=resolved_schedule_id,
+                    group_name=resolved_group_name,
+                    subject=subj,
+                    teacher=teach,
+                    passed=passed,
+                    total=total,
+                )
+                imported_subjects_count += 1
+
+    return current_payload, len(imported_groups_set), imported_subjects_count
