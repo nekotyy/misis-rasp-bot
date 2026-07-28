@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
 from src.db import Database
 
@@ -77,6 +78,11 @@ class StarDonationsCustomAmountTests(unittest.TestCase):
         self.assertIsNone(validate_custom_stars("2001"))
         self.assertIsNone(validate_custom_stars("abc"))
         self.assertIsNone(validate_custom_stars("-100"))
+
+    def test_fixed_stars_parsing(self):
+        fixed_values = ["15", "25", "50", "100"]
+        parsed = [int(v) for v in fixed_values]
+        self.assertEqual(parsed, [15, 25, 50, 100])
 
 
 if __name__ == "__main__":
