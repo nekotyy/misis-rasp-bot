@@ -235,7 +235,14 @@ ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> InlineKeyboardMarkup:
+def build_admin_broadcast_preview_keyboard(
+    target_platform: str = "all",
+    target_audience: str = "all",
+) -> InlineKeyboardMarkup:
+    plat_all = "✅ Везде" if target_platform == "all" else "Везде"
+    plat_tg = "✅ В ТГ" if target_platform == "telegram" else "В ТГ"
+    plat_vk = "✅ В ВК" if target_platform == "vk" else "В ВК"
+
     aud_all = "✅ Всем" if target_audience == "all" else "Всем"
     aud_students = "✅ Студентам" if target_audience == "students" else "Студентам"
     aud_teachers = "✅ Преподавателям" if target_audience == "teachers" else "Преподавателям"
@@ -243,21 +250,22 @@ def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> Inli
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text=plat_all, callback_data="admin:broadcast_plat:all"),
+                InlineKeyboardButton(text=plat_tg, callback_data="admin:broadcast_plat:telegram"),
+                InlineKeyboardButton(text=plat_vk, callback_data="admin:broadcast_plat:vk"),
+            ],
+            [
                 InlineKeyboardButton(text=aud_all, callback_data="admin:broadcast_aud:all"),
                 InlineKeyboardButton(text=aud_students, callback_data="admin:broadcast_aud:students"),
                 InlineKeyboardButton(text=aud_teachers, callback_data="admin:broadcast_aud:teachers"),
             ],
-            [
-                InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
-                InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
-            ],
-            [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
+            [InlineKeyboardButton(text="Подтвердить", callback_data="admin:broadcast_confirm")],
             [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
         ]
     )
 
 
-ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all")
+ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all", "all")
 
 ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -2419,6 +2427,24 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Рассылка отменена")
             return
+        if action.startswith("broadcast_plat:"):
+            plat = action.split(":", 1)[1]
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
+                return
+            if plat in {"all", "telegram", "vk"}:
+                draft["target_platform"] = plat
+                text = draft.get("text", "")
+                target_aud = draft.get("target_audience", "all")
+                await safe_edit_message_text(
+                    callback.message,
+                    format_admin_broadcast_preview(text, target_platform=plat, target_audience=target_aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(plat, target_aud),
+                )
+            await safe_callback_answer(callback)
+            return
+
         if action.startswith("broadcast_aud:"):
             aud = action.split(":", 1)[1]
             draft = admin_broadcast_drafts.get(callback.from_user.id)
@@ -2428,17 +2454,16 @@ def build_dispatcher(
             if aud in {"all", "students", "teachers"}:
                 draft["target_audience"] = aud
                 text = draft.get("text", "")
-                await send_new_context_message(
-                    callback.bot,
-                    callback.message.chat.id,
-                    "admin_broadcast",
-                    format_admin_broadcast_preview(text, target_audience=aud),
-                    reply_markup=build_admin_broadcast_preview_keyboard(aud),
+                target_plat = draft.get("target_platform", "all")
+                await safe_edit_message_text(
+                    callback.message,
+                    format_admin_broadcast_preview(text, target_platform=target_plat, target_audience=aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(target_plat, aud),
                 )
             await safe_callback_answer(callback)
             return
 
-        if action in {"broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
+        if action in {"broadcast_confirm", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
             draft = admin_broadcast_drafts.get(callback.from_user.id)
             if not draft or not draft.get("text"):
                 await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
@@ -2449,11 +2474,7 @@ def build_dispatcher(
 
             draft_text = draft["text"]
             target_audience = draft.get("target_audience", "all")
-            target_platform = "all"
-            if action == "broadcast_send_tg":
-                target_platform = "telegram"
-            elif action == "broadcast_send_vk":
-                target_platform = "vk"
+            target_platform = draft.get("target_platform", "all")
 
             await broadcaster.broadcast(
                 draft_text,
