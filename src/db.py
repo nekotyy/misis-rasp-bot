@@ -337,7 +337,6 @@ class Database:
                     int(is_admin),
                     int(is_editor),
                     1,
-                    0,
                     now,
                     now,
                 ),
@@ -349,6 +348,7 @@ class Database:
         platform: str | None = None,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
         query = """
             SELECT
@@ -384,6 +384,10 @@ class Database:
         if subscription_key is not None:
             clauses.append("subscription_key = ?")
             params.append(subscription_key)
+        if target_audience == "teachers":
+            clauses.append("subscription_type = 'teacher'")
+        elif target_audience == "students":
+            clauses.append("(COALESCE(subscription_type, 'group') != 'teacher')")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY platform, created_at"
@@ -411,8 +415,6 @@ class Database:
                 is_editor=bool(row[14]),
                 homework_notifications_enabled=bool(row[15]),
                 delivery_disabled_auto=bool(row[16]),
-                created_at=row[17],
-                last_seen_at=row[18],
             )
             for row in rows
         ]
@@ -422,8 +424,14 @@ class Database:
         platform: str,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
-        return await self.list_users(platform=platform, schedule_id=schedule_id, subscription_key=subscription_key)
+        return await self.list_users(
+            platform=platform,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+            target_audience=target_audience,
+        )
 
     async def get_user(self, platform: str, user_id: int) -> UserRecord | None:
         async with aiosqlite.connect(self.path) as db:
@@ -695,8 +703,14 @@ class Database:
         platform: str,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
-        users = await self.get_users_for_platform(platform, schedule_id=schedule_id, subscription_key=subscription_key)
+        users = await self.get_users_for_platform(
+            platform,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+            target_audience=target_audience,
+        )
         return [user for user in users if user.homework_notifications_enabled]
 
     async def get_active_groups(self) -> list[dict]:

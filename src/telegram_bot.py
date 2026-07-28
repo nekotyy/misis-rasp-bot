@@ -197,16 +197,29 @@ ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-ADMIN_BROADCAST_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
-            InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
-        ],
-        [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
-        [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
-    ]
-)
+def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> InlineKeyboardMarkup:
+    aud_all = "✅ Всем" if target_audience == "all" else "Всем"
+    aud_students = "✅ Студентам" if target_audience == "students" else "Студентам"
+    aud_teachers = "✅ Преподавателям" if target_audience == "teachers" else "Преподавателям"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=aud_all, callback_data="admin:broadcast_aud:all"),
+                InlineKeyboardButton(text=aud_students, callback_data="admin:broadcast_aud:students"),
+                InlineKeyboardButton(text=aud_teachers, callback_data="admin:broadcast_aud:teachers"),
+            ],
+            [
+                InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
+                InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
+            ],
+            [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
+            [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
+        ]
+    )
+
+
+ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all")
 
 ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -260,7 +273,7 @@ def build_dispatcher(
     awaiting_admin_broadcast_text: set[int] = set()
     awaiting_admin_user_search: set[int] = set()
     admin_user_search_state: dict[int, dict[str, str]] = {}
-    admin_broadcast_drafts: dict[int, str] = {}
+    admin_broadcast_drafts: dict[int, dict] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
     awaiting_admin_lesson_input: set[int] = set()
     admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
@@ -575,10 +588,32 @@ def build_dispatcher(
             lines.extend(["", error_text])
         return "\n".join(lines)
 
-    def format_admin_broadcast_preview(text: str) -> str:
+    def format_admin_broadcast_preview(
+        text: str,
+        target_platform: str = "all",
+        target_audience: str = "all",
+    ) -> str:
+        platform_map = {
+            "all": "Глобально (везде)",
+            "telegram": "Telegram",
+            "vk": "ВКонтакте",
+        }
+        audience_map = {
+            "all": "Всем",
+            "students": "Студентам",
+            "teachers": "Преподавателям",
+        }
+        platform_str = platform_map.get(target_platform, "Глобально (везде)")
+        audience_str = audience_map.get(target_audience, "Всем")
+
         return "\n".join([
             "<b>Предпросмотр рассылки</b>",
             "",
+            "ℹ️ <b>Служебная информация:</b>",
+            f"• <b>Платформа:</b> {platform_str}",
+            f"• <b>Кому:</b> {audience_str}",
+            "",
+            "<b>Текст сообщения:</b>",
             escape(text),
         ])
 
@@ -2264,15 +2299,36 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Рассылка отменена")
             return
+        if action.startswith("broadcast_aud:"):
+            aud = action.split(":", 1)[1]
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
+                return
+            if aud in {"all", "students", "teachers"}:
+                draft["target_audience"] = aud
+                text = draft.get("text", "")
+                await send_new_context_message(
+                    callback.bot,
+                    callback.message.chat.id,
+                    "admin_broadcast",
+                    format_admin_broadcast_preview(text, target_audience=aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(aud),
+                )
+            await safe_callback_answer(callback)
+            return
+
         if action in {"broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
-            draft_text = admin_broadcast_drafts.get(callback.from_user.id)
-            if not draft_text:
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft or not draft.get("text"):
                 await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
                 return
             if broadcaster is None:
                 await safe_callback_answer(callback, "Сервис рассылки сейчас недоступен.", show_alert=True)
                 return
 
+            draft_text = draft["text"]
+            target_audience = draft.get("target_audience", "all")
             target_platform = "all"
             if action == "broadcast_send_tg":
                 target_platform = "telegram"
@@ -2285,17 +2341,19 @@ def build_dispatcher(
                 vk_message=draft_text,
                 campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                 target_platform=target_platform,
+                target_audience=target_audience,
             )
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
 
-            if target_platform == "telegram":
-                sent_msg = "<b>Рассылка отправлена в Telegram.</b>\n\nСообщение поставлено в очередь доставки."
-            elif target_platform == "vk":
-                sent_msg = "<b>Рассылка отправлена в VK.</b>\n\nСообщение поставлено в очередь доставки."
-            else:
-                sent_msg = "<b>Рассылка отправлена на все платформы.</b>\n\nСообщение поставлено в очередь доставки."
+            platform_str = "Telegram" if target_platform == "telegram" else ("VK" if target_platform == "vk" else "на все платформы")
+            audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
+            sent_msg = (
+                f"<b>Рассылка отправлена {platform_str}.</b>\n"
+                f"• <b>Аудитория:</b> {audience_str}\n\n"
+                f"Сообщение поставлено в очередь доставки."
+            )
 
             await send_new_context_message(
                 callback.bot,
@@ -3297,13 +3355,16 @@ def build_dispatcher(
                 )
                 return
             awaiting_admin_broadcast_text.discard(message.from_user.id)
-            admin_broadcast_drafts[message.from_user.id] = draft_text
+            admin_broadcast_drafts[message.from_user.id] = {
+                "text": draft_text,
+                "target_audience": "all",
+            }
             await send_new_context_message(
                 message.bot,
                 message.chat.id,
                 "admin_broadcast",
-                format_admin_broadcast_preview(draft_text),
-                reply_markup=ADMIN_BROADCAST_PREVIEW_KEYBOARD,
+                format_admin_broadcast_preview(draft_text, target_audience="all"),
+                reply_markup=build_admin_broadcast_preview_keyboard("all"),
             )
             return
         if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_user_search:

@@ -70,6 +70,7 @@ class Broadcaster:
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
         target_platform: str = "all",
+        target_audience: str = "all",
     ) -> None:
         if target_platform in {"all", "telegram"}:
             await self._broadcast_telegram(
@@ -77,6 +78,7 @@ class Broadcaster:
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
                 campaign_type=campaign_type,
+                target_audience=target_audience,
             )
         if target_platform in {"all", "vk"}:
             await self._broadcast_vk(
@@ -84,6 +86,7 @@ class Broadcaster:
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
                 campaign_type=campaign_type,
+                target_audience=target_audience,
             )
 
     async def broadcast_test_message(self) -> None:
@@ -156,6 +159,7 @@ class Broadcaster:
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
+        target_audience: str = "all",
     ) -> None:
         if self.telegram_bot is None:
             return
@@ -167,6 +171,7 @@ class Broadcaster:
             "telegram",
             schedule_id=schedule_id,
             subscription_key=subscription_key,
+            target_audience=target_audience,
         )
         for user in users:
             payload = OutboundMessage(
@@ -189,6 +194,7 @@ class Broadcaster:
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
+        target_audience: str = "all",
     ) -> None:
         if self.vk_bot is None:
             return
@@ -196,6 +202,7 @@ class Broadcaster:
             "vk",
             schedule_id=schedule_id,
             subscription_key=subscription_key,
+            target_audience=target_audience,
         )
         for user in users:
             payload = OutboundMessage(
