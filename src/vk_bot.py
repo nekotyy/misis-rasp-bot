@@ -613,8 +613,8 @@ def build_vk_bot(
                 "",
                 "Бот сделан студентом ОИТ, группы ИСП-25-1, в качестве альтернативы официальному боту, который давно не работает. Я не сотрудник колледжа, а просто энтузиаст, который хочет помочь всем получать актуальную информацию о расписании и изменениях. Я не несу никакой ответственности за точность данных, так как получаю их с официального сайта, и не имею возможности оперативно исправлять ошибки в расписании. Если ты заметил неточности, пожалуйста, сообщи об этом администрации колледжа, чтобы они могли исправить информацию на сайте.",
                 "",
-                "Профиль: [https://github.com/nekotyy|тык]",
-                "Проект: [https://github.com/nekotyy/misis-rasp-bot|тык]",
+                "Профиль: github.com/nekotyy",
+                "Проект: github.com/nekotyy/misis-rasp-bot",
                 "",
                 "Если понравилось, поставь звездочку на GitHub ⭐",
             ]
@@ -720,6 +720,7 @@ def build_vk_bot(
         has_subscription = bool(user and user.subscription_key)
         rows: list[list[str]] = [
             ["Пройденные пары"],
+            ["Персонализация"],
             ["О проекте"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"],
         ]
@@ -1912,7 +1913,8 @@ def build_vk_bot(
             await show_pers_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
             return
 
-        if text in {"Назад к настройкам", "Назад в меню"} and mode == "personalization_menu":
+        if text in {"Назад к настройкам", "Назад в меню"} and mode in {"personalization_menu", "awaiting_custom_sticker"}:
+            peer_modes.pop(peer_id, None)
             await show_settings(peer_id, user_id)
             return
 

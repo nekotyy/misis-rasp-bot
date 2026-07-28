@@ -2386,6 +2386,14 @@ def build_dispatcher(
                     logger.warning("Failed to preview sticker for %s: %s", callback.from_user.id, exc)
                     await safe_callback_answer(callback, "Не удалось отправить стикер.", show_alert=True)
                     return
+                await clear_context_messages(callback.bot, callback.message.chat.id, "settings")
+                await send_new_context_message(
+                    callback.bot,
+                    callback.message.chat.id,
+                    "settings",
+                    await format_personalization_settings_text(callback.from_user.id, db),
+                    reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
+                )
             await safe_callback_answer(callback)
             return
 
