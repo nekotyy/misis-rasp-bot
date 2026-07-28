@@ -468,7 +468,11 @@ def build_vk_bot(
         return [user for user in users if normalized in admin_user_search_haystack(user)]
 
     def admin_broadcast_preview_keyboard() -> str:
-        return make_keyboard([["Отправить"], ["Отменить"]])
+        return make_keyboard([
+            ["Отправить в ТГ", "Отправить в ВК"],
+            ["Отправить везде"],
+            ["Отменить"],
+        ])
 
     def welcome_text(group_name: str | None, is_editor: bool, is_admin: bool) -> str:
         lines = [
@@ -1267,7 +1271,7 @@ def build_vk_bot(
                 )
                 return
             draft_text = admin_broadcast_drafts.get(peer_id)
-            if text == "Отправить":
+            if text in {"Отправить", "Отправить везде", "Отправить в ТГ", "Отправить в ВК"}:
                 if not draft_text:
                     peer_modes[peer_id] = "admin_broadcast_input"
                     await show_screen(peer_id, admin_broadcast_prompt_text("Сначала отправь текст рассылки."), keyboard=make_keyboard([["Отменить"]]))
@@ -1275,15 +1279,30 @@ def build_vk_bot(
                 if broadcaster is None:
                     await show_screen(peer_id, "Сервис рассылки сейчас недоступен.", keyboard=admin_broadcast_preview_keyboard())
                     return
+                target_platform = "all"
+                if text == "Отправить в ТГ":
+                    target_platform = "telegram"
+                elif text == "Отправить в ВК":
+                    target_platform = "vk"
+
                 await broadcaster.broadcast(
                     draft_text,
                     telegram_message=escape(draft_text),
                     vk_message=draft_text,
                     campaign_type=CAMPAIGN_ADMIN_BROADCAST,
+                    target_platform=target_platform,
                 )
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Рассылка отправлена.\n\nСообщение поставлено в очередь доставки.", keyboard=admin_keyboard())
+
+                if target_platform == "telegram":
+                    sent_msg = "Рассылка отправлена в Telegram.\n\nСообщение поставлено в очередь доставки."
+                elif target_platform == "vk":
+                    sent_msg = "Рассылка отправлена в VK.\n\nСообщение поставлено в очередь доставки."
+                else:
+                    sent_msg = "Рассылка отправлена на все платформы.\n\nСообщение поставлено в очередь доставки."
+
+                await show_screen(peer_id, sent_msg, keyboard=admin_keyboard())
                 return
             if text:
                 admin_broadcast_drafts[peer_id] = text
