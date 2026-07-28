@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
+from time import monotonic
+from typing import Callable, Awaitable
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -11,6 +15,20 @@ from src.db import Database
 from src.message_broker import OutboundMessage, RabbitMQBroker
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class BroadcastProgress:
+    target_platform: str
+    target_audience: str
+    started_at: str
+    total_users: int
+    processed_count: int
+    success_count: int
+    failed_count: int
+    is_finished: bool = False
+    finished_at: str | None = None
+
 
 CAMPAIGN_NOTIFICATION = "notification"
 CAMPAIGN_ADMIN_BROADCAST = "admin_broadcast"
@@ -71,23 +89,127 @@ class Broadcaster:
         campaign_type: str = CAMPAIGN_NOTIFICATION,
         target_platform: str = "all",
         target_audience: str = "all",
-    ) -> None:
-        if target_platform in {"all", "telegram"}:
-            await self._broadcast_telegram(
-                telegram_message or message,
+        progress_callback: Callable[[BroadcastProgress], Awaitable[None]] | None = None,
+    ) -> BroadcastProgress:
+        started_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        tg_users = []
+        vk_users = []
+
+        if target_platform in {"all", "telegram"} and self.telegram_bot is not None:
+            try:
+                await self.db.auto_disable_undeliverable_telegram_users()
+            except Exception as exc:
+                logger.warning("Auto-disable sync failed: %s", exc)
+            tg_users = await self.db.get_users_for_notifications(
+                "telegram",
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
-                campaign_type=campaign_type,
                 target_audience=target_audience,
             )
-        if target_platform in {"all", "vk"}:
-            await self._broadcast_vk(
-                vk_message or message,
+        if target_platform in {"all", "vk"} and self.vk_bot is not None:
+            vk_users = await self.db.get_users_for_notifications(
+                "vk",
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
-                campaign_type=campaign_type,
                 target_audience=target_audience,
             )
+
+        total_users = len(tg_users) + len(vk_users)
+        processed = 0
+        success = 0
+        failed = 0
+
+        progress = BroadcastProgress(
+            target_platform=target_platform,
+            target_audience=target_audience,
+            started_at=started_at,
+            total_users=total_users,
+            processed_count=processed,
+            success_count=success,
+            failed_count=failed,
+            is_finished=False,
+        )
+
+        last_report = 0.0
+
+        async def maybe_report_progress():
+            nonlocal last_report
+            if progress_callback is None:
+                return
+            now = monotonic()
+            if now - last_report >= 0.8 or progress.processed_count == total_users:
+                last_report = now
+                try:
+                    await progress_callback(progress)
+                except Exception as exc:
+                    logger.warning("Progress callback failed: %s", exc)
+
+        if progress_callback:
+            await maybe_report_progress()
+
+        for user in tg_users:
+            payload = OutboundMessage(
+                platform="telegram",
+                user_id=user.user_id,
+                text=telegram_message or message,
+                campaign_type=campaign_type,
+            )
+            enqueued = await self._enqueue_or_send(payload)
+            if not enqueued:
+                ok = await self._send_telegram(
+                    user.user_id,
+                    telegram_message or message,
+                    campaign_type=campaign_type,
+                    via_broker=False,
+                )
+                if ok:
+                    success += 1
+                else:
+                    failed += 1
+            else:
+                success += 1
+            processed += 1
+            progress.processed_count = processed
+            progress.success_count = success
+            progress.failed_count = failed
+            await maybe_report_progress()
+
+        for user in vk_users:
+            payload = OutboundMessage(
+                platform="vk",
+                user_id=user.user_id,
+                text=vk_message or message,
+                campaign_type=campaign_type,
+            )
+            enqueued = await self._enqueue_or_send(payload)
+            if not enqueued:
+                ok = await self._send_vk(
+                    user.user_id,
+                    vk_message or message,
+                    campaign_type=campaign_type,
+                    via_broker=False,
+                )
+                if ok:
+                    success += 1
+                else:
+                    failed += 1
+            else:
+                success += 1
+            processed += 1
+            progress.processed_count = processed
+            progress.success_count = success
+            progress.failed_count = failed
+            await maybe_report_progress()
+
+        progress.is_finished = True
+        progress.finished_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        if progress_callback:
+            try:
+                await progress_callback(progress)
+            except Exception as exc:
+                logger.warning("Final progress callback failed: %s", exc)
+
+        return progress
 
     async def broadcast_test_message(self) -> None:
         await self.broadcast(

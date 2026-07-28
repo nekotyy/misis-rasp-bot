@@ -22,7 +22,8 @@ from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
-from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
+from src.telegram_bot import format_broadcast_progress_status
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -1388,6 +1389,13 @@ def build_vk_bot(
                 target_audience = draft.get("target_audience", "all")
                 target_platform = draft.get("target_platform", "all")
 
+                admin_broadcast_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+
+                async def on_vk_progress(prog: BroadcastProgress) -> None:
+                    report = format_broadcast_progress_status(draft_text, prog, html=False)
+                    await show_screen(peer_id, report, keyboard=admin_keyboard() if prog.is_finished else None)
+
                 await broadcaster.broadcast(
                     draft_text,
                     telegram_message=escape(draft_text),
@@ -1395,19 +1403,8 @@ def build_vk_bot(
                     campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                     target_platform=target_platform,
                     target_audience=target_audience,
+                    progress_callback=on_vk_progress,
                 )
-                admin_broadcast_drafts.pop(peer_id, None)
-                peer_modes[peer_id] = "admin_menu"
-
-                platform_str = "в Telegram" if target_platform == "telegram" else ("в VK" if target_platform == "vk" else "на все платформы")
-                audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
-                sent_msg = (
-                    f"Рассылка отправлена {platform_str}.\n"
-                    f"• Аудитория: {audience_str}\n\n"
-                    f"Сообщение поставлено в очередь доставки."
-                )
-
-                await show_screen(peer_id, sent_msg, keyboard=admin_keyboard())
                 return
 
             if text:

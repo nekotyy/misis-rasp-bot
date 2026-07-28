@@ -21,7 +21,7 @@ from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
-from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -35,6 +35,117 @@ from src.subscription_utils import (
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
 
 logger = logging.getLogger(__name__)
+
+def generate_progress_bar(percent: int, length: int = 10) -> str:
+    percent = max(0, min(100, percent))
+    filled_length = int(round(length * percent / 100))
+    bar = "█" * filled_length + "░" * (length - filled_length)
+    return f"[{bar}] {percent}%"
+
+
+def format_broadcast_progress_status(
+    text: str,
+    progress: BroadcastProgress,
+    html: bool = True,
+) -> str:
+    platform_map = {
+        "all": "Глобально (везде)",
+        "telegram": "Telegram",
+        "vk": "ВКонтакте",
+    }
+    audience_map = {
+        "all": "Всем",
+        "students": "Студентам",
+        "teachers": "Преподавателям",
+    }
+    platform_str = platform_map.get(progress.target_platform, "Глобально (везде)")
+    audience_str = audience_map.get(progress.target_audience, "Всем")
+
+    total = progress.total_users
+    processed = progress.processed_count
+    percent = int(round(processed / total * 100)) if total > 0 else 100
+    bar_str = generate_progress_bar(percent)
+
+    if html:
+        escaped_text = escape(text)
+        if not progress.is_finished:
+            return "\n".join([
+                "<b>Рассылка выполняется...</b>",
+                "",
+                "ℹ️ <b>Служебная информация:</b>",
+                f"• <b>Платформа:</b> {platform_str}",
+                f"• <b>Кому:</b> {audience_str}",
+                f"• <b>Время начала:</b> {progress.started_at}",
+                "",
+                "<b>Текст рассылки:</b>",
+                escaped_text,
+                "",
+                "🔄 <b>Прогресс рассылки:</b>",
+                "• <b>Состояние:</b> В процессе...",
+                f"• <b>Отправлено:</b> {processed} / {total} ({percent}%)",
+                f"• <b>Прогресс:</b> <code>{bar_str}</code>",
+            ])
+        else:
+            success_pct = int(round(progress.success_count / total * 100)) if total > 0 else 100
+            return "\n".join([
+                "<b>Рассылка завершена</b>",
+                "",
+                "ℹ️ <b>Служебная информация:</b>",
+                f"• <b>Платформа:</b> {platform_str}",
+                f"• <b>Кому:</b> {audience_str}",
+                f"• <b>Время начала:</b> {progress.started_at}",
+                f"• <b>Время окончания:</b> {progress.finished_at or '-'}",
+                "",
+                "<b>Текст рассылки:</b>",
+                escaped_text,
+                "",
+                "📊 <b>Итоги рассылки:</b>",
+                f"• <b>Всего получателей:</b> {total}",
+                f"• <b>Успешно доставлено:</b> {progress.success_count}",
+                f"• <b>Ошибки доставки:</b> {progress.failed_count}",
+                f"• <b>Процент успеха:</b> {success_pct}%",
+                f"• <b>Прогресс:</b> <code>{generate_progress_bar(100)}</code>",
+            ])
+    else:
+        if not progress.is_finished:
+            return "\n".join([
+                "Рассылка выполняется...",
+                "",
+                "Служебная информация:",
+                f"• Платформа: {platform_str}",
+                f"• Кому: {audience_str}",
+                f"• Время начала: {progress.started_at}",
+                "",
+                "Текст рассылки:",
+                text,
+                "",
+                "Прогресс рассылки:",
+                "• Состояние: В процессе...",
+                f"• Отправлено: {processed} / {total} ({percent}%)",
+                f"• Прогресс: {bar_str}",
+            ])
+        else:
+            success_pct = int(round(progress.success_count / total * 100)) if total > 0 else 100
+            return "\n".join([
+                "Рассылка завершена",
+                "",
+                "Служебная информация:",
+                f"• Платформа: {platform_str}",
+                f"• Кому: {audience_str}",
+                f"• Время начала: {progress.started_at}",
+                f"• Время окончания: {progress.finished_at or '-'}",
+                "",
+                "Текст рассылки:",
+                text,
+                "",
+                "Итоги рассылки:",
+                f"• Всего получателей: {total}",
+                f"• Успешно доставлено: {progress.success_count}",
+                f"• Ошибки доставки: {progress.failed_count}",
+                f"• Процент успеха: {success_pct}%",
+                f"• Прогресс: {generate_progress_bar(100)}",
+            ])
+
 
 async def format_personalization_settings_text(user_id: int, db: Database) -> str:
     user = await db.get_user("telegram", user_id)
@@ -635,6 +746,8 @@ def build_dispatcher(
         if error_text:
             lines.extend(["", error_text])
         return "\n".join(lines)
+
+
 
     def format_admin_broadcast_preview(
         text: str,
@@ -2476,6 +2589,20 @@ def build_dispatcher(
             target_audience = draft.get("target_audience", "all")
             target_platform = draft.get("target_platform", "all")
 
+            awaiting_admin_broadcast_text.discard(callback.from_user.id)
+            admin_broadcast_drafts.pop(callback.from_user.id, None)
+            await safe_callback_answer(callback, "Рассылка запущена")
+
+            status_msg = callback.message
+
+            async def on_broadcast_progress(prog: BroadcastProgress) -> None:
+                report = format_broadcast_progress_status(draft_text, prog, html=True)
+                await safe_edit_message_text(
+                    status_msg,
+                    report,
+                    reply_markup=None,
+                )
+
             await broadcaster.broadcast(
                 draft_text,
                 telegram_message=escape(draft_text),
@@ -2483,27 +2610,8 @@ def build_dispatcher(
                 campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                 target_platform=target_platform,
                 target_audience=target_audience,
+                progress_callback=on_broadcast_progress,
             )
-            awaiting_admin_broadcast_text.discard(callback.from_user.id)
-            admin_broadcast_drafts.pop(callback.from_user.id, None)
-            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
-
-            platform_str = "Telegram" if target_platform == "telegram" else ("VK" if target_platform == "vk" else "на все платформы")
-            audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
-            sent_msg = (
-                f"<b>Рассылка отправлена {platform_str}.</b>\n"
-                f"• <b>Аудитория:</b> {audience_str}\n\n"
-                f"Сообщение поставлено в очередь доставки."
-            )
-
-            await send_new_context_message(
-                callback.bot,
-                callback.message.chat.id,
-                "admin",
-                sent_msg,
-                reply_markup=ADMIN_KEYBOARD,
-            )
-            await safe_callback_answer(callback, "Отправлено")
             return
         if action == "download_db":
             file_path = settings.database_path
