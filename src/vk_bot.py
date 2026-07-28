@@ -16,7 +16,7 @@ from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
 from vkbottle.exception_factory.base_exceptions import VKAPIError
 from vkbottle.http import AiohttpClient
-from vkbottle.tools import DocUploader
+from vkbottle.tools import DocMessagesUploader
 
 from src.config import Settings
 from src.db import Database
@@ -697,7 +697,7 @@ def build_vk_bot(
         if not path.exists():
             await show_screen(peer_id, f"{title} не найден.", keyboard=admin_keyboard())
             return
-        uploader = DocUploader(bot.api)
+        uploader = DocMessagesUploader(bot.api)
         doc = await uploader.upload(path, peer_id=peer_id, title=title)
         await bot.api.messages.send(
             peer_ids=[peer_id],
