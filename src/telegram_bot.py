@@ -37,6 +37,7 @@ from web_configurator.lesson_editor import load_lesson_config, save_lesson_confi
 logger = logging.getLogger(__name__)
 
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
+STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 SEARCH_NOT_FOUND_TEXT = (
     "Ничего не найдено.\n\n"
@@ -1742,7 +1743,7 @@ def build_dispatcher(
         if message.from_user:
             awaiting_custom_donate_stars.discard(message.from_user.id)
         prompt_text = (
-            "⭐️ <b>Пожертвование проекту (Telegram Stars)</b>\n\n"
+            f"{STAR_ICON} <b>Пожертвование проекту (Telegram Stars)</b>\n\n"
             "Выбери количество звезд для поддержки бота или отправь свое количество:"
         )
         await send_new_context_message(
@@ -1776,7 +1777,7 @@ def build_dispatcher(
             if donation["refunded"]:
                 await send_reply(
                     message,
-                    f"⚠️ Пожертвование <b>#{donation['id']}</b> ({donation['stars']} ⭐) уже было возвращено ранее.",
+                    f"⚠️ Пожертвование <b>#{donation['id']}</b> ({donation['stars']} {STAR_ICON}) уже было возвращено ранее.",
                 )
                 return
 
@@ -1797,7 +1798,7 @@ def build_dispatcher(
             await send_reply(
                 message,
                 f"✅ <b>Возврат выполнен!</b>\n\n"
-                f"Средства за пожертвование <b>#{donation['id']}</b> ({stars} ⭐) успешно возвращены пользователю <code>{user_id}</code>.",
+                f"Средства за пожертвование <b>#{donation['id']}</b> ({stars} {STAR_ICON}) успешно возвращены пользователю <code>{user_id}</code>.",
             )
 
             try:
@@ -1860,7 +1861,7 @@ def build_dispatcher(
 
         thank_you_msg = (
             f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
-            f"Вы пожертвовали <b>{stars} ⭐</b>. Благодаря вашей помощи бот продолжает развиваться!"
+            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи бот продолжает развиваться!"
         )
         await send_reply(message, thank_you_msg)
 
@@ -1868,9 +1869,9 @@ def build_dispatcher(
             user_ref = f"@{username}" if username else f"<a href=\"tg://user?id={user_id}\">{escape(full_name or 'Пользователь')}</a>"
             now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             admin_msg = (
-                f"⭐️ <b>Новое пожертвование (Stars)!</b>\n\n"
+                f"{STAR_ICON} <b>Новое пожертвование (Stars)!</b>\n\n"
                 f"<b>Отправитель:</b> {user_ref} (ID: <code>{user_id}</code>)\n"
-                f"<b>Количество:</b> {stars} ⭐\n"
+                f"<b>Количество:</b> {stars} {STAR_ICON}\n"
                 f"<b>Дата и время:</b> {now_str}\n"
                 f"<b>ID операции:</b> <code>#{donation_id}</code>\n"
                 f"<b>Telegram Charge ID:</b> <code>{charge_id}</code>\n\n"
