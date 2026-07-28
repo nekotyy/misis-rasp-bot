@@ -1692,42 +1692,6 @@ def build_dispatcher(
         )
         return True
 
-    async def format_personalization_settings_text(user_id: int) -> str:
-        user = await db.get_user("telegram", user_id)
-        has_text = bool(user and user.custom_notification_text)
-        has_sticker = bool(user and user.custom_sticker_file_id)
-
-        text_status = f"<b>{escape(user.custom_notification_text)}</b>" if (has_text and user and user.custom_notification_text) else "<i>Не установлен</i>"
-        sticker_status = "<b>Прикреплен</b>" if has_sticker else "<i>Не установлен</i>"
-
-        return "\n".join([
-            "<b>Персонализация уведомлений</b>",
-            "",
-            f"• Ваш текст уведомления: {text_status}",
-            f"• Ваш стикер: {sticker_status}",
-            "",
-            "Вы можете задать свой текст и прислать стикер. Стикер будет отправляться перед уведомлениями об изменениях и при открытии меню расписания.",
-        ])
-
-    async def build_personalization_keyboard(user_id: int) -> InlineKeyboardMarkup:
-        user = await db.get_user("telegram", user_id)
-        has_text = bool(user and user.custom_notification_text)
-        has_sticker = bool(user and user.custom_sticker_file_id)
-
-        rows = [
-            [InlineKeyboardButton(text="Задать свой текст", callback_data="settings:pers_set_text")],
-            [InlineKeyboardButton(text="Прислать стикер", callback_data="settings:pers_set_sticker")],
-        ]
-        clear_row = []
-        if has_text:
-            clear_row.append(InlineKeyboardButton(text="Сбросить текст", callback_data="settings:pers_clear_text"))
-        if has_sticker:
-            clear_row.append(InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker"))
-        if clear_row:
-            rows.append(clear_row)
-        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
         try:
             user = await db.get_user("telegram", chat_id)
