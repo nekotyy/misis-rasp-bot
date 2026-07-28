@@ -428,8 +428,21 @@ class Broadcaster:
         message_id: str | None = None,
         raise_on_failure: bool = False,
     ) -> bool:
-        if self.vk_bot is None:
-            return False
+        if campaign_type == CAMPAIGN_NOTIFICATION:
+            try:
+                user = await self.db.get_user("vk", user_id)
+                if user is not None and user.custom_sticker_file_id:
+                    try:
+                        await self.vk_bot.api.messages.send(
+                            peer_ids=[user_id],
+                            sticker_id=int(user.custom_sticker_file_id),
+                            random_id=0,
+                        )
+                    except Exception as sticker_exc:
+                        logger.warning("Failed to send VK custom sticker for user %s: %s", user_id, sticker_exc)
+            except Exception as user_exc:
+                logger.warning("Failed to fetch VK custom sticker settings for %s: %s", user_id, user_exc)
+
         try:
             await self.vk_bot.api.messages.send(peer_ids=[user_id], message=message, random_id=0)
         except Exception as exc:  # pragma: no cover - depends on VK API

@@ -445,11 +445,37 @@ def build_vk_bot(
     def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
         rows: list[list[str]] = [
             ["Пройденные пары"],
+            ["Персонализация"],
             ["О проекте"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
         ]
         if has_group:
             rows.append(["Отписаться от группы"])
+        rows.append(["Назад в меню"])
+        return make_keyboard(rows)
+
+
+    async def format_vk_personalization_text(peer_id: int) -> str:
+        user = await db.get_user("vk", peer_id)
+        has_sticker = bool(user and user.custom_sticker_file_id)
+        sticker_status = "Прикреплен" if has_sticker else "Не установлен"
+
+        return "\n".join([
+            "Персонализация уведомлений",
+            "",
+            f"• Ваш стикер: {sticker_status}",
+            "",
+            "Вы можете установить свой стикер. Он будет отправляться перед автоматическими уведомлениями и при вызове меню расписания.",
+        ])
+
+
+    async def vk_personalization_keyboard(peer_id: int) -> str:
+        user = await db.get_user("vk", peer_id)
+        has_sticker = bool(user and user.custom_sticker_file_id)
+
+        rows = [["Установить стикер"]]
+        if has_sticker:
+            rows.append(["Предпросмотр стикера", "Сбросить стикер"])
         rows.append(["Назад в меню"])
         return make_keyboard(rows)
 
@@ -1817,6 +1843,56 @@ def build_vk_bot(
             await show_settings(peer_id, user_id)
             return
 
+        if mode == "awaiting_custom_sticker":
+            if text == "Отменить":
+                peer_modes[peer_id] = "personalization_menu"
+                await show_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
+                return
+            sticker_id = None
+            if message.attachments:
+                for att in message.attachments:
+                    if getattr(att, "sticker", None) and getattr(att.sticker, "sticker_id", None):
+                        sticker_id = att.sticker.sticker_id
+                        break
+            if sticker_id:
+                await db.set_user_custom_sticker("vk", user_id, str(sticker_id))
+                peer_modes[peer_id] = "personalization_menu"
+                text_out = "Стикер установлен.\n\n" + await format_vk_personalization_text(peer_id)
+                await show_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
+                return
+            await show_screen(peer_id, "Пришли стикер. Если передумал, нажми Отменить.", keyboard=make_keyboard([["Отменить"]]))
+            return
+
+        if text in {"Персонализация", "Персонализация уведомлений"}:
+            peer_modes[peer_id] = "personalization_menu"
+            await show_screen(peer_id, await format_vk_personalization_text(peer_id), keyboard=await vk_personalization_keyboard(peer_id))
+            return
+
+        if text == "Установить стикер":
+            peer_modes[peer_id] = "awaiting_custom_sticker"
+            await show_screen(peer_id, "Пришли стикер, который будет высылаться перед уведомлениями и при вызове меню расписания:", keyboard=make_keyboard([["Отменить"]]))
+            return
+
+        if text == "Предпросмотр стикера":
+            user = await db.get_user("vk", user_id)
+            if user and user.custom_sticker_file_id:
+                try:
+                    await bot.api.messages.send(peer_id=peer_id, sticker_id=int(user.custom_sticker_file_id), random_id=0)
+                except Exception as exc:
+                    logger.warning("Failed to preview VK sticker for %s: %s", user_id, exc)
+                    await show_screen(peer_id, "Не удалось отправить стикер.")
+            return
+
+        if text == "Сбросить стикер":
+            await db.clear_user_custom_sticker("vk", user_id)
+            text_out = "Стикер сброшен.\n\n" + await format_vk_personalization_text(peer_id)
+            await show_screen(peer_id, text_out, keyboard=await vk_personalization_keyboard(peer_id))
+            return
+
+        if text == "Назад к настройкам":
+            await show_settings(peer_id, user_id)
+            return
+
         if text == "Пройденные пары":
             user = await db.get_user("vk", user_id)
             await show_screen(
@@ -1866,6 +1942,12 @@ def build_vk_bot(
         if text in {"/rasp", "Расписание"}:
             if not await ensure_subscription_selected(peer_id, user_id):
                 return
+            user = await db.get_user("vk", user_id)
+            if user and user.custom_sticker_file_id:
+                try:
+                    await bot.api.messages.send(peer_id=peer_id, sticker_id=int(user.custom_sticker_file_id), random_id=0)
+                except Exception as exc:
+                    logger.warning("Failed to send VK sticker on schedule menu for %s: %s", user_id, exc)
             peer_modes[peer_id] = "schedule_menu"
             await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
             return

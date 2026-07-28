@@ -119,6 +119,19 @@ class SmokeCustomNotificationsTests(unittest.IsolatedAsyncioTestCase):
             for btn in row:
                 self.assertIsNone(emoji_pattern.search(btn.text), f"Emoji found in button: {btn.text}")
 
+    async def test_preview_sticker_button_included_when_sticker_set(self):
+        from src.telegram_bot import build_personalization_keyboard
+
+        await self.db.upsert_user("telegram", 777, username="stickeruser", full_name="Sticker User")
+        kbd_before = await build_personalization_keyboard(777, self.db)
+        btn_texts_before = [btn.text for row in kbd_before.inline_keyboard for btn in row]
+        self.assertNotIn("Предпросмотр стикера", btn_texts_before)
+
+        await self.db.set_user_custom_sticker("telegram", 777, "sticker_xyz")
+        kbd_after = await build_personalization_keyboard(777, self.db)
+        btn_texts_after = [btn.text for row in kbd_after.inline_keyboard for btn in row]
+        self.assertIn("Предпросмотр стикера", btn_texts_after)
+
 
 if __name__ == "__main__":
     unittest.main()

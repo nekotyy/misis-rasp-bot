@@ -169,6 +169,7 @@ async def build_personalization_keyboard(user_id: int, db: Database) -> InlineKe
         [InlineKeyboardButton(text="Установить стикер", callback_data="settings:pers_set_sticker")],
     ]
     if has_sticker:
+        rows.append([InlineKeyboardButton(text="Предпросмотр стикера", callback_data="settings:pers_preview_sticker")])
         rows.append([InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2373,6 +2374,18 @@ def build_dispatcher(
                 await format_personalization_settings_text(callback.from_user.id, db),
                 reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
             )
+            await safe_callback_answer(callback)
+            return
+
+        if action == "pers_preview_sticker":
+            user = await db.get_user("telegram", callback.from_user.id)
+            if user and user.custom_sticker_file_id:
+                try:
+                    await callback.bot.send_sticker(chat_id=callback.message.chat.id, sticker=user.custom_sticker_file_id)
+                except Exception as exc:
+                    logger.warning("Failed to preview sticker for %s: %s", callback.from_user.id, exc)
+                    await safe_callback_answer(callback, "Не удалось отправить стикер.", show_alert=True)
+                    return
             await safe_callback_answer(callback)
             return
 
