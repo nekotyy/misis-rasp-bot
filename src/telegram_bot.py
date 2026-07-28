@@ -1761,51 +1761,79 @@ def build_dispatcher(
 
         args = (message.text or "").strip().split()
         if len(args) < 2:
-            await send_reply(message, "Использование: <code>/dnremove &lt;id_операции&gt;</code>")
-            return
-
-        try:
-            donation_id = int(args[1])
-        except ValueError:
-            await send_reply(message, "ID операции должен быть целым числом.")
-            return
-
-        donation = await db.get_star_donation(donation_id)
-        if not donation:
-            await send_reply(message, f"❌ Пожертвование с ID <code>#{donation_id}</code> не найдено.")
-            return
-
-        if donation["refunded"]:
-            await send_reply(message, f"⚠️ Пожертвование с ID <code>#{donation_id}</code> уже было возвращено ранее.")
-            return
-
-        try:
-            await message.bot.refund_star_payment(
-                user_id=donation["user_id"],
-                telegram_payment_charge_id=donation["charge_id"],
+            await send_reply(
+                message,
+                "Использование:\n"
+                "<code>/dnremove &lt;id_операции_или_charge_id&gt;</code>\n\n"
+                "Пример: <code>/dnremove 1</code> или <code>/dnremove stx1gY...</code>",
             )
-        except Exception as exc:
-            logger.error("Failed to refund star payment %s: %s", donation_id, exc)
-            await send_reply(message, f"❌ Ошибка при возврате средств в Telegram API:\n<code>{escape(str(exc))}</code>")
             return
 
-        await db.refund_star_donation(donation_id)
+        query = args[1].strip()
+        donation = await db.get_star_donation(query)
 
-        user_id = donation["user_id"]
-        stars = donation["stars"]
+        if donation:
+            if donation["refunded"]:
+                await send_reply(
+                    message,
+                    f"⚠️ Пожертвование <b>#{donation['id']}</b> ({donation['stars']} ⭐) уже было возвращено ранее.",
+                )
+                return
+
+            try:
+                await message.bot.refund_star_payment(
+                    user_id=donation["user_id"],
+                    telegram_payment_charge_id=donation["charge_id"],
+                )
+            except Exception as exc:
+                logger.error("Failed to refund star payment %s: %s", donation["id"], exc)
+                await send_reply(message, f"❌ Ошибка при возврате средств в Telegram API:\n<code>{escape(str(exc))}</code>")
+                return
+
+            await db.refund_star_donation(donation["id"])
+
+            user_id = donation["user_id"]
+            stars = donation["stars"]
+            await send_reply(
+                message,
+                f"✅ <b>Возврат выполнен!</b>\n\n"
+                f"Средства за пожертвование <b>#{donation['id']}</b> ({stars} ⭐) успешно возвращены пользователю <code>{user_id}</code>.",
+            )
+
+            try:
+                user_notify_msg = (
+                    f"⭐️ <b>Возврат средств</b>\n\n"
+                    f"Средства за пожертвование #{donation['id']} ({stars} ⭐) возвращены на ваш баланс Telegram Stars."
+                )
+                await message.bot.send_message(user_id, user_notify_msg)
+            except Exception as exc:
+                logger.warning("Failed to notify user about star refund: %s", exc)
+            return
+
+        # Direct refund fallback if user provided charge_id and user_id explicitly
+        if len(args) >= 3 and args[2].isdigit():
+            target_user_id = int(args[2])
+            charge_id = query
+            try:
+                await message.bot.refund_star_payment(
+                    user_id=target_user_id,
+                    telegram_payment_charge_id=charge_id,
+                )
+                await send_reply(
+                    message,
+                    f"✅ <b>Прямой возврат выполнен!</b>\n\n"
+                    f"Запрос на возврат для Charge ID <code>{charge_id}</code> пользователю <code>{target_user_id}</code> отправлен.",
+                )
+            except Exception as exc:
+                await send_reply(message, f"❌ Ошибка прямого возврата:\n<code>{escape(str(exc))}</code>")
+            return
+
         await send_reply(
             message,
-            f"✅ <b>Возврат выполнен!</b>\n\nСредства за пожертвование <b>#{donation_id}</b> ({stars} ⭐) успешно возвращены пользователю <code>{user_id}</code>."
+            f"❌ Пожертвование с ID или Charge ID <code>{escape(query)}</code> не найдено в базе.\n\n"
+            "Если нужно сделать прямой возврат вне базы, укажи User ID вторым параметром:\n"
+            "<code>/dnremove &lt;charge_id&gt; &lt;user_id&gt;</code>",
         )
-
-        try:
-            user_notify_msg = (
-                f"⭐️ <b>Возврат средств</b>\n\n"
-                f"Средства за пожертвование #{donation_id} ({stars} ⭐) возвращены на ваш баланс Telegram Stars."
-            )
-            await message.bot.send_message(user_id, user_notify_msg)
-        except Exception as exc:
-            logger.warning("Failed to notify user about star refund: %s", exc)
 
     @dispatcher.pre_checkout_query()
     async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:

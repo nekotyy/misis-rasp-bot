@@ -37,6 +37,11 @@ class StarDonationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(donation["refunded"])
         self.assertIsNone(donation["refunded_at"])
 
+        # Also lookup by string charge_id
+        donation_by_charge = await self.db.get_star_donation("tx_test_charge_123")
+        self.assertIsNotNone(donation_by_charge)
+        self.assertEqual(donation_by_charge["id"], donation_id)
+
     async def test_refund_star_donation(self):
         donation_id = await self.db.record_star_donation(
             user_id=987654321,

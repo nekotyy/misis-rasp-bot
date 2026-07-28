@@ -1376,16 +1376,25 @@ class Database:
             await db.commit()
             return cursor.lastrowid
 
-    async def get_star_donation(self, donation_id: int) -> dict | None:
+    async def get_star_donation(self, query: int | str) -> dict | None:
+        raw_str = str(query).strip()
         async with aiosqlite.connect(self.path) as db:
-            async with db.execute(
-                """
+            if raw_str.isdigit():
+                sql = """
                 SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at
                 FROM star_donations
-                WHERE id = ?
-                """,
-                (donation_id,),
-            ) as cursor:
+                WHERE id = ? OR charge_id = ?
+                """
+                params = (int(raw_str), raw_str)
+            else:
+                sql = """
+                SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at
+                FROM star_donations
+                WHERE charge_id = ?
+                """
+                params = (raw_str,)
+
+            async with db.execute(sql, params) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
