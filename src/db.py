@@ -146,6 +146,8 @@ class Database:
             await self._ensure_column(db, "users", "is_editor", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "users", "delivery_disabled_auto", "INTEGER NOT NULL DEFAULT 0")
+            await self._ensure_column(db, "users", "custom_notification_text", "TEXT")
+            await self._ensure_column(db, "users", "custom_sticker_file_id", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_type", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_key", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_title", "TEXT")
@@ -349,6 +351,7 @@ class Database:
         platform: str | None = None,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
         query = """
             SELECT
@@ -384,6 +387,10 @@ class Database:
         if subscription_key is not None:
             clauses.append("subscription_key = ?")
             params.append(subscription_key)
+        if target_audience == "teachers":
+            clauses.append("subscription_type = 'teacher'")
+        elif target_audience == "students":
+            clauses.append("(COALESCE(subscription_type, 'group') != 'teacher')")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY platform, created_at"
@@ -413,6 +420,8 @@ class Database:
                 delivery_disabled_auto=bool(row[16]),
                 created_at=row[17],
                 last_seen_at=row[18],
+                custom_notification_text=row[19] if len(row) > 19 else None,
+                custom_sticker_file_id=row[20] if len(row) > 20 else None,
             )
             for row in rows
         ]
@@ -422,8 +431,14 @@ class Database:
         platform: str,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
-        return await self.list_users(platform=platform, schedule_id=schedule_id, subscription_key=subscription_key)
+        return await self.list_users(
+            platform=platform,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+            target_audience=target_audience,
+        )
 
     async def get_user(self, platform: str, user_id: int) -> UserRecord | None:
         async with aiosqlite.connect(self.path) as db:
@@ -448,7 +463,9 @@ class Database:
                     homework_notifications_enabled,
                     delivery_disabled_auto,
                     created_at,
-                    last_seen_at
+                    last_seen_at,
+                    custom_notification_text,
+                    custom_sticker_file_id
                 FROM users
                 WHERE platform = ? AND user_id = ?
                 LIMIT 1
@@ -478,6 +495,8 @@ class Database:
             delivery_disabled_auto=bool(row[16]),
             created_at=row[17],
             last_seen_at=row[18],
+            custom_notification_text=row[19] if len(row) > 19 else None,
+            custom_sticker_file_id=row[20] if len(row) > 20 else None,
         )
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
@@ -695,8 +714,14 @@ class Database:
         platform: str,
         schedule_id: int | None = None,
         subscription_key: str | None = None,
+        target_audience: str = "all",
     ) -> list[UserRecord]:
-        users = await self.get_users_for_platform(platform, schedule_id=schedule_id, subscription_key=subscription_key)
+        users = await self.get_users_for_platform(
+            platform,
+            schedule_id=schedule_id,
+            subscription_key=subscription_key,
+            target_audience=target_audience,
+        )
         return [user for user in users if user.homework_notifications_enabled]
 
     async def get_active_groups(self) -> list[dict]:
@@ -1423,3 +1448,35 @@ class Database:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def set_user_custom_notification_text(self, platform: str, user_id: int, text: str) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET custom_notification_text = ? WHERE platform = ? AND user_id = ?",
+                (text, platform, user_id),
+            )
+            await db.commit()
+
+    async def clear_user_custom_notification_text(self, platform: str, user_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET custom_notification_text = NULL WHERE platform = ? AND user_id = ?",
+                (platform, user_id),
+            )
+            await db.commit()
+
+    async def set_user_custom_sticker(self, platform: str, user_id: int, sticker_file_id: str) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET custom_sticker_file_id = ? WHERE platform = ? AND user_id = ?",
+                (sticker_file_id, platform, user_id),
+            )
+            await db.commit()
+
+    async def clear_user_custom_sticker(self, platform: str, user_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE users SET custom_sticker_file_id = NULL WHERE platform = ? AND user_id = ?",
+                (platform, user_id),
+            )
+            await db.commit()

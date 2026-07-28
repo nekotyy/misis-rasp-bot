@@ -70,6 +70,7 @@ class Broadcaster:
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
         target_platform: str = "all",
+        target_audience: str = "all",
     ) -> None:
         if target_platform in {"all", "telegram"}:
             await self._broadcast_telegram(
@@ -77,6 +78,7 @@ class Broadcaster:
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
                 campaign_type=campaign_type,
+                target_audience=target_audience,
             )
         if target_platform in {"all", "vk"}:
             await self._broadcast_vk(
@@ -84,6 +86,7 @@ class Broadcaster:
                 schedule_id=schedule_id,
                 subscription_key=subscription_key,
                 campaign_type=campaign_type,
+                target_audience=target_audience,
             )
 
     async def broadcast_test_message(self) -> None:
@@ -156,6 +159,7 @@ class Broadcaster:
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
+        target_audience: str = "all",
     ) -> None:
         if self.telegram_bot is None:
             return
@@ -167,6 +171,7 @@ class Broadcaster:
             "telegram",
             schedule_id=schedule_id,
             subscription_key=subscription_key,
+            target_audience=target_audience,
         )
         for user in users:
             payload = OutboundMessage(
@@ -189,6 +194,7 @@ class Broadcaster:
         schedule_id: int | None = None,
         subscription_key: str | None = None,
         campaign_type: str = CAMPAIGN_NOTIFICATION,
+        target_audience: str = "all",
     ) -> None:
         if self.vk_bot is None:
             return
@@ -196,6 +202,7 @@ class Broadcaster:
             "vk",
             schedule_id=schedule_id,
             subscription_key=subscription_key,
+            target_audience=target_audience,
         )
         for user in users:
             payload = OutboundMessage(
@@ -241,8 +248,24 @@ class Broadcaster:
         if self.telegram_bot is None:
             return False
         reply_markup = SCHEDULE_NOTIFICATION_KEYBOARD if campaign_type == CAMPAIGN_NOTIFICATION else None
+
+        send_text = message
+        if campaign_type == CAMPAIGN_NOTIFICATION:
+            try:
+                user = await self.db.get_user("telegram", user_id)
+                if user is not None:
+                    if user.custom_sticker_file_id:
+                        try:
+                            await self.telegram_bot.send_sticker(chat_id=user_id, sticker=user.custom_sticker_file_id)
+                        except Exception as sticker_exc:
+                            logger.warning("Failed to send custom sticker for user %s: %s", user_id, sticker_exc)
+                    if user.custom_notification_text:
+                        send_text = f"{user.custom_notification_text}\n\n{message}"
+            except Exception as user_exc:
+                logger.warning("Failed to fetch custom notification settings for %s: %s", user_id, user_exc)
+
         try:
-            await self.telegram_bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
+            await self.telegram_bot.send_message(chat_id=user_id, text=send_text, reply_markup=reply_markup)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(

@@ -36,6 +36,44 @@ from web_configurator.lesson_editor import load_lesson_config, save_lesson_confi
 
 logger = logging.getLogger(__name__)
 
+async def format_personalization_settings_text(user_id: int, db: Database) -> str:
+    user = await db.get_user("telegram", user_id)
+    has_text = bool(user and user.custom_notification_text)
+    has_sticker = bool(user and user.custom_sticker_file_id)
+
+    text_status = f"<b>{escape(user.custom_notification_text)}</b>" if (has_text and user and user.custom_notification_text) else "<i>Не установлен</i>"
+    sticker_status = "<b>Прикреплен</b>" if has_sticker else "<i>Не установлен</i>"
+
+    return "\n".join([
+        "<b>Персонализация уведомлений</b>",
+        "",
+        f"• Ваш текст уведомления: {text_status}",
+        f"• Ваш стикер: {sticker_status}",
+        "",
+        "Вы можете задать свой текст и прислать стикер. Стикер будет отправляться перед уведомлениями об изменениях и при открытии меню расписания.",
+    ])
+
+
+async def build_personalization_keyboard(user_id: int, db: Database) -> InlineKeyboardMarkup:
+    user = await db.get_user("telegram", user_id)
+    has_text = bool(user and user.custom_notification_text)
+    has_sticker = bool(user and user.custom_sticker_file_id)
+
+    rows = [
+        [InlineKeyboardButton(text="Задать свой текст", callback_data="settings:pers_set_text")],
+        [InlineKeyboardButton(text="Прислать стикер", callback_data="settings:pers_set_sticker")],
+    ]
+    clear_row = []
+    if has_text:
+        clear_row.append(InlineKeyboardButton(text="Сбросить текст", callback_data="settings:pers_clear_text"))
+    if has_sticker:
+        clear_row.append(InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker"))
+    if clear_row:
+        rows.append(clear_row)
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
 STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
 GROUP_CHAT_TYPES = {"group", "supergroup"}
@@ -197,16 +235,29 @@ ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-ADMIN_BROADCAST_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
-            InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
-        ],
-        [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
-        [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
-    ]
-)
+def build_admin_broadcast_preview_keyboard(target_audience: str = "all") -> InlineKeyboardMarkup:
+    aud_all = "✅ Всем" if target_audience == "all" else "Всем"
+    aud_students = "✅ Студентам" if target_audience == "students" else "Студентам"
+    aud_teachers = "✅ Преподавателям" if target_audience == "teachers" else "Преподавателям"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=aud_all, callback_data="admin:broadcast_aud:all"),
+                InlineKeyboardButton(text=aud_students, callback_data="admin:broadcast_aud:students"),
+                InlineKeyboardButton(text=aud_teachers, callback_data="admin:broadcast_aud:teachers"),
+            ],
+            [
+                InlineKeyboardButton(text="Отправить в ТГ", callback_data="admin:broadcast_send_tg"),
+                InlineKeyboardButton(text="Отправить в ВК", callback_data="admin:broadcast_send_vk"),
+            ],
+            [InlineKeyboardButton(text="Отправить везде", callback_data="admin:broadcast_send_all")],
+            [InlineKeyboardButton(text="Отменить", callback_data="admin:broadcast_cancel")],
+        ]
+    )
+
+
+ADMIN_BROADCAST_PREVIEW_KEYBOARD = build_admin_broadcast_preview_keyboard("all")
 
 ADMIN_IMPORT_LESSONS_INPUT_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -260,7 +311,7 @@ def build_dispatcher(
     awaiting_admin_broadcast_text: set[int] = set()
     awaiting_admin_user_search: set[int] = set()
     admin_user_search_state: dict[int, dict[str, str]] = {}
-    admin_broadcast_drafts: dict[int, str] = {}
+    admin_broadcast_drafts: dict[int, dict] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
     awaiting_admin_lesson_input: set[int] = set()
     admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
@@ -270,6 +321,8 @@ def build_dispatcher(
     awaiting_admin_import_lessons: set[int] = set()
     admin_import_lessons_drafts: dict[int, dict] = {}
     awaiting_custom_donate_stars: set[int] = set()
+    awaiting_custom_notification_text: set[int] = set()
+    awaiting_custom_sticker: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -575,10 +628,32 @@ def build_dispatcher(
             lines.extend(["", error_text])
         return "\n".join(lines)
 
-    def format_admin_broadcast_preview(text: str) -> str:
+    def format_admin_broadcast_preview(
+        text: str,
+        target_platform: str = "all",
+        target_audience: str = "all",
+    ) -> str:
+        platform_map = {
+            "all": "Глобально (везде)",
+            "telegram": "Telegram",
+            "vk": "ВКонтакте",
+        }
+        audience_map = {
+            "all": "Всем",
+            "students": "Студентам",
+            "teachers": "Преподавателям",
+        }
+        platform_str = platform_map.get(target_platform, "Глобально (везде)")
+        audience_str = audience_map.get(target_audience, "Всем")
+
         return "\n".join([
             "<b>Предпросмотр рассылки</b>",
             "",
+            "ℹ️ <b>Служебная информация:</b>",
+            f"• <b>Платформа:</b> {platform_str}",
+            f"• <b>Кому:</b> {audience_str}",
+            "",
+            "<b>Текст сообщения:</b>",
             escape(text),
         ])
 
@@ -1570,6 +1645,7 @@ def build_dispatcher(
                 rows.append([InlineKeyboardButton(text="Убрать кабинет", callback_data="settings:audience_clear")])
         if user and user.subscription_key:
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
+        rows.append([InlineKeyboardButton(text="Персонализация", callback_data="settings:personalization")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1616,7 +1692,53 @@ def build_dispatcher(
         )
         return True
 
+    async def format_personalization_settings_text(user_id: int) -> str:
+        user = await db.get_user("telegram", user_id)
+        has_text = bool(user and user.custom_notification_text)
+        has_sticker = bool(user and user.custom_sticker_file_id)
+
+        text_status = f"<b>{escape(user.custom_notification_text)}</b>" if (has_text and user and user.custom_notification_text) else "<i>Не установлен</i>"
+        sticker_status = "<b>Прикреплен</b>" if has_sticker else "<i>Не установлен</i>"
+
+        return "\n".join([
+            "<b>Персонализация уведомлений</b>",
+            "",
+            f"• Ваш текст уведомления: {text_status}",
+            f"• Ваш стикер: {sticker_status}",
+            "",
+            "Вы можете задать свой текст и прислать стикер. Стикер будет отправляться перед уведомлениями об изменениях и при открытии меню расписания.",
+        ])
+
+    async def build_personalization_keyboard(user_id: int) -> InlineKeyboardMarkup:
+        user = await db.get_user("telegram", user_id)
+        has_text = bool(user and user.custom_notification_text)
+        has_sticker = bool(user and user.custom_sticker_file_id)
+
+        rows = [
+            [InlineKeyboardButton(text="Задать свой текст", callback_data="settings:pers_set_text")],
+            [InlineKeyboardButton(text="Прислать стикер", callback_data="settings:pers_set_sticker")],
+        ]
+        clear_row = []
+        if has_text:
+            clear_row.append(InlineKeyboardButton(text="Сбросить текст", callback_data="settings:pers_clear_text"))
+        if has_sticker:
+            clear_row.append(InlineKeyboardButton(text="Сбросить стикер", callback_data="settings:pers_clear_sticker"))
+        if clear_row:
+            rows.append(clear_row)
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:settings")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     async def send_schedule_menu(bot: Bot, chat_id: int) -> None:
+        try:
+            user = await db.get_user("telegram", chat_id)
+            if user and user.custom_sticker_file_id:
+                try:
+                    await bot.send_sticker(chat_id=chat_id, sticker=user.custom_sticker_file_id)
+                except Exception as exc:
+                    logger.warning("Failed to send schedule menu custom sticker to %s: %s", chat_id, exc)
+        except Exception as exc:
+            logger.warning("Failed to fetch user for schedule menu sticker: %s", exc)
+
         await send_new_context_message(
             bot,
             chat_id,
@@ -1726,13 +1848,29 @@ def build_dispatcher(
         prices = [LabeledPrice(label="Пожертвование", amount=stars)]
         await bot_inst.send_invoice(
             chat_id=chat_id,
-            title="Пожертвование проекту",
-            description=f"Поддержка бота ({stars} ⭐)",
+            title="Поддержка бота",
+            description=f"Спасибо за поддержку проекта! Вы пожертвовали {stars} ⭐.",
             payload=f"star_donate:{user_id}:{stars}",
             provider_token="",
             currency="XTR",
             prices=prices,
         )
+
+    @dispatcher.message(F.sticker)
+    async def handle_sticker_message(message: Message) -> None:
+        if message.from_user is None or message.sticker is None:
+            return
+        if message.from_user.id in awaiting_custom_sticker:
+            awaiting_custom_sticker.discard(message.from_user.id)
+            sticker_id = message.sticker.file_id
+            await db.set_user_custom_sticker("telegram", message.from_user.id, sticker_id)
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "settings",
+                await format_personalization_settings_text(message.from_user.id, db),
+                reply_markup=await build_personalization_keyboard(message.from_user.id, db),
+            )
 
     @dispatcher.message(Command("donate"))
     async def handle_donate_command(message: Message) -> None:
@@ -1743,7 +1881,7 @@ def build_dispatcher(
         if message.from_user:
             awaiting_custom_donate_stars.discard(message.from_user.id)
         prompt_text = (
-            f"{STAR_ICON} <b>Пожертвование проекту (Telegram Stars)</b>\n\n"
+            f"{STAR_ICON} <b>Пожертвование проекту</b>\n\n"
             "Выбери количество звезд для поддержки бота или отправь свое количество:"
         )
         await send_new_context_message(
@@ -1804,7 +1942,7 @@ def build_dispatcher(
             try:
                 user_notify_msg = (
                     f"⭐️ <b>Возврат средств</b>\n\n"
-                    f"Средства за пожертвование #{donation['id']} ({stars} ⭐) возвращены на ваш баланс Telegram Stars."
+                    f"Средства за пожертвование #{donation['id']} ({stars} ⭐) были возвращены администратором на ваш баланс Telegram Stars."
                 )
                 await message.bot.send_message(user_id, user_notify_msg)
             except Exception as exc:
@@ -1861,7 +1999,7 @@ def build_dispatcher(
 
         thank_you_msg = (
             f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
-            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи бот продолжает развиваться!"
+            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект продолжает развиваться и поддерживаться!"
         )
         await send_reply(message, thank_you_msg)
 
@@ -2155,6 +2293,59 @@ def build_dispatcher(
             await prompt_audience_selection(callback.bot, callback.message.chat.id, callback.from_user.id)
             await safe_callback_answer(callback)
             return
+        if action == "personalization":
+            awaiting_custom_notification_text.discard(callback.from_user.id)
+            awaiting_custom_sticker.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                await format_personalization_settings_text(callback.from_user.id, db),
+                reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
+            )
+            await safe_callback_answer(callback)
+            return
+
+        if action == "pers_set_text":
+            awaiting_custom_notification_text.add(callback.from_user.id)
+            awaiting_custom_sticker.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "Отправь текст, который будет высылаться перед уведомлениями об изменениях расписания:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
+            )
+            await safe_callback_answer(callback)
+            return
+
+        if action == "pers_set_sticker":
+            awaiting_custom_sticker.add(callback.from_user.id)
+            awaiting_custom_notification_text.discard(callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                "Пришли стикер, который будет высылаться перед уведомлениями и при вызове меню расписания:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
+            )
+            await safe_callback_answer(callback)
+            return
+
+        if action == "pers_clear_text":
+            await db.clear_user_custom_notification_text("telegram", callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                await format_personalization_settings_text(callback.from_user.id, db),
+                reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
+            )
+            await safe_callback_answer(callback, "Текст сброшен")
+            return
+
+        if action == "pers_clear_sticker":
+            await db.clear_user_custom_sticker("telegram", callback.from_user.id)
+            await safe_edit_message_text(
+                callback.message,
+                await format_personalization_settings_text(callback.from_user.id, db),
+                reply_markup=await build_personalization_keyboard(callback.from_user.id, db),
+            )
+            await safe_callback_answer(callback, "Стикер сброшен")
+            return
+
         if action == "audience_clear":
             await db.clear_user_audience_subscription("telegram", callback.from_user.id)
             await safe_edit_message_text(
@@ -2264,15 +2455,36 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback, "Рассылка отменена")
             return
+        if action.startswith("broadcast_aud:"):
+            aud = action.split(":", 1)[1]
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft:
+                await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
+                return
+            if aud in {"all", "students", "teachers"}:
+                draft["target_audience"] = aud
+                text = draft.get("text", "")
+                await send_new_context_message(
+                    callback.bot,
+                    callback.message.chat.id,
+                    "admin_broadcast",
+                    format_admin_broadcast_preview(text, target_audience=aud),
+                    reply_markup=build_admin_broadcast_preview_keyboard(aud),
+                )
+            await safe_callback_answer(callback)
+            return
+
         if action in {"broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk"}:
-            draft_text = admin_broadcast_drafts.get(callback.from_user.id)
-            if not draft_text:
+            draft = admin_broadcast_drafts.get(callback.from_user.id)
+            if not draft or not draft.get("text"):
                 await safe_callback_answer(callback, "Сначала пришли текст рассылки.", show_alert=True)
                 return
             if broadcaster is None:
                 await safe_callback_answer(callback, "Сервис рассылки сейчас недоступен.", show_alert=True)
                 return
 
+            draft_text = draft["text"]
+            target_audience = draft.get("target_audience", "all")
             target_platform = "all"
             if action == "broadcast_send_tg":
                 target_platform = "telegram"
@@ -2285,17 +2497,19 @@ def build_dispatcher(
                 vk_message=draft_text,
                 campaign_type=CAMPAIGN_ADMIN_BROADCAST,
                 target_platform=target_platform,
+                target_audience=target_audience,
             )
             awaiting_admin_broadcast_text.discard(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
 
-            if target_platform == "telegram":
-                sent_msg = "<b>Рассылка отправлена в Telegram.</b>\n\nСообщение поставлено в очередь доставки."
-            elif target_platform == "vk":
-                sent_msg = "<b>Рассылка отправлена в VK.</b>\n\nСообщение поставлено в очередь доставки."
-            else:
-                sent_msg = "<b>Рассылка отправлена на все платформы.</b>\n\nСообщение поставлено в очередь доставки."
+            platform_str = "Telegram" if target_platform == "telegram" else ("VK" if target_platform == "vk" else "на все платформы")
+            audience_str = "Всем" if target_audience == "all" else ("Студентам" if target_audience == "students" else "Преподавателям")
+            sent_msg = (
+                f"<b>Рассылка отправлена {platform_str}.</b>\n"
+                f"• <b>Аудитория:</b> {audience_str}\n\n"
+                f"Сообщение поставлено в очередь доставки."
+            )
 
             await send_new_context_message(
                 callback.bot,
@@ -3206,6 +3420,28 @@ def build_dispatcher(
                 )
                 return
 
+        if message.from_user and message.from_user.id in awaiting_custom_notification_text:
+            text = (message.text or "").strip()
+            if not text:
+                await send_new_context_message(
+                    message.bot,
+                    message.chat.id,
+                    "settings",
+                    "Текст не должен быть пустым. Попробуй еще раз:",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="settings:personalization")]]),
+                )
+                return
+            awaiting_custom_notification_text.discard(message.from_user.id)
+            await db.set_user_custom_notification_text("telegram", message.from_user.id, text)
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "settings",
+                await format_personalization_settings_text(message.from_user.id, db),
+                reply_markup=await build_personalization_keyboard(message.from_user.id, db),
+            )
+            return
+
         if message.from_user and message.from_user.id in awaiting_custom_donate_stars:
             text = (message.text or "").strip()
             try:
@@ -3297,13 +3533,16 @@ def build_dispatcher(
                 )
                 return
             awaiting_admin_broadcast_text.discard(message.from_user.id)
-            admin_broadcast_drafts[message.from_user.id] = draft_text
+            admin_broadcast_drafts[message.from_user.id] = {
+                "text": draft_text,
+                "target_audience": "all",
+            }
             await send_new_context_message(
                 message.bot,
                 message.chat.id,
                 "admin_broadcast",
-                format_admin_broadcast_preview(draft_text),
-                reply_markup=ADMIN_BROADCAST_PREVIEW_KEYBOARD,
+                format_admin_broadcast_preview(draft_text, target_audience="all"),
+                reply_markup=build_admin_broadcast_preview_keyboard("all"),
             )
             return
         if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_user_search:
