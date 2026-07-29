@@ -29,6 +29,74 @@ SourceRow = dict[str, Any]
 SourceWorker = Callable[..., Awaitable[None]]
 
 
+def format_bytes(bytes_count: int) -> str:
+    if bytes_count < 1024:
+        return f"{bytes_count} Б"
+    if bytes_count < 1024 * 1024:
+        return f"{bytes_count / 1024:.2f} КБ"
+    return f"{bytes_count / (1024 * 1024):.2f} МБ"
+
+
+def format_db_cleanup_admin_report(res: dict, html: bool = True) -> str:
+    started_at = res.get("started_at", "-")
+    finished_at = res.get("finished_at", "-")
+    elapsed = res.get("elapsed_seconds", 0.0)
+    cutoff_days = res.get("cutoff_days", 90)
+    deleted_counts = res.get("deleted_counts", {})
+    total_deleted = res.get("total_deleted", 0)
+
+    size_before = format_bytes(res.get("size_before_bytes", 0))
+    size_after = format_bytes(res.get("size_after_bytes", 0))
+    freed = format_bytes(res.get("freed_bytes", 0))
+
+    delivery_cnt = deleted_counts.get("delivery_events", 0)
+    change_cnt = deleted_counts.get("change_events", 0)
+    snapshots_cnt = deleted_counts.get("schedule_snapshots", 0)
+
+    if html:
+        return "\n".join([
+            "🧹 <b>Автоматическая очистка БД завершена</b>",
+            "",
+            "ℹ️ <b>Служебная информация:</b>",
+            f"• <b>Время запуска:</b> {started_at}",
+            f"• <b>Время окончания:</b> {finished_at}",
+            f"• <b>Длительность:</b> {elapsed} сек.",
+            f"• <b>Условие очистки:</b> записи старше {cutoff_days} дней",
+            "",
+            "🗑️ <b>Удалено записей:</b>",
+            f"• <code>delivery_events</code>: {delivery_cnt:,}".replace(",", " "),
+            f"• <code>change_events</code>: {change_cnt:,}".replace(",", " "),
+            f"• <code>schedule_snapshots</code>: {snapshots_cnt:,}".replace(",", " "),
+            f"• <b>Всего удалено:</b> {total_deleted:,} шт.".replace(",", " "),
+            "",
+            "💾 <b>Размер базы данных:</b>",
+            f"• <b>До очистки:</b> {size_before}",
+            f"• <b>После очистки:</b> {size_after}",
+            f"• <b>Освобождено на диске:</b> {freed}",
+        ])
+    else:
+        return "\n".join([
+            "Автоматическая очистка БД завершена",
+            "",
+            "Служебная информация:",
+            f"• Время запуска: {started_at}",
+            f"• Время окончания: {finished_at}",
+            f"• Длительность: {elapsed} сек.",
+            f"• Условие очистки: записи старше {cutoff_days} дней",
+            "",
+            "Удалено записей:",
+            f"• delivery_events: {delivery_cnt}",
+            f"• change_events: {change_cnt}",
+            f"• schedule_snapshots: {snapshots_cnt}",
+            f"• Всего удалено: {total_deleted} шт.",
+            "",
+            "Размер базы данных:",
+            f"• До очистки: {size_before}",
+            f"• После очистки: {size_after}",
+            f"• Освобождено на диске: {freed}",
+        ])
+
+
 class ScheduleJobs:
     def __init__(
         self,
@@ -132,6 +200,9 @@ class ScheduleJobs:
         try:
             res = await self.db.cleanup_old_records(days=job.days)
             logger.info("Database cleanup (days=%s) completed: %s", job.days, res)
+            tg_report = format_db_cleanup_admin_report(res, html=True)
+            vk_report = format_db_cleanup_admin_report(res, html=False)
+            await self.broadcaster.notify_admins(telegram_message=tg_report, vk_message=vk_report)
         except Exception as exc:
             logger.error("Database cleanup (days=%s) failed: %s", job.days, exc)
             raise

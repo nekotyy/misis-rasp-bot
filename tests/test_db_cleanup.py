@@ -67,10 +67,10 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         # Run cleanup for records older than 90 days
         res = await self.db.cleanup_old_records(days=90)
-        self.assertEqual(res["delivery_events"], 1)
-        self.assertEqual(res["change_events"], 1)
+        self.assertEqual(res["deleted_counts"]["delivery_events"], 1)
+        self.assertEqual(res["deleted_counts"]["change_events"], 1)
         # Group A's old snapshot should be deleted, Group B's sole old snapshot MUST BE PRESERVED
-        self.assertEqual(res["schedule_snapshots"], 1)
+        self.assertEqual(res["deleted_counts"]["schedule_snapshots"], 1)
 
         async with aiosqlite.connect(self.db_path) as conn:
             # Check delivery_events
@@ -88,7 +88,22 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_scheduler_cleanup_job_trigger(self):
         mock_db = MagicMock()
-        mock_db.cleanup_old_records = AsyncMock(return_value={"delivery_events": 5})
+        mock_db.cleanup_old_records = AsyncMock(
+            return_value={
+                "cutoff_days": 90,
+                "started_at": "29.07.2026 04:30:00",
+                "finished_at": "29.07.2026 04:30:02",
+                "elapsed_seconds": 2.15,
+                "deleted_counts": {"delivery_events": 10, "change_events": 2, "schedule_snapshots": 3},
+                "total_deleted": 15,
+                "size_before_bytes": 1048576,
+                "size_after_bytes": 524288,
+                "freed_bytes": 524288,
+            }
+        )
+
+        mock_broadcaster = MagicMock()
+        mock_broadcaster.notify_admins = AsyncMock()
 
         mock_broker = MagicMock(spec=DatabaseCleanupJobBroker)
         mock_broker.enabled = True
@@ -98,7 +113,7 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
         jobs = ScheduleJobs(
             db=mock_db,
             parser=MagicMock(),
-            broadcaster=MagicMock(),
+            broadcaster=mock_broadcaster,
             timezone="Europe/Moscow",
             db_cleanup_broker=mock_broker,
         )
@@ -114,6 +129,11 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
         # Test handler execution
         await jobs.handle_db_cleanup_job(published_job)
         mock_db.cleanup_old_records.assert_awaited_once_with(days=90)
+        mock_broadcaster.notify_admins.assert_awaited_once()
+        kwargs = mock_broadcaster.notify_admins.call_args.kwargs
+        self.assertIn("Автоматическая очистка БД завершена", kwargs["telegram_message"])
+        self.assertIn("delivery_events", kwargs["telegram_message"])
+        self.assertIn("15 шт.", kwargs["telegram_message"])
 
 
 if __name__ == "__main__":

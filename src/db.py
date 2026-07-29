@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from time import monotonic
 
 import aiosqlite
 
@@ -1464,9 +1465,13 @@ class Database:
             )
             await db.commit()
 
-    async def cleanup_old_records(self, days: int = 90) -> dict[str, int]:
+    async def cleanup_old_records(self, days: int = 90) -> dict:
         cutoff_days = max(1, days)
+        started_at = datetime.now()
+        start_time = monotonic()
+        size_before_bytes = self.path.stat().st_size if self.path.exists() else 0
         deleted_counts: dict[str, int] = {}
+
         async with aiosqlite.connect(self.path) as db:
             # 1. delivery_events
             try:
@@ -1503,5 +1508,25 @@ class Database:
                 deleted_counts["schedule_snapshots"] = 0
 
             await db.commit()
-            logger.info("Database cleanup (older than %s days) completed. Deleted: %s", cutoff_days, deleted_counts)
-            return deleted_counts
+            try:
+                await db.execute("VACUUM")
+            except Exception as vacuum_exc:
+                logger.warning("Database VACUUM failed after cleanup: %s", vacuum_exc)
+
+        size_after_bytes = self.path.stat().st_size if self.path.exists() else 0
+        elapsed_seconds = round(monotonic() - start_time, 2)
+        total_deleted = sum(deleted_counts.values())
+
+        report_data = {
+            "cutoff_days": cutoff_days,
+            "started_at": started_at.strftime("%d.%m.%Y %H:%M:%S"),
+            "finished_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+            "elapsed_seconds": elapsed_seconds,
+            "deleted_counts": deleted_counts,
+            "total_deleted": total_deleted,
+            "size_before_bytes": size_before_bytes,
+            "size_after_bytes": size_after_bytes,
+            "freed_bytes": max(0, size_before_bytes - size_after_bytes),
+        }
+        logger.info("Database cleanup completed: %s", report_data)
+        return report_data
