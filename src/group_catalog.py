@@ -38,26 +38,28 @@ class GroupCatalog:
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._lock = asyncio.Lock()
         self._loaded = False
+        self.last_error: Exception | None = None
         self._groups_by_name: dict[str, GroupInfo] = {}
         self._groups_by_compact_name: dict[str, GroupInfo] = {}
         self._groups_by_schedule_id: dict[int, GroupInfo] = {}
 
     async def ensure_loaded(self) -> None:
-        if self._loaded:
+        if self._loaded and self._groups_by_name:
             return
         await self.refresh()
 
     async def refresh(self) -> None:
         async with self._lock:
-            if self._loaded:
+            if self._loaded and self._groups_by_name:
                 return
 
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 try:
                     root_response = await self._get_with_retry(client, f"{self.base_origin}/")
                     root_soup = BeautifulSoup(root_response.content, "html.parser")
-                except httpx.HTTPError:
-                    logger.exception("Не удалось загрузить список отделений с %s", self.base_origin)
+                except Exception as exc:
+                    logger.exception("Не удалось загрузить список отделений с %s: %s", self.base_origin, exc)
+                    self.last_error = exc
                     if not self._loaded:
                         self._groups_by_name = {}
                         self._groups_by_schedule_id = {}

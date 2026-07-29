@@ -49,6 +49,110 @@ SEARCH_NOT_FOUND_TEXT = (
 
 logger = logging.getLogger(__name__)
 
+
+def vk_help_main_keyboard() -> str:
+    from vkbottle import Keyboard, Text
+    keyboard = Keyboard(one_time=False, inline=False)
+    keyboard.add(Text("1. Настройка групп и бесед"))
+    keyboard.row()
+    keyboard.add(Text("2. Поиск и подписки"))
+    keyboard.row()
+    keyboard.add(Text("3. Уведомления и расписание"))
+    keyboard.row()
+    keyboard.add(Text("4. Персонализация"))
+    keyboard.row()
+    keyboard.add(Text("5. Список команд"))
+    keyboard.row()
+    keyboard.add(Text("Назад в меню"))
+    return keyboard.get_json()
+
+
+def vk_help_group_setup_text() -> str:
+    return "\n".join([
+        "Справочник: Настройка групп и бесед",
+        "",
+        "1. ВКонтакте (Беседы):",
+        "- Зайдите в сообщество бота ВКонтакте и нажмите кнопку «Добавить в беседу» (под обложкой или в меню действий).",
+        "- Выберите нужную беседу и подтвердите добавление.",
+        "- В настройках беседы разрешите боту доступ к переписке (или назначьте администратором).",
+        "- В беседе отправьте команду /startgroup или фразы Настройка группы / Группа.",
+        "- Укажите название вашей учебной группы (например: ИСП-25-1).",
+        "",
+        "2. Включение добавления в беседы (для владельца бота в VK):",
+        "- Перейдите в Управление сообществом -> Сообщения -> Настройки для бота.",
+        "- Включите галочку «Разрешать добавлять сообщество в беседы».",
+        "",
+        "2. Telegram (Групповые чаты):",
+        "- Добавьте бота в ваш групповой чат Telegram.",
+        "- Назначьте администратором с правом отправки сообщений.",
+        "- В чате отправьте /startgroup и напишите название группы.",
+        "",
+        "3. Изменение и сброс группы в беседе:",
+        "- Повторно отправьте /startgroup в беседу для смены учебной группы.",
+        "- После привязки бот автоматически рассылает расписание и замены пар.",
+    ])
+
+
+def vk_help_personal_setup_text() -> str:
+    return "\n".join([
+        "Справочник: Поиск расписания и подписки",
+        "",
+        "1. Поиск учебной группы:",
+        "- Напишите название группы в формате сайта колледжа (например: ИСП-25-1).",
+        "",
+        "2. Поиск преподавателя:",
+        "- Напишите фамилию преподавателя (например: Иванов). Бот найдет личное расписание преподавателя.",
+        "",
+        "3. Поиск аудитории / кабинета:",
+        "- Напишите номер кабинета (например: 101). Бот покажет расписание занятий в этом кабинете.",
+    ])
+
+
+def vk_help_notifications_text() -> str:
+    return "\n".join([
+        "Справочник: Уведомления и расписание",
+        "",
+        "1. Автоматические уведомления об изменениях:",
+        "- Бот отслеживает публикации замен на сайте колледжа и автоматически высылает обновления.",
+        "",
+        "2. Включение и отключение уведомлений:",
+        "- В меню Дополнительно можно выключить или включить получение уведомлений.",
+    ])
+
+
+def vk_help_personalization_text() -> str:
+    return "\n".join([
+        "Справочник: Персонализация сообщений",
+        "",
+        "1. Кастомный стикер:",
+        "- В меню Дополнительно -> Персонализация вы можете прикрепить стикер.",
+        "- Прикрепленный стикер отправляется перед сообщениями расписания и уведомлений.",
+    ])
+
+
+def is_group_setup_command(text: str | None) -> bool:
+    if not text:
+        return False
+    raw = text.strip().casefold()
+    return (
+        raw.startswith("/startgroup")
+        or raw.startswith("/group")
+        or raw in {"/startgroup", "/group", "startgroup", "group"}
+    )
+
+
+def vk_help_commands_text() -> str:
+    return "\n".join([
+        "Справочник: Полный список команд",
+        "",
+        "Основные команды:",
+        "- /start — запуск бота и переход в главное меню",
+        "- /rasp — посмотреть расписание",
+        "- /settings — открыть меню Дополнительно",
+        "- /startgroup — мастер настройки бота в беседe или групповом чате",
+        "- /group — быстрый вызов настройки группы",
+    ])
+
 WEEKDAY_BELLS_TEXT = "\n".join(
     [
         "Звонки ОПК СТИ НИТУ МИСИС",
@@ -227,6 +331,28 @@ def build_vk_bot(
 
     def user_is_admin(user_id: int | None) -> bool:
         return bool(user_id and settings.admin_vk_id and user_id == settings.admin_vk_id)
+
+    async def user_can_manage_group(peer_id: int, user_id: int) -> bool:
+        if peer_id < 2000000000:
+            return True
+        if user_is_admin(user_id):
+            return True
+        try:
+            members_resp = await bot.api.messages.get_conversation_members(peer_id=peer_id)
+            items = getattr(members_resp, "items", []) or []
+            for item in items:
+                m_id = getattr(item, "member_id", None)
+                if m_id == user_id:
+                    if getattr(item, "is_admin", False) or getattr(item, "is_owner", False):
+                        return True
+                    join_by = getattr(item, "invited_by", None)
+                    if join_by == user_id:
+                        return True
+                    return False
+        except Exception as exc:
+            logger.warning("Failed to check conversation members for peer %s: %s", peer_id, exc)
+            return True
+        return False
 
     async def user_is_editor(user_id: int | None) -> bool:
         if user_id is None:
@@ -464,6 +590,7 @@ def build_vk_bot(
             ["Пройденные пары"],
             ["Персонализация"],
             ["О проекте"],
+            ["Помощь"],
             ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
         ]
         if has_group:
@@ -954,15 +1081,32 @@ def build_vk_bot(
 
     async def handle_subscription_input(peer_id: int, user_id: int, text: str) -> bool:
         existing_user = await db.get_user("vk", user_id)
-        group = await group_catalog.find_group(text) if group_catalog is not None else None
+        group = None
+        if group_catalog is not None:
+            try:
+                group = await group_catalog.find_group(text)
+            except Exception as exc:
+                logger.warning("VK error finding group in GroupCatalog: %s", exc)
+                await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут.")
+                return False
+
         if group is not None:
             await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
             await db.clear_user_audience_subscription("vk", user_id)
         else:
-            if search_catalog is None:
-                await prompt_group_selection(peer_id, "Справочник сейчас недоступен. Попробуй позже.")
+            if group_catalog is not None and getattr(group_catalog, "last_error", None) is not None and not getattr(group_catalog, "_groups_by_name", {}):
+                await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут.")
                 return False
-            target = await search_catalog.find(text)
+
+            if search_catalog is None:
+                await prompt_group_selection(peer_id, "Справочник сейчас недоступен. Попробуйте позже.")
+                return False
+            try:
+                target = await search_catalog.find(text)
+            except Exception as exc:
+                logger.warning("VK error in search_catalog.find: %s", exc)
+                await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас временно недоступен. Попробуйте еще раз через несколько минут.")
+                return False
             if target is None or target.kind != "teacher":
                 await prompt_group_selection(peer_id, SEARCH_NOT_FOUND_TEXT)
                 return False
@@ -1332,6 +1476,30 @@ def build_vk_bot(
         has_attachments = bool(getattr(message, "attachments", None))
         if text and not has_attachments:
             await wait_rate_limit_queue(user_id, 0.8)
+
+        if message.action and getattr(message.action, "type", None) in {"chat_invite_user", "chat_invite_user_by_link"}:
+            welcome_msg = (
+                "Инструкция по настройке бота в беседе\n\n"
+                "Бот успешно добавлен в вашу беседу.\n\n"
+                "Пошаговая настройка:\n"
+                "1. Предоставьте боту доступ к переписке в настройках беседы (или назначьте администратором).\n"
+                "2. Отправьте в беседу команду /startgroup.\n"
+                "3. Укажите название вашей учебной группы (например: ИСП-25-1).\n\n"
+                "После этого беседе будет доступно расписание и автоматические уведомления об изменениях."
+            )
+            await show_screen(peer_id, welcome_msg)
+            return
+
+        if mode == "awaiting_group_selection":
+            if text.startswith("/"):
+                return
+            if not await user_can_manage_group(peer_id, user_id):
+                await show_screen(peer_id, "Настройка беседы доступна только администраторам беседы или пользователю, добавившему бота.")
+                return
+            success = await handle_subscription_input(peer_id, peer_id if peer_id >= 2000000000 else user_id, text)
+            if success:
+                peer_modes[peer_id] = "main_menu"
+            return
 
         if normalized in {"/start", "start", "начать"}:
             admin_broadcast_drafts.pop(peer_id, None)
@@ -1844,6 +2012,30 @@ def build_vk_bot(
                 await show_screen(peer_id, "Пара удалена.", keyboard=admin_keyboard())
                 return
 
+        if is_group_setup_command(text):
+            if peer_id < 2000000000:
+                msg_text = (
+                    "Настройка бота в беседах ВКонтакте\n\n"
+                    "Чтобы получать расписание и уведомления об изменениях в вашей беседe:\n"
+                    "1. Добавьте бота в беседу из сообщества.\n"
+                    "2. Дайте боту доступ к переписке (или сделайте администратором беседы).\n"
+                    "3. В беседе отправьте команду /startgroup или фразы Настройка группы / Группа.\n"
+                    "4. Укажите название вашей учебной группы (например: ИСП-25-1 или МТО-25)."
+                )
+                await show_screen(peer_id, msg_text)
+                return
+
+            if not await user_can_manage_group(peer_id, user_id):
+                await show_screen(peer_id, "Настройка беседы доступна только администраторам беседы или пользователю, добавившему бота.")
+                return
+
+            peer_modes[peer_id] = "awaiting_group_selection"
+            await show_screen(
+                peer_id,
+                "Быстрая настройка беседы\n\nПришлите название вашей учебной группы одним сообщением (например: ИСП-25-1 или МТО-25):"
+            )
+            return
+
         user = await db.get_user("vk", user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
             if text in {"/admin", "Админка"}:
@@ -1868,6 +2060,30 @@ def build_vk_bot(
 
         if text in {"Дополнительно", "Настройки"}:
             await show_settings(peer_id, user_id)
+            return
+
+        if text in {"Помощь", "Помощь / Инструкция"}:
+            await show_screen(peer_id, "Справочное руководство (Wiki)\n\nВыберите раздел документации для получения подробной информации:", keyboard=vk_help_main_keyboard())
+            return
+
+        if text in {"1. Настройка групп и бесед", "1. Настройка группы"}:
+            await show_screen(peer_id, vk_help_group_setup_text(), keyboard=vk_help_main_keyboard())
+            return
+
+        if text in {"2. Поиск и подписки", "2. Личные подписки"}:
+            await show_screen(peer_id, vk_help_personal_setup_text(), keyboard=vk_help_main_keyboard())
+            return
+
+        if text == "3. Уведомления и расписание":
+            await show_screen(peer_id, vk_help_notifications_text(), keyboard=vk_help_main_keyboard())
+            return
+
+        if text == "4. Персонализация":
+            await show_screen(peer_id, vk_help_personalization_text(), keyboard=vk_help_main_keyboard())
+            return
+
+        if text == "5. Список команд":
+            await show_screen(peer_id, vk_help_commands_text(), keyboard=vk_help_main_keyboard())
             return
 
         if mode == "awaiting_custom_sticker":
