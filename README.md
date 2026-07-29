@@ -1,7 +1,7 @@
 # Бот для просмотра расписания ОПК СТИ НИТУ МИСИС
 
 [![License](https://img.shields.io/badge/license-MIT-6B7280?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-2563EB?style=for-the-badge)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-1.3.0-2563EB?style=for-the-badge)](pyproject.toml)
 [![CI](https://img.shields.io/github/actions/workflow/status/nekotyy/misis-rasp-bot/ci-cd.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/actions/workflows/ci-cd.yml)
 [![Last Commit](https://img.shields.io/github/last-commit/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/commits/main)
 [![Stars](https://img.shields.io/github/stars/nekotyy/misis-rasp-bot?style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/stargazers)

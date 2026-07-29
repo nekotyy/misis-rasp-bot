@@ -14,6 +14,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 from src.db import Database
 from src.lesson_counters import LessonCounterService
 from src.message_broker import (
+    AutoDailyLessonCounterJob,
+    AutoDailyLessonCounterJobBroker,
     DatabaseCleanupJob,
     DatabaseCleanupJobBroker,
     LessonCounterJob,
@@ -110,6 +112,7 @@ class ScheduleJobs:
         lesson_counter_service: LessonCounterService | None = None,
         lesson_counter_broker: LessonCounterJobBroker | None = None,
         db_cleanup_broker: DatabaseCleanupJobBroker | None = None,
+        auto_daily_lesson_counter_broker: AutoDailyLessonCounterJobBroker | None = None,
         admin_backup_enabled: bool = False,
         admin_backup_interval_days: int = 2,
         admin_telegram_id: int | None = None,
@@ -126,6 +129,7 @@ class ScheduleJobs:
         self.lesson_counter_service = lesson_counter_service
         self.lesson_counter_broker = lesson_counter_broker
         self.db_cleanup_broker = db_cleanup_broker
+        self.auto_daily_lesson_counter_broker = auto_daily_lesson_counter_broker
         self.admin_backup_enabled = admin_backup_enabled
         self.admin_backup_interval_days = max(1, admin_backup_interval_days)
         self.admin_telegram_id = admin_telegram_id
@@ -153,6 +157,32 @@ class ScheduleJobs:
         if self.lesson_counters_enabled and self.lesson_counter_service is not None:
             self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=0), max_instances=1, coalesce=True)
             self.scheduler.add_job(self.count_today_lessons, CronTrigger(hour=23, minute=40), max_instances=1, coalesce=True)
+
+            # Auto daily lesson counter at 23:20, and control checks at 23:50, 01:00, 05:00
+            self.scheduler.add_job(
+                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=0),
+                CronTrigger(hour=23, minute=20),
+                max_instances=1,
+                coalesce=True,
+            )
+            self.scheduler.add_job(
+                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=0),
+                CronTrigger(hour=23, minute=50),
+                max_instances=1,
+                coalesce=True,
+            )
+            self.scheduler.add_job(
+                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=-1),
+                CronTrigger(hour=1, minute=0),
+                max_instances=1,
+                coalesce=True,
+            )
+            self.scheduler.add_job(
+                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=-1),
+                CronTrigger(hour=5, minute=0),
+                max_instances=1,
+                coalesce=True,
+            )
         if self.admin_backup_enabled:
             self.scheduler.add_job(
                 self.send_admin_backup,
@@ -466,3 +496,73 @@ class ScheduleJobs:
             source_url=f"rasp:{schedule_id}",
         )
         await self.lesson_counter_service.count_today_for_snapshot(schedule_id, snapshot)
+
+    async def start_auto_daily_lesson_counter_consumer(self) -> None:
+        if not self.lesson_counters_enabled or self.lesson_counter_service is None:
+            return
+        if self.auto_daily_lesson_counter_broker is None or not self.auto_daily_lesson_counter_broker.enabled:
+            return
+        await self.auto_daily_lesson_counter_broker.start_consumer(self.handle_auto_daily_lesson_counter_job)
+
+    async def enqueue_or_run_auto_daily_lesson_counter(self, target_date_offset: int = 0) -> None:
+        from datetime import timedelta
+        from collections import defaultdict
+        target_date = (datetime.now() + timedelta(days=target_date_offset)).date().isoformat()
+        job = AutoDailyLessonCounterJob(target_date_iso=target_date)
+
+        if self.auto_daily_lesson_counter_broker and self.auto_daily_lesson_counter_broker.enabled:
+            published = await self.auto_daily_lesson_counter_broker.publish(job)
+            if published:
+                logger.info("Enqueued AutoDailyLessonCounterJob for %s to RabbitMQ", target_date)
+                return
+
+        logger.info("Executing AutoDailyLessonCounterJob locally for %s", target_date)
+        await self.handle_auto_daily_lesson_counter_job(job)
+
+    async def handle_auto_daily_lesson_counter_job(self, job: AutoDailyLessonCounterJob) -> None:
+        if not self.lesson_counters_enabled or self.lesson_counter_service is None:
+            return
+
+        from collections import defaultdict
+        target_date_iso = job.target_date_iso
+        sources = await self.db.get_active_sources()
+        group_sources = [s for s in sources if s.get("source_type") == "group" and s.get("schedule_id")]
+        if not group_sources:
+            return
+
+        for source in group_sources:
+            schedule_id = source["schedule_id"]
+            group_name = str(source.get("group_name") or source.get("source_title") or f"Группа #{schedule_id}")
+
+            # Idempotency check: 100% protection against duplicate incrementing
+            if await self.db.is_daily_counter_processed(target_date_iso, group_name):
+                logger.debug("Group %s for date %s already processed for lesson counters. Skipping.", group_name, target_date_iso)
+                continue
+
+            try:
+                snapshot, _ = await self.parser.parse(schedule_id)
+                day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
+
+                if day_item is not None and day_item.lessons:
+                    # Count frequency of each lesson (subject, teacher) for +1, +2, +3 etc.
+                    counts: dict[tuple[str, str], int] = defaultdict(int)
+                    for lesson in day_item.lessons:
+                        subj = lesson.subject.strip()
+                        teach = lesson.teacher.strip()
+                        if subj:
+                            counts[(subj, teach)] += 1
+
+                    for (subj, teach), cnt in counts.items():
+                        self.lesson_counter_service.auto_increment_or_create_subject_in_json(
+                            group_name=group_name,
+                            schedule_id=schedule_id,
+                            subject=subj,
+                            teacher=teach,
+                            count=cnt,
+                        )
+
+                # Mark as processed idempotently
+                await self.db.mark_daily_counter_processed(target_date_iso, group_name)
+                logger.info("Auto daily lesson counter: processed %s for %s", group_name, target_date_iso)
+            except Exception as exc:
+                logger.warning("Failed to auto-process daily lesson counters for group %s (%s): %s", group_name, target_date_iso, exc)

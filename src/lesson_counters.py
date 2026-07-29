@@ -100,10 +100,12 @@ def teacher_matches(config_teacher_norm: str, lesson_teacher: str) -> bool:
 
 
 class LessonCounterService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, lesson_counters_path: Path | None = None) -> None:
         self.db = db
+        self.lesson_counters_path = lesson_counters_path
 
     async def load_config_file(self, path: Path, group_catalog: GroupCatalog) -> list[dict]:
+        self.lesson_counters_path = path
         if not path.exists():
             logger.warning("Lesson counters config file does not exist: %s", path)
             return []
@@ -247,8 +249,28 @@ class LessonCounterService:
         group_name: str | None = None,
         html: bool = False,
     ) -> str:
-        counters = await self.db.list_lesson_counters(schedule_id)
-        if not counters:
+        json_counters: list[dict] = []
+        if self.lesson_counters_path and self.lesson_counters_path.exists():
+            try:
+                with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                groups = data.get("groups", [])
+                target_group = None
+                for g in groups:
+                    if group_name and str(g.get("group_name") or g.get("name") or "").strip().lower() == group_name.strip().lower():
+                        target_group = g
+                        break
+                    if schedule_id and g.get("schedule_id") == schedule_id:
+                        target_group = g
+                        break
+                if target_group:
+                    json_counters = target_group.get("subjects", [])
+            except Exception as exc:
+                logger.warning("Failed to load lesson counters JSON: %s", exc)
+
+        db_counters = await self.db.list_lesson_counters(schedule_id) if schedule_id else []
+
+        if not json_counters and not db_counters:
             return "Список дисциплин пока не настроен."
 
         lines: list[str] = []
@@ -264,14 +286,169 @@ class LessonCounterService:
             )
 
         blocks: list[str] = []
-        for counter in counters:
-            subject = str(counter["subject"])
-            teacher = str(counter["teacher"])
-            if html:
-                subject = f"<b>{escape(subject)}</b>"
-                teacher = escape(teacher)
-            passed = int(counter["passed_count"] or 0)
-            total = int(counter["total_count"] or 0)
-            blocks.append(f"{subject}\n{teacher}\nПрошло - {passed}, всего - {total}")
+        has_unspecified = False
+
+        if json_counters:
+            for item in json_counters:
+                subject = str(item.get("display_name") or item.get("subject") or "").strip()
+                teacher = str(item.get("teacher") or "").strip()
+                passed = item.get("passed", 0)
+                total = item.get("total")
+
+                try:
+                    passed_int = max(0, int(passed or 0))
+                except (ValueError, TypeError):
+                    passed_int = 0
+
+                if total is None or total == "" or str(total).strip() == "##?":
+                    total_str = "##?"
+                    has_unspecified = True
+                else:
+                    try:
+                        total_int = int(total)
+                        total_str = str(total_int) if total_int > 0 else "##?"
+                        if total_int <= 0:
+                            has_unspecified = True
+                    except (ValueError, TypeError):
+                        total_str = "##?"
+                        has_unspecified = True
+
+                if html:
+                    subj_fmt = f"<b>{escape(subject)}</b>" if subject else ""
+                    teach_fmt = escape(teacher) if teacher else ""
+                else:
+                    subj_fmt = subject
+                    teach_fmt = teacher
+
+                if teach_fmt:
+                    blocks.append(f"{subj_fmt}\n{teach_fmt}\nПрошло - {passed_int}, всего - {total_str}")
+                else:
+                    blocks.append(f"{subj_fmt}\nПрошло - {passed_int}, всего - {total_str}")
+        else:
+            for counter in db_counters:
+                subject = str(counter["subject"])
+                teacher = str(counter["teacher"])
+                if html:
+                    subject = f"<b>{escape(subject)}</b>"
+                    teacher = escape(teacher)
+                passed = int(counter["passed_count"] or 0)
+                total = int(counter["total_count"] or 0)
+                total_str = str(total) if total > 0 else "##?"
+                if total <= 0:
+                    has_unspecified = True
+                blocks.append(f"{subject}\n{teacher}\nПрошло - {passed}, всего - {total_str}")
+
         lines.append("\n\n".join(blocks))
+
+        if has_unspecified:
+            if html:
+                lines.extend([
+                    "",
+                    "💡 <i>Замечена пара с не указанным итоговым количеством пар (##?)! Обратитесь к администратору (<a href=\"https://t.me/nekoty\">t.me/nekoty</a> или <a href=\"https://vk.ru/nekotyy\">vk.ru/nekotyy</a>), чтобы указать итоговое количество пар.</i>"
+                ])
+            else:
+                lines.extend([
+                    "",
+                    "💡 Замечена пара с не указанным итоговым количеством пар (##?)! Обратитесь к администратору (t.me/nekoty или vk.ru/nekotyy), чтобы указать итоговое количество пар."
+                ])
+
         return "\n".join(lines)
+
+    def auto_increment_or_create_subject_in_json(
+        self,
+        group_name: str,
+        schedule_id: int | None,
+        subject: str,
+        teacher: str,
+        count: int = 1,
+    ) -> bool:
+        if not self.lesson_counters_path:
+            return False
+        self.lesson_counters_path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {"groups": []}
+        if self.lesson_counters_path.exists():
+            try:
+                with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as exc:
+                logger.warning("Failed to read JSON file before auto-increment: %s", exc)
+                data = {"groups": []}
+
+        groups = data.get("groups", [])
+        target_group = None
+        for g in groups:
+            g_name = str(g.get("group_name") or g.get("name") or "").strip()
+            if g_name.lower() == group_name.strip().lower():
+                target_group = g
+                break
+            if schedule_id and g.get("schedule_id") == schedule_id:
+                target_group = g
+                break
+
+        if target_group is None:
+            target_group = {
+                "group_name": group_name,
+                "schedule_id": schedule_id,
+                "subjects": [],
+            }
+            groups.append(target_group)
+            data["groups"] = groups
+
+        subjects = target_group.setdefault("subjects", [])
+        found_subject = None
+        subj_norm = normalize_lesson_text(subject)
+        teach_norm = normalize_lesson_text(teacher)
+
+        for item in subjects:
+            item_subj = normalize_lesson_text(str(item.get("display_name") or item.get("subject") or ""))
+            item_teach = normalize_lesson_text(str(item.get("teacher") or ""))
+            if subject_matches(item_subj, subject) and (not item_teach or teacher_matches(item_teach, teacher)):
+                found_subject = item
+                break
+            if item_subj == subj_norm and item_teach == teach_norm:
+                found_subject = item
+                break
+
+        if found_subject is not None:
+            current_passed = found_subject.get("passed", 0)
+            try:
+                current_passed = int(current_passed or 0)
+            except (ValueError, TypeError):
+                current_passed = 0
+            found_subject["passed"] = current_passed + count
+        else:
+            subjects.append({
+                "group_name": group_name,
+                "subject": subject,
+                "display_name": subject,
+                "teacher": teacher,
+                "passed": count,
+                "total": None,
+            })
+
+        try:
+            with open(self.lesson_counters_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to save auto-incremented lesson counters JSON: %s", exc)
+            return False
+
+    def reset_group_counters(self, group_name: str | None = None) -> bool:
+        if not self.lesson_counters_path or not self.lesson_counters_path.exists():
+            return False
+        try:
+            with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            groups = data.get("groups", [])
+            for g in groups:
+                g_name = str(g.get("group_name") or g.get("name") or "").strip()
+                if group_name is None or g_name.lower() == group_name.strip().lower():
+                    for s in g.get("subjects", []):
+                        s["passed"] = 0
+            with open(self.lesson_counters_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to reset lesson counters: %s", exc)
+            return False
