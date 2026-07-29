@@ -59,5 +59,21 @@ class BotInitializationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(vk_bot, VkBot, "build_vk_bot must return a vkbottle.bot.Bot instance!")
 
 
+    async def test_main_broker_imports_and_instantiation(self):
+        from src.message_broker import AutoDailyLessonCounterJobBroker
+        broker = AutoDailyLessonCounterJobBroker(
+            url="amqp://guest:guest@localhost:5672/",
+            queue_name="test_auto_daily_counter_queue",
+            prefetch_count=1,
+        )
+        self.assertIsNotNone(broker)
+        self.assertEqual(broker.queue_name, "test_auto_daily_counter_queue")
+        self.assertTrue(broker.enabled)
+
+    def test_main_imports_check(self):
+        import src.main as main_module
+        self.assertTrue(hasattr(main_module, "AutoDailyLessonCounterJobBroker"))
+
+
 if __name__ == "__main__":
     unittest.main()

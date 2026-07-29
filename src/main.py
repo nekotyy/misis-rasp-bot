@@ -13,6 +13,7 @@ from src.db_migrations import apply_migrations
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
 from src.message_broker import (
+    AutoDailyLessonCounterJobBroker,
     DatabaseCleanupJobBroker,
     LessonCounterJobBroker,
     RabbitMQBroker,
@@ -148,11 +149,15 @@ async def main() -> None:
         queue_name=settings.db_cleanup_queue,
         prefetch_count=1,
     )
-    auto_daily_lesson_counter_broker = AutoDailyLessonCounterJobBroker(
-        url=settings.rabbitmq_url,
-        queue_name=settings.auto_daily_lesson_counter_queue,
-        prefetch_count=1,
-    )
+    try:
+        auto_daily_lesson_counter_broker = AutoDailyLessonCounterJobBroker(
+            url=settings.rabbitmq_url,
+            queue_name=settings.auto_daily_lesson_counter_queue,
+            prefetch_count=1,
+        )
+    except Exception as exc:
+        logging.error("Failed to initialize AutoDailyLessonCounterJobBroker: %s. Direct fallback will be used.", exc)
+        auto_daily_lesson_counter_broker = None
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
