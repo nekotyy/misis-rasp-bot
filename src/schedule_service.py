@@ -6,12 +6,64 @@ from html import escape
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
 
 
+MONTHS_RU = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
+
+
+def format_human_date(date_val: str | None, default_year: int | None = None) -> str:
+    if not date_val:
+        return ""
+    val = str(date_val).strip()
+
+    # If YYYY-MM-DD
+    if len(val) >= 10 and val[4] == "-" and val[7] == "-":
+        try:
+            parts = val.split("-")
+            year = int(parts[0])
+            month = int(parts[1])
+            day = int(parts[2][:2])
+            month_name = MONTHS_RU.get(month, f"{month:02d}")
+            return f"{day} {month_name} {year} года"
+        except (ValueError, IndexError):
+            pass
+
+    # If DD.MM or DD.MM.YYYY
+    if "." in val:
+        parts = val.split(".")
+        try:
+            day = int(parts[0])
+            month = int(parts[1])
+            month_name = MONTHS_RU.get(month, f"{month:02d}")
+            if len(parts) >= 3 and len(parts[2]) >= 4:
+                year = int(parts[2][:4])
+                return f"{day} {month_name} {year} года"
+            curr_year = default_year or datetime.now().year
+            return f"{day} {month_name} {curr_year} года"
+        except (ValueError, IndexError):
+            pass
+
+    return val
+
+
 class ScheduleFormatter:
     @staticmethod
     def format_day(day: DaySchedule) -> str:
+        human_label = format_human_date(day.date_label or day.date_iso)
         if not day.lessons:
-            return f"{day.date_label}\nПар нет."
-        lines = [day.date_label]
+            return f"{human_label}\nПар нет."
+        lines = [human_label]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(
                 f"{lesson.number}. {lesson.subject} | {lesson.teacher} | ауд. {lesson.classroom}"
@@ -20,11 +72,11 @@ class ScheduleFormatter:
 
     @staticmethod
     def format_day_card(day: DaySchedule, title: str) -> str:
-        safe_label = escape(day.date_label)
+        human_label = escape(format_human_date(day.date_label or day.date_iso))
         if not day.lessons:
-            return f"Расписание на {safe_label}\n\nПар нет."
+            return f"Расписание на {human_label}\n\nПар нет."
 
-        lines = [f"Расписание на {safe_label}", ""]
+        lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(
                 f"<b>{lesson.number}.</b> в <b>{escape(lesson.classroom)}</b> "
@@ -34,9 +86,10 @@ class ScheduleFormatter:
 
     @staticmethod
     def format_day_plain(day: DaySchedule) -> str:
+        human_label = format_human_date(day.date_label or day.date_iso)
         if not day.lessons:
-            return f"Расписание на {day.date_label}\n\nПар нет."
-        lines = [f"Расписание на {day.date_label}", ""]
+            return f"Расписание на {human_label}\n\nПар нет."
+        lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
@@ -58,7 +111,9 @@ class ScheduleFormatter:
             if not lessons:
                 continue
             added_any = True
-            lines.append(day.get("date_iso") or day.get("date_label", ""))
+            raw_date = day.get("date_label") or day.get("date_iso") or ""
+            human_date = format_human_date(raw_date)
+            lines.append(human_date)
             for lesson in lessons:
                 lines.append(
                     f"{lesson['number']} в {lesson['classroom']} "
