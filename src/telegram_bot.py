@@ -303,6 +303,7 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
         ],
         [
+            InlineKeyboardButton(text="Очистить БД", callback_data="admin:cleandb"),
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -410,6 +411,7 @@ def build_dispatcher(
     broadcaster: Broadcaster | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
+    schedule_jobs: Any | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
@@ -1966,6 +1968,20 @@ def build_dispatcher(
             reply_markup=DONATE_KEYBOARD,
         )
 
+    @dispatcher.message(Command("cleandb"))
+    async def handle_cleandb_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None or not user_is_admin(message.from_user.id):
+            return
+
+        await send_reply(
+            message,
+            "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+            "После завершения очистки служебный отчёт будет выслан администраторам.",
+        )
+        if schedule_jobs is not None:
+            await schedule_jobs.enqueue_or_run_db_cleanup()
+
     @dispatcher.message(Command("dnremove"))
     async def handle_dnremove_command(message: Message) -> None:
         await register_message_user(message)
@@ -2496,11 +2512,24 @@ def build_dispatcher(
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
             "lesson_confirm", "lesson_confirm_force",
-            "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel",
+            "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
         admin_user = await get_user_record(callback.from_user.id)
+        if action == "cleandb":
+            await safe_callback_answer(callback, "Запущена принудительная очистка БД...")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+                "После завершения очистки служебный отчёт будет выслан администраторам.",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            if schedule_jobs is not None:
+                await schedule_jobs.enqueue_or_run_db_cleanup()
+            return
         if action == "broadcast":
             awaiting_admin_broadcast_text.add(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)

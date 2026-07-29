@@ -101,6 +101,7 @@ def build_vk_bot(
     broadcaster: Broadcaster | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
+    schedule_jobs: Any | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
@@ -506,7 +507,7 @@ def build_vk_bot(
                 ['Удалить пару', 'Удалить пары'],
                 ["Пользователи", "Информация по группам"],
                 ["Разослать", "Тестовая рассылка"],
-                ["Закрыть админку"],
+                ["Очистить БД", "Закрыть админку"],
             ]
         )
 
@@ -2037,6 +2038,17 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
+            if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):
+                await show_screen(
+                    peer_id,
+                    "⚡ Запущена принудительная очистка базы данных через RabbitMQ...\n\n"
+                    "После завершения очистки служебный отчёт будет выслан администраторам.",
+                    keyboard=admin_keyboard(),
+                )
+                if schedule_jobs is not None:
+                    await schedule_jobs.enqueue_or_run_db_cleanup()
+                return
+
             if text == "Разослать":
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_broadcast_input"
