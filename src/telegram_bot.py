@@ -1924,8 +1924,8 @@ def build_dispatcher(
         prices = [LabeledPrice(label="Пожертвование", amount=stars)]
         await bot_inst.send_invoice(
             chat_id=chat_id,
-            title="Поддержка бота",
-            description=f"Спасибо за поддержку проекта! Вы пожертвовали {stars} ⭐.",
+            title="Поддержка проекта",
+            description=f"Пожертвование {stars} ⭐ на развитие и поддержку работы бота.",
             payload=f"star_donate:{user_id}:{stars}",
             provider_token="",
             currency="XTR",
@@ -1957,8 +1957,11 @@ def build_dispatcher(
         if message.from_user:
             awaiting_custom_donate_stars.discard(message.from_user.id)
         prompt_text = (
-            f"{STAR_ICON} <b>Пожертвование проекту</b>\n\n"
-            "Выбери количество звезд для поддержки бота или отправь свое количество:"
+            f"{STAR_ICON} <b>Развитие бота расписания</b>\n\n"
+            "Бот работает 24/7, ежедневно обрабатывает тысячи запросов и мгновенно оповещает об изменениях в парах.\n"
+            "Поддерживая проект Telegram Звёздами (Stars), ты помогаешь оплачивать хостинг и ускорять разработку новых возможностей.\n"
+            "💡 Любая поддержка помогает проекту расти и оставаться бесплатным для всех студентов!\n\n"
+            "Выбери количество звёзд ниже или отправь своё число в чат:"
         )
         await send_new_context_message(
             message.bot,
@@ -2089,7 +2092,7 @@ def build_dispatcher(
 
         thank_you_msg = (
             f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
-            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект продолжает развиваться и поддерживаться!"
+            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект становится лучше и продолжает работать 24/7! 💘"
         )
         await send_reply(message, thank_you_msg)
 
@@ -2476,7 +2479,7 @@ def build_dispatcher(
                     callback.bot,
                     callback.message.chat.id,
                     "donate",
-                    "Введи количество звезд для пожертвования (от 15 до 2000 звезд):",
+                    "✏️ <b>Своё количество звёзд</b>\n\nОтправь числом в чат, сколько звёзд ты хочешь пожертвовать (от 15 до 2000):",
                     reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
                 )
                 await safe_callback_answer(callback)
@@ -3539,7 +3542,7 @@ def build_dispatcher(
                     message.bot,
                     message.chat.id,
                     "donate",
-                    "Количество звезд должно быть целым числом от 15 до 2000 звезд. Попробуй еще раз:",
+                    "Пожалуйста, введи целое число от 15 до 2000 звёзд. Попробуй ещё раз:",
                     reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
                 )
                 return
