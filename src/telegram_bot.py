@@ -1536,22 +1536,55 @@ def build_dispatcher(
         except TelegramBadRequest:
             return
 
+def format_user_profile_link(platform: str, user_id: int | None, username: str | None = None, html: bool = True) -> str:
+    if user_id is None:
+        return "неизвестно"
+
+    plat = platform.lower()
+    clean_username = username.lstrip("@").strip() if username else None
+
+    if plat == "telegram":
+        if clean_username:
+            link_text = f"t.me/{clean_username}"
+            if html:
+                return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+            return f"{link_text} (ID: {user_id})"
+        else:
+            if html:
+                return f'<code>{user_id}</code> (<a href="tg://user?id={user_id}">профиль</a>)'
+            return f"ID: {user_id}"
+    else:  # vk
+        if clean_username:
+            link_text = f"vk.ru/{clean_username}"
+        else:
+            link_text = f"vk.ru/id{user_id}"
+
+        if html:
+            return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+        return f"{link_text} (ID: {user_id})"
+
+
     async def notify_admin_about_error(platform: str, user_id: int | None, chat_id: int | None, error: Exception) -> None:
         if broadcaster is None:
             return
+        db_user = await db.get_user(platform, user_id) if user_id is not None else None
+        username = db_user.username if db_user else None
+        user_info_tg = format_user_profile_link(platform, user_id, username, html=True)
+        user_info_vk = format_user_profile_link(platform, user_id, username, html=False)
+
         traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
         if len(traceback_text) > 2500:
             traceback_text = f"...{traceback_text[-2500:]}"
         telegram_text = (
             f"<b>Сбой в боте ({escape(platform)})</b>\n\n"
-            f"Пользователь: <b>{user_id if user_id is not None else 'неизвестно'}</b>\n"
+            f"Пользователь: {user_info_tg}\n"
             f"Чат: <b>{chat_id if chat_id is not None else 'неизвестно'}</b>\n"
             f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
             f"<pre>{escape(traceback_text)}</pre>"
         )
         vk_text = (
             f"Сбой в боте ({platform})\n\n"
-            f"Пользователь: {user_id if user_id is not None else 'неизвестно'}\n"
+            f"Пользователь: {user_info_vk}\n"
             f"Чат: {chat_id if chat_id is not None else 'неизвестно'}\n"
             f"Ошибка: {short_error_text(error)}\n\n"
             f"{traceback_text}"
@@ -2097,11 +2130,11 @@ def build_dispatcher(
         await send_reply(message, thank_you_msg)
 
         if settings.admin_telegram_id:
-            user_ref = f"@{username}" if username else f"<a href=\"tg://user?id={user_id}\">{escape(full_name or 'Пользователь')}</a>"
+            user_info = format_user_profile_link("telegram", user_id, username, html=True)
             now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             admin_msg = (
                 f"{STAR_ICON} <b>Новое пожертвование (Stars)!</b>\n\n"
-                f"<b>Отправитель:</b> {user_ref} (ID: <code>{user_id}</code>)\n"
+                f"<b>Отправитель:</b> {user_info}\n"
                 f"<b>Количество:</b> {stars} {STAR_ICON}\n"
                 f"<b>Дата и время:</b> {now_str}\n"
                 f"<b>ID операции:</b> <code>#{donation_id}</code>\n"
