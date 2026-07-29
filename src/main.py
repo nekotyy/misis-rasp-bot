@@ -12,7 +12,11 @@ from src.db import Database
 from src.db_migrations import apply_migrations
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
-from src.message_broker import LessonCounterJobBroker, RabbitMQBroker
+from src.message_broker import (
+    DatabaseCleanupJobBroker,
+    LessonCounterJobBroker,
+    RabbitMQBroker,
+)
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
@@ -137,6 +141,11 @@ async def main() -> None:
         queue_name=settings.lesson_counters_queue,
         prefetch_count=1,
     )
+    db_cleanup_broker = DatabaseCleanupJobBroker(
+        url=settings.rabbitmq_url,
+        queue_name=settings.db_cleanup_queue,
+        prefetch_count=1,
+    )
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
@@ -161,6 +170,7 @@ async def main() -> None:
         lesson_counters_enabled=settings.lesson_counters_enabled,
         lesson_counter_service=lesson_counter_service,
         lesson_counter_broker=lesson_counter_broker,
+        db_cleanup_broker=db_cleanup_broker,
         admin_backup_enabled=bool(settings.admin_telegram_id),
         admin_backup_interval_days=2,
         admin_telegram_id=settings.admin_telegram_id,
@@ -172,6 +182,10 @@ async def main() -> None:
         await jobs.start_lesson_counter_consumer()
     except Exception:
         logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+    try:
+        await jobs.start_db_cleanup_consumer()
+    except Exception:
+        logging.exception("Database cleanup RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.sync_current_snapshot()
     except Exception:

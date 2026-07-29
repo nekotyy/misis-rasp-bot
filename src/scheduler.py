@@ -13,7 +13,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
 from src.lesson_counters import LessonCounterService
-from src.message_broker import LessonCounterJob, LessonCounterJobBroker
+from src.message_broker import (
+    DatabaseCleanupJob,
+    DatabaseCleanupJobBroker,
+    LessonCounterJob,
+    LessonCounterJobBroker,
+)
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleComparator
@@ -36,6 +41,7 @@ class ScheduleJobs:
         lesson_counters_enabled: bool = False,
         lesson_counter_service: LessonCounterService | None = None,
         lesson_counter_broker: LessonCounterJobBroker | None = None,
+        db_cleanup_broker: DatabaseCleanupJobBroker | None = None,
         admin_backup_enabled: bool = False,
         admin_backup_interval_days: int = 2,
         admin_telegram_id: int | None = None,
@@ -51,6 +57,7 @@ class ScheduleJobs:
         self.lesson_counters_enabled = lesson_counters_enabled
         self.lesson_counter_service = lesson_counter_service
         self.lesson_counter_broker = lesson_counter_broker
+        self.db_cleanup_broker = db_cleanup_broker
         self.admin_backup_enabled = admin_backup_enabled
         self.admin_backup_interval_days = max(1, admin_backup_interval_days)
         self.admin_telegram_id = admin_telegram_id
@@ -85,6 +92,12 @@ class ScheduleJobs:
                 max_instances=1,
                 coalesce=True,
             )
+        self.scheduler.add_job(
+            self.enqueue_or_run_db_cleanup,
+            CronTrigger(day_of_week="mon", hour=4, minute=30),
+            max_instances=1,
+            coalesce=True,
+        )
 
     def start(self) -> None:
         self.configure()
@@ -96,6 +109,32 @@ class ScheduleJobs:
         if self.lesson_counter_broker is None or not self.lesson_counter_broker.enabled:
             return
         await self.lesson_counter_broker.start_consumer(self.handle_lesson_counter_job)
+
+    async def start_db_cleanup_consumer(self) -> None:
+        if self.db_cleanup_broker is None or not self.db_cleanup_broker.enabled:
+            return
+        await self.db_cleanup_broker.start_consumer(self.handle_db_cleanup_job)
+
+    async def enqueue_or_run_db_cleanup(self) -> None:
+        job = DatabaseCleanupJob(days=90)
+        if self.db_cleanup_broker is not None and self.db_cleanup_broker.enabled:
+            try:
+                published = await self.db_cleanup_broker.publish(job)
+                if published:
+                    logger.info("Database cleanup job published to RabbitMQ queue %s", self.db_cleanup_broker.queue_name)
+                    return
+            except Exception as exc:
+                logger.warning("Failed to publish db cleanup job to RabbitMQ: %s", exc)
+
+        await self.handle_db_cleanup_job(job)
+
+    async def handle_db_cleanup_job(self, job: DatabaseCleanupJob) -> None:
+        try:
+            res = await self.db.cleanup_old_records(days=job.days)
+            logger.info("Database cleanup (days=%s) completed: %s", job.days, res)
+        except Exception as exc:
+            logger.error("Database cleanup (days=%s) failed: %s", job.days, exc)
+            raise
 
     async def save_daily_baseline(self) -> None:
         if self._baseline_lock.locked():

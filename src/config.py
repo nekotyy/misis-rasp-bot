@@ -39,6 +39,7 @@ class Settings:
     rabbitmq_url: str
     rabbitmq_queue: str
     lesson_counters_queue: str
+    db_cleanup_queue: str
     rabbitmq_prefetch_count: int
     lesson_counters_enabled: bool
     lesson_counters_path: Path
@@ -69,6 +70,7 @@ class Settings:
             rabbitmq_url=os.getenv("RABBITMQ_URL", "").strip(),
             rabbitmq_queue=os.getenv("RABBITMQ_QUEUE", "misis_notifications").strip(),
             lesson_counters_queue=os.getenv("LESSON_COUNTERS_QUEUE", "misis_lesson_counters").strip(),
+            db_cleanup_queue=os.getenv("DB_CLEANUP_QUEUE", "misis_db_cleanup").strip(),
             rabbitmq_prefetch_count=int(os.getenv("RABBITMQ_PREFETCH_COUNT", "20").strip()),
             lesson_counters_enabled=_env_bool("LESSON_COUNTERS_ENABLED", default=False),
             lesson_counters_path=Path(os.getenv("LESSON_COUNTERS_PATH", "storage/lesson_counters.json")).resolve(),

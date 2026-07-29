@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 from src.models import ScheduleSnapshot, UserRecord
 
@@ -1460,3 +1463,45 @@ class Database:
                 (platform, user_id),
             )
             await db.commit()
+
+    async def cleanup_old_records(self, days: int = 90) -> dict[str, int]:
+        cutoff_days = max(1, days)
+        deleted_counts: dict[str, int] = {}
+        async with aiosqlite.connect(self.path) as db:
+            # 1. delivery_events
+            try:
+                cursor = await db.execute(
+                    f"DELETE FROM delivery_events WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                )
+                deleted_counts["delivery_events"] = cursor.rowcount if cursor.rowcount is not None else 0
+            except Exception as exc:
+                logger.warning("Failed to cleanup old delivery_events: %s", exc)
+                deleted_counts["delivery_events"] = 0
+
+            # 2. change_events
+            try:
+                cursor = await db.execute(
+                    f"DELETE FROM change_events WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                )
+                deleted_counts["change_events"] = cursor.rowcount if cursor.rowcount is not None else 0
+            except Exception as exc:
+                logger.warning("Failed to cleanup old change_events: %s", exc)
+                deleted_counts["change_events"] = 0
+
+            # 3. schedule_snapshots (preserve latest snapshot for each source_key)
+            try:
+                cursor = await db.execute(
+                    f"""
+                    DELETE FROM schedule_snapshots
+                    WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')
+                      AND id NOT IN (SELECT MAX(id) FROM schedule_snapshots GROUP BY source_key)
+                    """
+                )
+                deleted_counts["schedule_snapshots"] = cursor.rowcount if cursor.rowcount is not None else 0
+            except Exception as exc:
+                logger.warning("Failed to cleanup old schedule_snapshots: %s", exc)
+                deleted_counts["schedule_snapshots"] = 0
+
+            await db.commit()
+            logger.info("Database cleanup (older than %s days) completed. Deleted: %s", cutoff_days, deleted_counts)
+            return deleted_counts
