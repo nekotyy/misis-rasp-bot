@@ -404,6 +404,35 @@ DONATE_CUSTOM_CANCEL_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+
+def format_user_profile_link(platform: str, user_id: int | None, username: str | None = None, html: bool = True) -> str:
+    if user_id is None:
+        return "неизвестно"
+
+    plat = platform.lower()
+    clean_username = username.lstrip("@").strip() if username else None
+
+    if plat == "telegram":
+        if clean_username:
+            link_text = f"t.me/{clean_username}"
+            if html:
+                return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+            return f"{link_text} (ID: {user_id})"
+        else:
+            if html:
+                return f'<code>{user_id}</code> (<a href="tg://user?id={user_id}">профиль</a>)'
+            return f"ID: {user_id}"
+    else:  # vk
+        if clean_username:
+            link_text = f"vk.ru/{clean_username}"
+        else:
+            link_text = f"vk.ru/id{user_id}"
+
+        if html:
+            return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+        return f"{link_text} (ID: {user_id})"
+
+
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -1535,34 +1564,6 @@ def build_dispatcher(
             )
         except TelegramBadRequest:
             return
-
-def format_user_profile_link(platform: str, user_id: int | None, username: str | None = None, html: bool = True) -> str:
-    if user_id is None:
-        return "неизвестно"
-
-    plat = platform.lower()
-    clean_username = username.lstrip("@").strip() if username else None
-
-    if plat == "telegram":
-        if clean_username:
-            link_text = f"t.me/{clean_username}"
-            if html:
-                return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
-            return f"{link_text} (ID: {user_id})"
-        else:
-            if html:
-                return f'<code>{user_id}</code> (<a href="tg://user?id={user_id}">профиль</a>)'
-            return f"ID: {user_id}"
-    else:  # vk
-        if clean_username:
-            link_text = f"vk.ru/{clean_username}"
-        else:
-            link_text = f"vk.ru/id{user_id}"
-
-        if html:
-            return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
-        return f"{link_text} (ID: {user_id})"
-
 
     async def notify_admin_about_error(platform: str, user_id: int | None, chat_id: int | None, error: Exception) -> None:
         if broadcaster is None:
