@@ -136,6 +136,14 @@ class Database:
                     created_at TEXT NOT NULL,
                     refunded_at TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS daily_lesson_counter_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_date_iso TEXT NOT NULL,
+                    group_name TEXT NOT NULL,
+                    processed_at TEXT NOT NULL,
+                    UNIQUE(target_date_iso, group_name)
+                );
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -1530,3 +1538,27 @@ class Database:
         }
         logger.info("Database cleanup completed: %s", report_data)
         return report_data
+
+    async def is_daily_counter_processed(self, target_date_iso: str, group_name: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT 1 FROM daily_lesson_counter_logs
+                WHERE target_date_iso = ? AND group_name = ?
+                """,
+                (target_date_iso, group_name),
+            )
+            row = await cursor.fetchone()
+            return row is not None
+
+    async def mark_daily_counter_processed(self, target_date_iso: str, group_name: str) -> None:
+        now_str = datetime.now().isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO daily_lesson_counter_logs (target_date_iso, group_name, processed_at)
+                VALUES (?, ?, ?)
+                """,
+                (target_date_iso, group_name, now_str),
+            )
+            await db.commit()

@@ -148,6 +148,11 @@ async def main() -> None:
         queue_name=settings.db_cleanup_queue,
         prefetch_count=1,
     )
+    auto_daily_lesson_counter_broker = AutoDailyLessonCounterJobBroker(
+        url=settings.rabbitmq_url,
+        queue_name=settings.auto_daily_lesson_counter_queue,
+        prefetch_count=1,
+    )
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
@@ -166,6 +171,7 @@ async def main() -> None:
         lesson_counter_service=lesson_counter_service,
         lesson_counter_broker=lesson_counter_broker,
         db_cleanup_broker=db_cleanup_broker,
+        auto_daily_lesson_counter_broker=auto_daily_lesson_counter_broker,
         admin_backup_enabled=bool(settings.admin_telegram_id),
         admin_backup_interval_days=2,
         admin_telegram_id=settings.admin_telegram_id,
@@ -189,6 +195,10 @@ async def main() -> None:
         await jobs.start_db_cleanup_consumer()
     except Exception:
         logging.exception("Database cleanup RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+    try:
+        await jobs.start_auto_daily_lesson_counter_consumer()
+    except Exception:
+        logging.exception("Auto daily lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.sync_current_snapshot()
     except Exception:

@@ -412,3 +412,125 @@ class DatabaseCleanupJobBroker:
         self._queue = None
         self._channel = None
         self._connection = None
+
+
+@dataclass(slots=True)
+class AutoDailyLessonCounterJob:
+    target_date_iso: str
+    attempt: int = 1
+    max_attempts: int = 3
+    job_id: str | None = None
+
+
+AutoDailyLessonCounterHandler = Callable[[AutoDailyLessonCounterJob], Awaitable[None]]
+
+
+class AutoDailyLessonCounterJobBroker:
+    def __init__(self, url: str, queue_name: str, prefetch_count: int = 1) -> None:
+        self.url = url
+        self.queue_name = queue_name
+        self.prefetch_count = max(1, prefetch_count)
+        self._connection: aio_pika.RobustConnection | None = None
+        self._channel: aio_pika.abc.AbstractRobustChannel | None = None
+        self._queue: aio_pika.abc.AbstractQueue | None = None
+        self._consumer_tag: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url.strip())
+
+    async def connect(self) -> None:
+        if not self.enabled:
+            return
+        if self._connection is not None and not self._connection.is_closed:
+            return
+
+        self._connection = await aio_pika.connect_robust(self.url)
+        self._channel = await self._connection.channel()
+        await self._channel.set_qos(prefetch_count=self.prefetch_count)
+        self._queue = await self._channel.declare_queue(self.queue_name, durable=True)
+        logger.info("RabbitMQ connected. Auto daily lesson counter queue: %s", self.queue_name)
+
+    async def publish(self, payload: AutoDailyLessonCounterJob) -> bool:
+        if not self.enabled:
+            return False
+        await self.connect()
+        if self._channel is None:
+            return False
+
+        if not payload.job_id:
+            payload.job_id = str(uuid4())
+
+        body = json.dumps(asdict(payload), ensure_ascii=False).encode("utf-8")
+        await self._channel.default_exchange.publish(
+            Message(
+                body=body,
+                delivery_mode=DeliveryMode.PERSISTENT,
+                content_type="application/json",
+                message_id=payload.job_id,
+            ),
+            routing_key=self.queue_name,
+        )
+        return True
+
+    async def start_consumer(self, handler: AutoDailyLessonCounterHandler) -> None:
+        if not self.enabled:
+            return
+        await self.connect()
+        if self._queue is None:
+            return
+        if self._consumer_tag is not None:
+            return
+
+        async def _consume(message: IncomingMessage) -> None:
+            try:
+                payload = AutoDailyLessonCounterJob(**json.loads(message.body.decode("utf-8")))
+            except Exception as exc:
+                logger.warning("RabbitMQ auto daily lesson counter payload decode failed: %s", exc)
+                await message.reject(requeue=False)
+                return
+
+            try:
+                await handler(payload)
+            except Exception as exc:
+                current_attempt = payload.attempt
+                if current_attempt < payload.max_attempts:
+                    payload.attempt += 1
+                    try:
+                        await self.publish(payload)
+                    except Exception as publish_exc:
+                        logger.warning(
+                            "Auto daily lesson counter retry publish failed for job %s (attempt %s/%s): %s",
+                            payload.job_id,
+                            current_attempt,
+                            payload.max_attempts,
+                            publish_exc,
+                        )
+                        await message.nack(requeue=True)
+                        return
+                    await message.ack()
+                    return
+
+                logger.error(
+                    "Auto daily lesson counter job %s failed after %s attempts: %s",
+                    payload.job_id,
+                    current_attempt,
+                    exc,
+                )
+                await message.reject(requeue=False)
+                return
+
+            await message.ack()
+
+        self._consumer_tag = await self._queue.consume(_consume)
+        logger.info("RabbitMQ auto daily lesson counter consumer started for queue %s", self.queue_name)
+
+    async def close(self) -> None:
+        if self._channel is not None and not self._channel.is_closed:
+            await self._channel.close()
+        if self._connection is not None and not self._connection.is_closed:
+            await self._connection.close()
+        self._consumer_tag = None
+        self._queue = None
+        self._channel = None
+        self._connection = None
