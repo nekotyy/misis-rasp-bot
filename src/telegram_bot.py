@@ -303,6 +303,7 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
         ],
         [
+            InlineKeyboardButton(text="Очистить БД", callback_data="admin:cleandb"),
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -410,6 +411,7 @@ def build_dispatcher(
     broadcaster: Broadcaster | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
+    schedule_jobs: Any | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
@@ -1534,22 +1536,55 @@ def build_dispatcher(
         except TelegramBadRequest:
             return
 
+def format_user_profile_link(platform: str, user_id: int | None, username: str | None = None, html: bool = True) -> str:
+    if user_id is None:
+        return "неизвестно"
+
+    plat = platform.lower()
+    clean_username = username.lstrip("@").strip() if username else None
+
+    if plat == "telegram":
+        if clean_username:
+            link_text = f"t.me/{clean_username}"
+            if html:
+                return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+            return f"{link_text} (ID: {user_id})"
+        else:
+            if html:
+                return f'<code>{user_id}</code> (<a href="tg://user?id={user_id}">профиль</a>)'
+            return f"ID: {user_id}"
+    else:  # vk
+        if clean_username:
+            link_text = f"vk.ru/{clean_username}"
+        else:
+            link_text = f"vk.ru/id{user_id}"
+
+        if html:
+            return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
+        return f"{link_text} (ID: {user_id})"
+
+
     async def notify_admin_about_error(platform: str, user_id: int | None, chat_id: int | None, error: Exception) -> None:
         if broadcaster is None:
             return
+        db_user = await db.get_user(platform, user_id) if user_id is not None else None
+        username = db_user.username if db_user else None
+        user_info_tg = format_user_profile_link(platform, user_id, username, html=True)
+        user_info_vk = format_user_profile_link(platform, user_id, username, html=False)
+
         traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
         if len(traceback_text) > 2500:
             traceback_text = f"...{traceback_text[-2500:]}"
         telegram_text = (
             f"<b>Сбой в боте ({escape(platform)})</b>\n\n"
-            f"Пользователь: <b>{user_id if user_id is not None else 'неизвестно'}</b>\n"
+            f"Пользователь: {user_info_tg}\n"
             f"Чат: <b>{chat_id if chat_id is not None else 'неизвестно'}</b>\n"
             f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
             f"<pre>{escape(traceback_text)}</pre>"
         )
         vk_text = (
             f"Сбой в боте ({platform})\n\n"
-            f"Пользователь: {user_id if user_id is not None else 'неизвестно'}\n"
+            f"Пользователь: {user_info_vk}\n"
             f"Чат: {chat_id if chat_id is not None else 'неизвестно'}\n"
             f"Ошибка: {short_error_text(error)}\n\n"
             f"{traceback_text}"
@@ -1922,8 +1957,8 @@ def build_dispatcher(
         prices = [LabeledPrice(label="Пожертвование", amount=stars)]
         await bot_inst.send_invoice(
             chat_id=chat_id,
-            title="Поддержка бота",
-            description=f"Спасибо за поддержку проекта! Вы пожертвовали {stars} ⭐.",
+            title="Поддержка проекта",
+            description=f"Пожертвование {stars} ⭐ на развитие и поддержку работы бота.",
             payload=f"star_donate:{user_id}:{stars}",
             provider_token="",
             currency="XTR",
@@ -1955,8 +1990,11 @@ def build_dispatcher(
         if message.from_user:
             awaiting_custom_donate_stars.discard(message.from_user.id)
         prompt_text = (
-            f"{STAR_ICON} <b>Пожертвование проекту</b>\n\n"
-            "Выбери количество звезд для поддержки бота или отправь свое количество:"
+            f"{STAR_ICON} <b>Развитие бота расписания</b>\n\n"
+            "Бот работает 24/7, ежедневно обрабатывает тысячи запросов и мгновенно оповещает об изменениях в парах.\n"
+            "Поддерживая проект Telegram Звёздами (Stars), ты помогаешь оплачивать хостинг и ускорять разработку новых возможностей.\n"
+            "💡 Любая поддержка помогает проекту расти и оставаться бесплатным для всех студентов!\n\n"
+            "Выбери количество звёзд ниже или отправь своё число в чат:"
         )
         await send_new_context_message(
             message.bot,
@@ -1965,6 +2003,20 @@ def build_dispatcher(
             prompt_text,
             reply_markup=DONATE_KEYBOARD,
         )
+
+    @dispatcher.message(Command("cleandb"))
+    async def handle_cleandb_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None or not user_is_admin(message.from_user.id):
+            return
+
+        await send_reply(
+            message,
+            "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+            "После завершения очистки служебный отчёт будет выслан администраторам.",
+        )
+        if schedule_jobs is not None:
+            await schedule_jobs.enqueue_or_run_db_cleanup()
 
     @dispatcher.message(Command("dnremove"))
     async def handle_dnremove_command(message: Message) -> None:
@@ -2073,16 +2125,16 @@ def build_dispatcher(
 
         thank_you_msg = (
             f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
-            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект продолжает развиваться и поддерживаться!"
+            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект становится лучше и продолжает работать 24/7! 💘"
         )
         await send_reply(message, thank_you_msg)
 
         if settings.admin_telegram_id:
-            user_ref = f"@{username}" if username else f"<a href=\"tg://user?id={user_id}\">{escape(full_name or 'Пользователь')}</a>"
+            user_info = format_user_profile_link("telegram", user_id, username, html=True)
             now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             admin_msg = (
                 f"{STAR_ICON} <b>Новое пожертвование (Stars)!</b>\n\n"
-                f"<b>Отправитель:</b> {user_ref} (ID: <code>{user_id}</code>)\n"
+                f"<b>Отправитель:</b> {user_info}\n"
                 f"<b>Количество:</b> {stars} {STAR_ICON}\n"
                 f"<b>Дата и время:</b> {now_str}\n"
                 f"<b>ID операции:</b> <code>#{donation_id}</code>\n"
@@ -2460,7 +2512,7 @@ def build_dispatcher(
                     callback.bot,
                     callback.message.chat.id,
                     "donate",
-                    "Введи количество звезд для пожертвования (от 15 до 2000 звезд):",
+                    "✏️ <b>Своё количество звёзд</b>\n\nОтправь числом в чат, сколько звёзд ты хочешь пожертвовать (от 15 до 2000):",
                     reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
                 )
                 await safe_callback_answer(callback)
@@ -2496,11 +2548,24 @@ def build_dispatcher(
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
             "lesson_confirm", "lesson_confirm_force",
-            "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel",
+            "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
         admin_user = await get_user_record(callback.from_user.id)
+        if action == "cleandb":
+            await safe_callback_answer(callback, "Запущена принудительная очистка БД...")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+                "После завершения очистки служебный отчёт будет выслан администраторам.",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            if schedule_jobs is not None:
+                await schedule_jobs.enqueue_or_run_db_cleanup()
+            return
         if action == "broadcast":
             awaiting_admin_broadcast_text.add(callback.from_user.id)
             admin_broadcast_drafts.pop(callback.from_user.id, None)
@@ -3510,7 +3575,7 @@ def build_dispatcher(
                     message.bot,
                     message.chat.id,
                     "donate",
-                    "Количество звезд должно быть целым числом от 15 до 2000 звезд. Попробуй еще раз:",
+                    "Пожалуйста, введи целое число от 15 до 2000 звёзд. Попробуй ещё раз:",
                     reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
                 )
                 return

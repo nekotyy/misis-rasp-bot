@@ -13,7 +13,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
 from src.lesson_counters import LessonCounterService
-from src.message_broker import LessonCounterJob, LessonCounterJobBroker
+from src.message_broker import (
+    DatabaseCleanupJob,
+    DatabaseCleanupJobBroker,
+    LessonCounterJob,
+    LessonCounterJobBroker,
+)
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleComparator
@@ -22,6 +27,74 @@ logger = logging.getLogger(__name__)
 
 SourceRow = dict[str, Any]
 SourceWorker = Callable[..., Awaitable[None]]
+
+
+def format_bytes(bytes_count: int) -> str:
+    if bytes_count < 1024:
+        return f"{bytes_count} Б"
+    if bytes_count < 1024 * 1024:
+        return f"{bytes_count / 1024:.2f} КБ"
+    return f"{bytes_count / (1024 * 1024):.2f} МБ"
+
+
+def format_db_cleanup_admin_report(res: dict, html: bool = True) -> str:
+    started_at = res.get("started_at", "-")
+    finished_at = res.get("finished_at", "-")
+    elapsed = res.get("elapsed_seconds", 0.0)
+    cutoff_days = res.get("cutoff_days", 90)
+    deleted_counts = res.get("deleted_counts", {})
+    total_deleted = res.get("total_deleted", 0)
+
+    size_before = format_bytes(res.get("size_before_bytes", 0))
+    size_after = format_bytes(res.get("size_after_bytes", 0))
+    freed = format_bytes(res.get("freed_bytes", 0))
+
+    delivery_cnt = deleted_counts.get("delivery_events", 0)
+    change_cnt = deleted_counts.get("change_events", 0)
+    snapshots_cnt = deleted_counts.get("schedule_snapshots", 0)
+
+    if html:
+        return "\n".join([
+            "🧹 <b>Автоматическая очистка БД завершена</b>",
+            "",
+            "ℹ️ <b>Служебная информация:</b>",
+            f"• <b>Время запуска:</b> {started_at}",
+            f"• <b>Время окончания:</b> {finished_at}",
+            f"• <b>Длительность:</b> {elapsed} сек.",
+            f"• <b>Условие очистки:</b> записи старше {cutoff_days} дней",
+            "",
+            "🗑️ <b>Удалено записей:</b>",
+            f"• <code>delivery_events</code>: {delivery_cnt:,}".replace(",", " "),
+            f"• <code>change_events</code>: {change_cnt:,}".replace(",", " "),
+            f"• <code>schedule_snapshots</code>: {snapshots_cnt:,}".replace(",", " "),
+            f"• <b>Всего удалено:</b> {total_deleted:,} шт.".replace(",", " "),
+            "",
+            "💾 <b>Размер базы данных:</b>",
+            f"• <b>До очистки:</b> {size_before}",
+            f"• <b>После очистки:</b> {size_after}",
+            f"• <b>Освобождено на диске:</b> {freed}",
+        ])
+    else:
+        return "\n".join([
+            "Автоматическая очистка БД завершена",
+            "",
+            "Служебная информация:",
+            f"• Время запуска: {started_at}",
+            f"• Время окончания: {finished_at}",
+            f"• Длительность: {elapsed} сек.",
+            f"• Условие очистки: записи старше {cutoff_days} дней",
+            "",
+            "Удалено записей:",
+            f"• delivery_events: {delivery_cnt}",
+            f"• change_events: {change_cnt}",
+            f"• schedule_snapshots: {snapshots_cnt}",
+            f"• Всего удалено: {total_deleted} шт.",
+            "",
+            "Размер базы данных:",
+            f"• До очистки: {size_before}",
+            f"• После очистки: {size_after}",
+            f"• Освобождено на диске: {freed}",
+        ])
 
 
 class ScheduleJobs:
@@ -36,6 +109,7 @@ class ScheduleJobs:
         lesson_counters_enabled: bool = False,
         lesson_counter_service: LessonCounterService | None = None,
         lesson_counter_broker: LessonCounterJobBroker | None = None,
+        db_cleanup_broker: DatabaseCleanupJobBroker | None = None,
         admin_backup_enabled: bool = False,
         admin_backup_interval_days: int = 2,
         admin_telegram_id: int | None = None,
@@ -51,6 +125,7 @@ class ScheduleJobs:
         self.lesson_counters_enabled = lesson_counters_enabled
         self.lesson_counter_service = lesson_counter_service
         self.lesson_counter_broker = lesson_counter_broker
+        self.db_cleanup_broker = db_cleanup_broker
         self.admin_backup_enabled = admin_backup_enabled
         self.admin_backup_interval_days = max(1, admin_backup_interval_days)
         self.admin_telegram_id = admin_telegram_id
@@ -85,6 +160,12 @@ class ScheduleJobs:
                 max_instances=1,
                 coalesce=True,
             )
+        self.scheduler.add_job(
+            self.enqueue_or_run_db_cleanup,
+            CronTrigger(day_of_week="mon", hour=4, minute=30),
+            max_instances=1,
+            coalesce=True,
+        )
 
     def start(self) -> None:
         self.configure()
@@ -96,6 +177,35 @@ class ScheduleJobs:
         if self.lesson_counter_broker is None or not self.lesson_counter_broker.enabled:
             return
         await self.lesson_counter_broker.start_consumer(self.handle_lesson_counter_job)
+
+    async def start_db_cleanup_consumer(self) -> None:
+        if self.db_cleanup_broker is None or not self.db_cleanup_broker.enabled:
+            return
+        await self.db_cleanup_broker.start_consumer(self.handle_db_cleanup_job)
+
+    async def enqueue_or_run_db_cleanup(self) -> None:
+        job = DatabaseCleanupJob(days=90)
+        if self.db_cleanup_broker is not None and self.db_cleanup_broker.enabled:
+            try:
+                published = await self.db_cleanup_broker.publish(job)
+                if published:
+                    logger.info("Database cleanup job published to RabbitMQ queue %s", self.db_cleanup_broker.queue_name)
+                    return
+            except Exception as exc:
+                logger.warning("Failed to publish db cleanup job to RabbitMQ: %s", exc)
+
+        await self.handle_db_cleanup_job(job)
+
+    async def handle_db_cleanup_job(self, job: DatabaseCleanupJob) -> None:
+        try:
+            res = await self.db.cleanup_old_records(days=job.days)
+            logger.info("Database cleanup (days=%s) completed: %s", job.days, res)
+            tg_report = format_db_cleanup_admin_report(res, html=True)
+            vk_report = format_db_cleanup_admin_report(res, html=False)
+            await self.broadcaster.notify_admins(telegram_message=tg_report, vk_message=vk_report)
+        except Exception as exc:
+            logger.error("Database cleanup (days=%s) failed: %s", job.days, exc)
+            raise
 
     async def save_daily_baseline(self) -> None:
         if self._baseline_lock.locked():

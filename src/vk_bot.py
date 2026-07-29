@@ -23,7 +23,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
-from src.telegram_bot import format_broadcast_progress_status
+from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
@@ -101,6 +101,7 @@ def build_vk_bot(
     broadcaster: Broadcaster | None = None,
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
+    schedule_jobs: Any | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
@@ -200,19 +201,24 @@ def build_vk_bot(
     async def notify_admin_about_error(user_id: int | None, peer_id: int | None, error: Exception) -> None:
         if broadcaster is None:
             return
+        db_user = await db.get_user("vk", user_id) if user_id is not None else None
+        username = db_user.username if db_user else None
+        user_info_tg = format_user_profile_link("vk", user_id, username, html=True)
+        user_info_vk = format_user_profile_link("vk", user_id, username, html=False)
+
         traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
         if len(traceback_text) > 2500:
             traceback_text = f"...{traceback_text[-2500:]}"
         telegram_text = (
             "<b>Сбой в боте (vk)</b>\n\n"
-            f"Пользователь: <b>{user_id if user_id is not None else 'неизвестно'}</b>\n"
+            f"Пользователь: {user_info_tg}\n"
             f"Чат: <b>{peer_id if peer_id is not None else 'неизвестно'}</b>\n"
             f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
             f"<pre>{escape(traceback_text)}</pre>"
         )
         vk_text = (
             "Сбой в боте (vk)\n\n"
-            f"Пользователь: {user_id if user_id is not None else 'неизвестно'}\n"
+            f"Пользователь: {user_info_vk}\n"
             f"Чат: {peer_id if peer_id is not None else 'неизвестно'}\n"
             f"Ошибка: {short_error_text(error)}\n\n"
             f"{traceback_text}"
@@ -506,15 +512,19 @@ def build_vk_bot(
                 ['Удалить пару', 'Удалить пары'],
                 ["Пользователи", "Информация по группам"],
                 ["Разослать", "Тестовая рассылка"],
-                ["Закрыть админку"],
+                ["Очистить БД", "Закрыть админку"],
             ]
         )
 
     def admin_user_profile_link(user) -> str:
         if user.platform == "vk":
-            return f"https://vk.com/id{user.user_id}"
+            if user.username:
+                clean = user.username.lstrip("@").strip()
+                return f"https://vk.ru/{clean}"
+            return f"https://vk.ru/id{user.user_id}"
         if user.username:
-            return f"https://t.me/{user.username}"
+            clean = user.username.lstrip("@").strip()
+            return f"https://t.me/{clean}"
         return f"tg://user?id={user.user_id}"
 
     def admin_user_search_haystack(user) -> str:
@@ -2037,6 +2047,17 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
+            if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):
+                await show_screen(
+                    peer_id,
+                    "⚡ Запущена принудительная очистка базы данных через RabbitMQ...\n\n"
+                    "После завершения очистки служебный отчёт будет выслан администраторам.",
+                    keyboard=admin_keyboard(),
+                )
+                if schedule_jobs is not None:
+                    await schedule_jobs.enqueue_or_run_db_cleanup()
+                return
+
             if text == "Разослать":
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_broadcast_input"

@@ -12,7 +12,11 @@ from src.db import Database
 from src.db_migrations import apply_migrations
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
-from src.message_broker import LessonCounterJobBroker, RabbitMQBroker
+from src.message_broker import (
+    DatabaseCleanupJobBroker,
+    LessonCounterJobBroker,
+    RabbitMQBroker,
+)
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.scheduler import ScheduleJobs
@@ -63,6 +67,7 @@ def start_telegram_polling(
     broadcaster: Broadcaster,
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
+    schedule_jobs: ScheduleJobs | None = None,
 ) -> None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
@@ -74,7 +79,7 @@ def start_telegram_polling(
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         broadcaster.telegram_bot = bot
-        dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog)
+        dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
         try:
             await dispatcher.start_polling(bot)
         finally:
@@ -90,13 +95,14 @@ def start_vk_polling(
     broadcaster: Broadcaster,
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
+    schedule_jobs: ScheduleJobs | None = None,
 ) -> None:
     if not settings.vk_bot_token:
         logging.warning("VK_BOT_TOKEN не задан. VK-бот не будет запущен.")
         return
 
     async def _run_once() -> None:
-        vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog)
+        vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
         if vk_bot is None:
             return
         broadcaster.vk_bot = vk_bot
@@ -137,6 +143,11 @@ async def main() -> None:
         queue_name=settings.lesson_counters_queue,
         prefetch_count=1,
     )
+    db_cleanup_broker = DatabaseCleanupJobBroker(
+        url=settings.rabbitmq_url,
+        queue_name=settings.db_cleanup_queue,
+        prefetch_count=1,
+    )
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
@@ -144,13 +155,6 @@ async def main() -> None:
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
     )
-    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
-    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog)
-
-    try:
-        await broadcaster.start()
-    except Exception:
-        logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
     jobs = ScheduleJobs(
         db=db,
         parser=parser,
@@ -161,6 +165,7 @@ async def main() -> None:
         lesson_counters_enabled=settings.lesson_counters_enabled,
         lesson_counter_service=lesson_counter_service,
         lesson_counter_broker=lesson_counter_broker,
+        db_cleanup_broker=db_cleanup_broker,
         admin_backup_enabled=bool(settings.admin_telegram_id),
         admin_backup_interval_days=2,
         admin_telegram_id=settings.admin_telegram_id,
@@ -168,10 +173,22 @@ async def main() -> None:
         database_path=settings.database_path,
     )
     jobs.start()
+
+    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
+    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
+
+    try:
+        await broadcaster.start()
+    except Exception:
+        logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
     try:
         await jobs.start_lesson_counter_consumer()
     except Exception:
         logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+    try:
+        await jobs.start_db_cleanup_consumer()
+    except Exception:
+        logging.exception("Database cleanup RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.sync_current_snapshot()
     except Exception:
