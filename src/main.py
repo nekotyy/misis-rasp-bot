@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import aio_pika
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -155,7 +156,7 @@ async def main() -> None:
             queue_name=settings.auto_daily_lesson_counter_queue,
             prefetch_count=1,
         )
-    except Exception as exc:
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.error("Failed to initialize AutoDailyLessonCounterJobBroker: %s. Direct fallback will be used.", exc)
         auto_daily_lesson_counter_broker = None
     broadcaster = Broadcaster(
@@ -190,19 +191,19 @@ async def main() -> None:
 
     try:
         await broadcaster.start()
-    except Exception:
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
         logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
     try:
         await jobs.start_lesson_counter_consumer()
-    except Exception:
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
         logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.start_db_cleanup_consumer()
-    except Exception:
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
         logging.exception("Database cleanup RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.start_auto_daily_lesson_counter_consumer()
-    except Exception:
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
         logging.exception("Auto daily lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
     try:
         await jobs.sync_current_snapshot()

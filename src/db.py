@@ -284,7 +284,11 @@ class Database:
             )
             await db.commit()
 
+    _SAFE_IDENTIFIER_RE = __import__("re").compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
     async def _ensure_column(self, db: aiosqlite.Connection, table_name: str, column_name: str, definition: str) -> None:
+        if not self._SAFE_IDENTIFIER_RE.match(table_name) or not self._SAFE_IDENTIFIER_RE.match(column_name):
+            raise ValueError(f"Unsafe identifier: {table_name!r} / {column_name!r}")
         cursor = await db.execute(f"PRAGMA table_info({table_name})")
         columns = await cursor.fetchall()
         if any(column[1] == column_name for column in columns):

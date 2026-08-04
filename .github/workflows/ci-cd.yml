@@ -38,6 +38,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --no-install-project
 
+      - name: Lint with ruff
+        run: uv run --frozen ruff check src web_configurator tests scripts --output-format=github
+
       - name: Validate Python syntax
         run: uv run --frozen python -m compileall -q src web_configurator tests
 
