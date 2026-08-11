@@ -15,7 +15,8 @@ import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.enums import ChatMemberStatus
+from aiogram.types import CallbackQuery, ChatMemberUpdated, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
 
 from src.config import Settings
 from src.db import Database
@@ -329,6 +330,155 @@ ADMIN_KEYBOARD_LIMITED = InlineKeyboardMarkup(
     ]
 )
 
+
+def format_help_main_text() -> str:
+    return "\n".join([
+        "<b>Справочное руководство (Wiki)</b>",
+        "",
+        "Выберите раздел документации для получения подробной информации:",
+    ])
+
+
+def build_help_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1. Настройка групп и бесед", callback_data="help:group_setup")],
+        [InlineKeyboardButton(text="2. Поиск и подписки", callback_data="help:search_setup")],
+        [InlineKeyboardButton(text="3. Уведомления и расписание", callback_data="help:notifications_setup")],
+        [InlineKeyboardButton(text="4. Персонализация", callback_data="help:personalization_setup")],
+        [InlineKeyboardButton(text="5. Список команд", callback_data="help:commands_list")],
+        [InlineKeyboardButton(text="Назад в настройки", callback_data="menu:settings")],
+    ])
+
+
+def format_help_group_setup_text() -> str:
+    return "\n".join([
+        "<b>Справочник: Настройка групп и бесед</b>",
+        "",
+        "<b>1. Telegram (Групповые чаты):</b>",
+        "• Добавьте бота в ваш групповой чат Telegram.",
+        "• Назначьте бота администратором чата (с правом отправки сообщений).",
+        "• В чате отправьте команду <code>/startgroup</code> (или <code>/group</code>).",
+        "• Укажите название вашей учебной группы (например: <code>ИСП-25-1</code>).",
+        "<i>Примечание: настраивать группу могут администраторы чата или пользователь, добавивший бота.</i>",
+        "",
+        "<b>2. ВКонтакте (Беседы):</b>",
+        "• Зайдите в сообщество бота ВКонтакте и нажмите кнопку <b>«Добавить в беседу»</b> (под обложкой или в меню действия).",
+        "• Выберите нужную беседу и подтвердите добавление.",
+        "• В настройках беседы разрешите боту доступ к переписке (или назначьте администратором).",
+        "• Отправьте в беседу команду <code>/startgroup</code> или фразы <code>Настройка группы</code> / <code>Группа</code>.",
+        "• Укажите название вашей учебной группы (например: <code>ИСП-25-1</code>).",
+        "",
+        "<b>3. Настройка сообщества ВКонтакте (для владельца бота):</b>",
+        "• Чтобы пользователи могли добавлять бота в беседы: перейдите в <b>Управление сообществом -> Сообщения -> Настройки для бота</b> и включите галочку <b>«Разрешать добавлять сообщество в беседы»</b>.",
+        "",
+        "<b>4. Изменение и сброс группы в чате:</b>",
+        "• Чтобы привязать другую группу, администратор чата может повторно отправить <code>/startgroup</code> и указать новое название.",
+        "• После настройки бот автоматически присылает ежедневно расписание и изменения пар.",
+    ])
+
+
+def format_help_personal_setup_text() -> str:
+    return "\n".join([
+        "<b>Справочник: Поиск расписания и подписки</b>",
+        "",
+        "<b>1. Поиск учебной группы:</b>",
+        "• Введите название группы в формате сайта колледжа (например: <code>ИСП-25-1</code>). Регистр букв не имеет значения.",
+        "",
+        "<b>2. Поиск преподавателя:</b>",
+        "• Введите фамилию преподавателя (например: <code>Иванов</code>). Бот найдет личное расписание преподавателя.",
+        "",
+        "<b>3. Поиск аудитории / кабинета:</b>",
+        "• Введите номер кабинета (например: <code>101</code>). Бот покажет расписание занятий в этом кабинете.",
+        "",
+        "<b>4. Подписка преподавателя на кабинет:</b>",
+        "• Преподаватели могут привязать основной кабинет в меню <b>Дополнительно</b>, чтобы отслеживать замену аудиторий отдельно.",
+    ])
+
+
+def format_help_notifications_text() -> str:
+    return "\n".join([
+        "<b>Справочник: Уведомления и расписание</b>",
+        "",
+        "<b>1. Автоматические уведомления об изменениях:</b>",
+        "• Бот автоматически отслеживает изменения на сайте колледжа. При публикации замен подписчики получают мгновенное сообщение.",
+        "",
+        "<b>2. Управление рассылкой:</b>",
+        "• В меню <b>Дополнительно</b> вы можете в любой момент временно отключить или снова включить рассылку уведомлений.",
+        "",
+        "<b>3. Статистика пройденных пар:</b>",
+        "• В меню <b>Дополнительно -> Пройденные пары</b> доступна подробная статистика проведённых и оставшихся занятий.",
+    ])
+
+
+def format_help_personalization_text() -> str:
+    return "\n".join([
+        "<b>Справочник: Персонализация сообщений</b>",
+        "",
+        "<b>1. Кастомный стикер:</b>",
+        "• В меню <b>Дополнительно -> Персонализация</b> вы можете прикрепить собственный стикер.",
+        "• Установленный стикер будет присылаться перед уведомлениями об изменениях и сообщениями расписания.",
+        "",
+        "<b>2. Сброс стикера:</b>",
+        "• Отвязать стикер можно в том же меню персонализации в любой момент.",
+    ])
+
+
+def format_help_commands_text() -> str:
+    return "\n".join([
+        "<b>Справочник: Полный список команд</b>",
+        "",
+        "<b>Основные команды:</b>",
+        "• <code>/start</code> — запуск бота и вывод главного меню",
+        "• <code>/rasp</code> — посмотреть расписание",
+        "• <code>/settings</code> — открыть меню Дополнительно",
+        "• <code>/startgroup</code> — мастер настройки бота в групповом чате или беседе",
+        "• <code>/group</code> — быстрый вызов настройки группы",
+    ])
+
+
+def is_group_setup_command(text: str | None) -> bool:
+    if not text:
+        return False
+    raw = text.strip().casefold()
+    return (
+        raw.startswith("/startgroup")
+        or raw.startswith("/group")
+        or raw in {"/startgroup", "/group", "startgroup", "group"}
+    )
+
+
+async def resolve_subscription_input(
+    raw_text: str,
+    target_group_catalog: GroupCatalog | None = None,
+    target_search_catalog: ScheduleSearchCatalog | None = None,
+) -> tuple[dict | None, str | None]:
+    g_cat = target_group_catalog
+    s_cat = target_search_catalog
+    group = None
+    if g_cat is not None:
+        try:
+            group = await g_cat.find_group(raw_text)
+        except Exception as exc:
+            logger.warning("Error finding group in GroupCatalog: %s", exc)
+            return None, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут."
+
+    if group is not None:
+        return make_group_subscription(group.group_name, group.schedule_id), None
+
+    if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
+        return None, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут."
+
+    if s_cat is not None:
+        try:
+            target = await s_cat.find(raw_text)
+            if target is not None and target.kind == "teacher":
+                return make_teacher_subscription(target), None
+        except Exception as exc:
+            logger.warning("Error in search_catalog.find: %s", exc)
+            return None, "Сайт расписания колледжа сейчас временно недоступен. Попробуйте еще раз через несколько минут."
+
+    return None, SEARCH_NOT_FOUND_TEXT
+
 ADMIN_FILE_MAX_BYTES = 49 * 1024 * 1024
 
 ADMIN_BROADCAST_INPUT_KEYBOARD = InlineKeyboardMarkup(
@@ -564,18 +714,32 @@ def build_dispatcher(
         return status in {"administrator", "creator"}
 
     async def resolve_subscription_input(raw_text: str) -> tuple[dict | None, str | None]:
-        group = await group_catalog.find_group(raw_text) if group_catalog is not None else None
+        g_cat = group_catalog
+        s_cat = search_catalog
+        group = None
+        if g_cat is not None:
+            try:
+                group = await g_cat.find_group(raw_text)
+            except Exception as exc:
+                logger.warning("Error finding group in GroupCatalog: %s", exc)
+                return None, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут."
+
         if group is not None:
             return make_group_subscription(group.group_name, group.schedule_id), None
-        if search_catalog is None:
-            return None, "Справочник сейчас недоступен. Попробуй позже."
-        try:
-            target = await search_catalog.find(raw_text)
-        except httpx.HTTPError:
-            return None, "Сайт расписания временно недоступен. Попробуй еще раз через минуту."
-        if target is None or target.kind != "teacher":
-            return None, SEARCH_NOT_FOUND_TEXT
-        return make_teacher_subscription(target), None
+
+        if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
+            return None, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут."
+
+        if s_cat is not None:
+            try:
+                target = await s_cat.find(raw_text)
+                if target is not None and target.kind == "teacher":
+                    return make_teacher_subscription(target), None
+            except Exception as exc:
+                logger.warning("Error in search_catalog.find: %s", exc)
+                return None, "Сайт расписания колледжа сейчас временно недоступен. Попробуйте еще раз через несколько минут."
+
+        return None, SEARCH_NOT_FOUND_TEXT
 
     async def resolve_audience_input(raw_text: str) -> tuple[dict | None, str | None]:
         if search_catalog is None:
@@ -1792,6 +1956,7 @@ def build_dispatcher(
         if user and user.subscription_key:
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
         rows.append([InlineKeyboardButton(text="Персонализация", callback_data="settings:personalization")])
+        rows.append([InlineKeyboardButton(text="Помощь", callback_data="settings:help")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2420,6 +2585,14 @@ def build_dispatcher(
             await prompt_audience_selection(callback.bot, callback.message.chat.id, callback.from_user.id)
             await safe_callback_answer(callback)
             return
+        if action == "help":
+            await safe_edit_message_text(
+                callback.message,
+                format_help_main_text(),
+                reply_markup=build_help_main_keyboard(),
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "personalization":
             awaiting_custom_sticker.discard(callback.from_user.id)
             await safe_edit_message_text(
@@ -2489,6 +2662,85 @@ def build_dispatcher(
             context_messages[callback.message.chat.id]["settings"] = []
             await safe_callback_answer(callback, "Группа сброшена")
             return
+
+    @dispatcher.callback_query(F.data.startswith("help:"))
+    async def handle_help_query(callback: CallbackQuery) -> None:
+        if await callback_is_rate_limited(callback):
+            return
+        await register_callback_user(callback)
+        if callback.message is None:
+            await safe_callback_answer(callback)
+            return
+        action = callback.data.split(":", 1)[1]
+        back_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад в Wiki", callback_data="settings:help")]
+        ])
+        if action == "group_setup":
+            await safe_edit_message_text(callback.message, format_help_group_setup_text(), reply_markup=back_kb)
+        elif action in {"personal_setup", "search_setup"}:
+            await safe_edit_message_text(callback.message, format_help_personal_setup_text(), reply_markup=back_kb)
+        elif action == "notifications_setup":
+            await safe_edit_message_text(callback.message, format_help_notifications_text(), reply_markup=back_kb)
+        elif action == "personalization_setup":
+            await safe_edit_message_text(callback.message, format_help_personalization_text(), reply_markup=back_kb)
+        elif action == "commands_list":
+            await safe_edit_message_text(callback.message, format_help_commands_text(), reply_markup=back_kb)
+        await safe_callback_answer(callback)
+
+    @dispatcher.my_chat_member()
+    async def handle_bot_added_to_chat(event: ChatMemberUpdated) -> None:
+        if event.new_chat_member.status in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}:
+            if event.old_chat_member.status not in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}:
+                welcome_msg = (
+                    "<b>Инструкция по настройке бота в групповом чате</b>\n\n"
+                    "Бот успешно добавлен в ваш чат.\n\n"
+                    "Пошаговая настройка:\n"
+                    "1. Назначьте бота администратором чата (с правом отправки сообщений).\n"
+                    "2. Отправьте в этот чат команду <code>/startgroup</code> (или <code>/group</code>).\n"
+                    "3. Напишите название вашей учебной группы (например: <code>ИСП-25-1</code>).\n\n"
+                    "После выполнения настройки бот привяжет расписание и будет автоматически отправлять ежедневные обновления и изменения пар."
+                )
+                try:
+                    await event.bot.send_message(event.chat.id, welcome_msg)
+                except Exception as exc:
+                    logger.warning("Failed to send welcome message to chat %s: %s", event.chat.id, exc)
+
+    @dispatcher.message(Command("startgroup", "group"))
+    async def handle_startgroup_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type == "private":
+            me = await message.bot.get_me()
+            bot_username = me.username or "bot"
+            add_url = f"https://t.me/{bot_username}?startgroup=true"
+            msg_text = (
+                "<b>Настройка бота в групповом чате Telegram</b>\n\n"
+                "Чтобы получать расписание и уведомления об изменениях в вашем чате:\n"
+                f"1. Нажмите кнопку ниже и добавьте бота в ваш групповой чат.\n"
+                "2. Назначьте бота администратором чата (с правом отправки сообщений).\n"
+                "3. В чате отправьте команду <code>/startgroup</code> (или <code>/group</code>).\n"
+                "4. Напишите название вашей учебной группы (например: <code>ИСП-25-1</code>)."
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Добавить бота в группу", url=add_url)]
+            ])
+            await send_new_context_message(message.bot, message.chat.id, "menu", msg_text, reply_markup=keyboard)
+            return
+
+        # Executed in group / supergroup
+        if message.from_user is not None:
+            if not await user_can_manage_group(message):
+                await send_reply(
+                    message,
+                    "<b>Настройка группы доступна только администраторам чата или пользователю, добавившему бота.</b>"
+                )
+                return
+
+        awaiting_group_subscription_input.add(message.chat.id)
+        await send_reply(
+            message,
+            "<b>Быстрая настройка группового чата</b>\n\n"
+            "Пришлите название вашей учебной группы одним сообщением (например: <code>ИСП-25-1</code> или <code>МТО-25</code>):"
+        )
 
     @dispatcher.callback_query(F.data.startswith("donate:"))
     async def handle_donate_callback(callback: CallbackQuery) -> None:
@@ -3252,6 +3504,10 @@ def build_dispatcher(
             if message.text.startswith("/"):
                 return
             if not await user_can_manage_group(message):
+                await send_reply(
+                    message,
+                    "Настройка группы доступна только администраторам чата или пользователю, добавившему бота."
+                )
                 return
             subscription_data, error_text = await resolve_subscription_input(message.text.strip())
             if subscription_data is None:

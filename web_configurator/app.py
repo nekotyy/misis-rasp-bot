@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import secrets
 from datetime import datetime
@@ -13,7 +14,6 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.config import Settings
-from src.db import Database
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.message_broker import OutboundMessage, RabbitMQBroker
@@ -34,6 +34,8 @@ from web_configurator.security import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 load_dotenv(ENV_PATH)
@@ -47,17 +49,25 @@ web_superuser_password = (os.getenv("WEB_SUPERUSER_PASSWORD") or "").strip()
 DEFAULT_DEV_SECRET = "default-dev-secret-key-change-in-production-32chars"
 DEFAULT_DEV_PASSWORD = "admin-password-change-me"
 
-if not web_config_secret or web_config_secret in INSECURE_SECRET_VALUES or len(web_config_secret) < 32:
-    print(
-        "WARNING: WEB_CONFIG_SECRET is missing or insecure. Using default dev secret. Set WEB_CONFIG_SECRET in .env for production!"
-    )
-    web_config_secret = DEFAULT_DEV_SECRET
+_enforce_security = (os.getenv("WEB_ENFORCE_SECURITY") or "").strip().lower() in ("1", "true", "yes")
+if _enforce_security:
+    validate_security_config(web_config_secret, web_superuser_password)
+else:
+    if not web_config_secret or web_config_secret in INSECURE_SECRET_VALUES or len(web_config_secret) < 32:
+        print(
+            "WARNING: WEB_CONFIG_SECRET is missing or insecure. Using default dev secret. "
+            "Set WEB_CONFIG_SECRET in .env for production! "
+            "Set WEB_ENFORCE_SECURITY=1 to enforce secure credentials."
+        )
+        web_config_secret = DEFAULT_DEV_SECRET
 
-if not web_superuser_password or web_superuser_password in INSECURE_SUPERUSER_PASSWORDS or len(web_superuser_password) < 12:
-    print(
-        f"WARNING: WEB_SUPERUSER_PASSWORD is missing or insecure (<12 chars). Using default dev password '{DEFAULT_DEV_PASSWORD}'. Set WEB_SUPERUSER_PASSWORD in .env for production!"
-    )
-    web_superuser_password = DEFAULT_DEV_PASSWORD
+    if not web_superuser_password or web_superuser_password in INSECURE_SUPERUSER_PASSWORDS or len(web_superuser_password) < 12:
+        print(
+            f"WARNING: WEB_SUPERUSER_PASSWORD is missing or insecure (<12 chars). Using default dev password '{DEFAULT_DEV_PASSWORD}'. "
+            "Set WEB_SUPERUSER_PASSWORD in .env for production! "
+            "Set WEB_ENFORCE_SECURITY=1 to enforce secure credentials."
+        )
+        web_superuser_password = DEFAULT_DEV_PASSWORD
 
 auth_store = WebAuthStore(
     settings.database_path,
@@ -373,9 +383,10 @@ async def save_lessons_json(
             saved = True
         editor_value = json_dumps(normalized if saved and not forced else raw_payload)
         report = problems_html(problems, saved, forced)
-    except Exception as exc:
+    except Exception:
+        logger.exception("Ошибка при сохранении конфигурации счетчиков пар")
         editor_value = payload
-        report = f"<div class='alert bad'>Ошибка: {html_escape(str(exc))}</div>"
+        report = "<div class='alert bad'>Произошла внутренняя ошибка при сохранении. Подробности в логах сервера.</div>"
 
     try:
         display_payload = parse_json_payload(editor_value)
@@ -537,8 +548,9 @@ async def control_broadcast(
         return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Текст рассылки не должен быть пустым.</div>"), user)
     try:
         sent = await enqueue_broadcast(text)
-    except Exception as exc:
-        return layout("Управление ботом", await bot_control_html(f"<div class='alert bad'>Не удалось поставить рассылку в очередь: {html_escape(exc)}</div>"), user)
+    except Exception:
+        logger.exception("Ошибка при постановке рассылки в очередь")
+        return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Не удалось поставить рассылку в очередь. Подробности в логах сервера.</div>"), user)
     return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Рассылка поставлена в очередь. Получателей: {sent}.</div>"), user)
 
 
@@ -546,8 +558,9 @@ async def control_broadcast(
 async def control_test_broadcast(user: Annotated[WebUser, Depends(require("manage_bot_admin"))]) -> str:
     try:
         sent = await enqueue_broadcast("Тестовое уведомление: бот активен и рассылка работает.")
-    except Exception as exc:
-        return layout("Управление ботом", await bot_control_html(f"<div class='alert bad'>Тестовую рассылку не удалось отправить: {html_escape(exc)}</div>"), user)
+    except Exception:
+        logger.exception("Ошибка при отправке тестовой рассылки")
+        return layout("Управление ботом", await bot_control_html("<div class='alert bad'>Тестовую рассылку не удалось отправить. Подробности в логах сервера.</div>"), user)
     return layout("Управление ботом", await bot_control_html(f"<div class='alert good'>Тестовая рассылка поставлена в очередь. Получателей: {sent}.</div>"), user)
 
 
@@ -858,8 +871,9 @@ async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
                 source_url=source["source_url"],
             )
             rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
-        except Exception as exc:
-            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), f"ошибка: {type(exc).__name__}"))
+        except Exception:
+            logger.exception("Ошибка при перепарсинге источника %s", source.get("source_title", "?"))
+            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), "ошибка (см. логи)"))
     return rows
 
 
@@ -888,8 +902,9 @@ async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
                 source_url=source["source_url"],
             )
             rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
-        except Exception as exc:
-            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), f"ошибка: {type(exc).__name__}"))
+        except Exception:
+            logger.exception("Ошибка при сохранении эталона для %s", source.get("source_title", "?"))
+            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), "ошибка (см. логи)"))
     return rows
 
 
@@ -1152,7 +1167,7 @@ def filter_metrics_for_user(metrics: dict, user: WebUser) -> dict:
 
 
 def html_escape(value: object) -> str:
-    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
 
 
 def json_dumps(value: object) -> str:
