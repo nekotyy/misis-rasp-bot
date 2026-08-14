@@ -160,26 +160,30 @@ class ScheduleJobs:
 
             # Auto daily lesson counter at 23:20, and control checks at 23:50, 01:00, 05:00
             self.scheduler.add_job(
-                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=0),
+                self.enqueue_or_run_auto_daily_lesson_counter,
                 CronTrigger(hour=23, minute=20),
+                kwargs={"target_date_offset": 0},
                 max_instances=1,
                 coalesce=True,
             )
             self.scheduler.add_job(
-                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=0),
+                self.enqueue_or_run_auto_daily_lesson_counter,
                 CronTrigger(hour=23, minute=50),
+                kwargs={"target_date_offset": 0},
                 max_instances=1,
                 coalesce=True,
             )
             self.scheduler.add_job(
-                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=-1),
+                self.enqueue_or_run_auto_daily_lesson_counter,
                 CronTrigger(hour=1, minute=0),
+                kwargs={"target_date_offset": -1},
                 max_instances=1,
                 coalesce=True,
             )
             self.scheduler.add_job(
-                lambda: self.enqueue_or_run_auto_daily_lesson_counter(target_date_offset=-1),
+                self.enqueue_or_run_auto_daily_lesson_counter,
                 CronTrigger(hour=5, minute=0),
+                kwargs={"target_date_offset": -1},
                 max_instances=1,
                 coalesce=True,
             )

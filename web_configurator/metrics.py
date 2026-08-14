@@ -3,11 +3,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
+from time import monotonic
 from typing import Any
 
 import aio_pika
 import aiosqlite
 import httpx
+
+_SERVICES_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+SERVICES_CACHE_TTL = 45.0
+
+
+async def _cached_service_status(cache_key: str, check_func, *args) -> dict[str, Any]:
+    now = monotonic()
+    cached = _SERVICES_CACHE.get(cache_key)
+    if cached is not None and (now - cached[0]) < SERVICES_CACHE_TTL:
+        return cached[1]
+    res = await check_func(*args)
+    _SERVICES_CACHE[cache_key] = (now, res)
+    return res
 
 
 async def collect_metrics(db_path: Path, *, rabbitmq_url: str, telegram_token: str, vk_token: str, started_at: datetime) -> dict[str, Any]:
@@ -61,9 +75,9 @@ async def collect_metrics(db_path: Path, *, rabbitmq_url: str, telegram_token: s
         },
         "user_rows": [_user_row(user, new_threshold) for user in users],
         "services": {
-            "telegram": await _telegram_status(telegram_token),
-            "vk": await _vk_status(vk_token),
-            "rabbitmq": await _rabbitmq_status(rabbitmq_url),
+            "telegram": await _cached_service_status("telegram", _telegram_status, telegram_token),
+            "vk": await _cached_service_status("vk", _vk_status, vk_token),
+            "rabbitmq": await _cached_service_status("rabbitmq", _rabbitmq_status, rabbitmq_url),
         },
         "schedule": {
             "latest_parse": dict(latest_parse) if latest_parse else None,

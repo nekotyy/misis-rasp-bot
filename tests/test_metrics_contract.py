@@ -123,6 +123,25 @@ class TestMetricsContract(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(metrics["services"][svc_name]["ok"],
                              f"{svc_name} should be not ok with empty token")
 
+    async def test_services_caching(self) -> None:
+        from unittest.mock import AsyncMock, patch
+        from web_configurator import metrics as m_module
+
+        # Clear cache before test
+        m_module._SERVICES_CACHE.clear()
+
+        with patch("web_configurator.metrics._telegram_status", new_callable=AsyncMock) as mock_tg:
+            mock_tg.return_value = {"ok": True, "label": "test_bot"}
+            # First call populates cache
+            r1 = await m_module._cached_service_status("test_tg", mock_tg, "fake_token")
+            self.assertTrue(r1["ok"])
+            self.assertEqual(mock_tg.call_count, 1)
+
+            # Second call within TTL returns cached value without calling check_func
+            r2 = await m_module._cached_service_status("test_tg", mock_tg, "fake_token")
+            self.assertTrue(r2["ok"])
+            self.assertEqual(mock_tg.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

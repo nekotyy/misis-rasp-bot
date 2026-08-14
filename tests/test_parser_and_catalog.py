@@ -82,6 +82,28 @@ class ParserAndCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match.kind, "teacher")
         self.assertEqual(match.title, "Иванов И.И.")
 
+    def test_date_label_to_iso_year_rollover(self):
+        from datetime import datetime
+        parser = ScheduleParser(schedule_url="http://test-schedule.local")
+
+        # In December 2025, viewing January 12 -> 2026-01-12
+        dec_ref = datetime(2025, 12, 28, 10, 0, 0)
+        self.assertEqual(parser._date_label_to_iso("12 января", now=dec_ref), "2026-01-12")
+
+        # In January 2026, viewing December 28 -> 2025-12-28
+        jan_ref = datetime(2026, 1, 3, 10, 0, 0)
+        self.assertEqual(parser._date_label_to_iso("28 декабря", now=jan_ref), "2025-12-28")
+
+        # Standard same-year conversion
+        self.assertEqual(parser._date_label_to_iso("15 марта", now=jan_ref), "2026-03-15")
+
+        # Explicit year specified in label
+        self.assertEqual(parser._date_label_to_iso("12 января 2030", now=dec_ref), "2030-01-12")
+
+    def test_group_catalog_transliteration_uppercase_y(self):
+        self.assertEqual(GroupCatalog.normalize("Y-24-1"), "у-24-1")
+        self.assertEqual(GroupCatalog.normalize("y-24-1"), "у-24-1")
+
 
 if __name__ == "__main__":
     unittest.main()

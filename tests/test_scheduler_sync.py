@@ -114,6 +114,31 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         call_kwargs = self.mock_broadcaster.broadcast.call_args
         self.assertIn("Изменения на понедельник", call_kwargs.args or [call_kwargs[0][0]])
 
+    def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
+        """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
+        import inspect
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.scheduler = MagicMock()
+        jobs.lesson_counters_enabled = True
+        jobs.lesson_counter_service = MagicMock()
+        jobs.admin_backup_enabled = False
+        jobs.save_daily_baseline = AsyncMock()
+        jobs.save_daily_baseline_fallback = AsyncMock()
+        jobs.sync_current_snapshot = AsyncMock()
+        jobs.count_today_lessons = AsyncMock()
+        jobs.enqueue_or_run_auto_daily_lesson_counter = AsyncMock()
+        jobs.enqueue_or_run_db_cleanup = AsyncMock()
+
+        jobs.configure()
+
+        # Check all add_job calls
+        registered_funcs = [call.args[0] for call in jobs.scheduler.add_job.call_args_list if call.args]
+        for func in registered_funcs:
+            # None of the registered jobs should be a sync lambda returning an unawaited coroutine
+            self.assertFalse(func.__name__ == "<lambda>", "Job must not be an unawaited sync lambda")
+
 
 if __name__ == "__main__":
     unittest.main()

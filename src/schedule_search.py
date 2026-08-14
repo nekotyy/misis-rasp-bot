@@ -43,6 +43,7 @@ class ScheduleSearchCatalog:
         self._auds: dict[str, SearchTarget] = {}
         self._prep_items: list[tuple[str, SearchTarget]] = []
         self._aud_items: list[tuple[str, SearchTarget]] = []
+        self._ambiguous_preps: set[str] = set()
 
     async def find(self, query: str) -> SearchTarget | None:
         normalized = self.normalize(query)
@@ -84,7 +85,11 @@ class ScheduleSearchCatalog:
                         url=f"{self.base_origin}{href}",
                     )
                     for normalized_title in self._teacher_search_keys(title):
-                        self._preps[normalized_title] = target
+                        if normalized_title in self._preps and self._preps[normalized_title].url != target.url:
+                            self._ambiguous_preps.add(normalized_title)
+                            self._preps.pop(normalized_title, None)
+                        elif normalized_title not in self._ambiguous_preps:
+                            self._preps[normalized_title] = target
                         self._prep_items.append((normalized_title, target))
                 self._preps_loaded = True
 
@@ -228,6 +233,7 @@ _LATIN_TO_CYRILLIC = str.maketrans(
         "C": "С",
         "c": "с",
         "T": "Т",
+        "Y": "У",
         "y": "у",
         "X": "Х",
         "x": "х",
