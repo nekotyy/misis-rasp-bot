@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,16 @@ def load_lesson_config(path: Path) -> dict[str, Any]:
 
 def save_lesson_config(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_file = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}")
+    try:
+        temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_file.replace(path)
+    finally:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
 
 
 def upsert_lesson_subject(

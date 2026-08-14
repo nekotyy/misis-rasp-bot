@@ -16,6 +16,8 @@ class TestSearchNormalize(unittest.TestCase):
         # 'A' (latin) -> 'А' (cyrillic), 'e' (latin) -> 'е' (cyrillic)
         result = ScheduleSearchCatalog.normalize("Aлeксeeв")
         self.assertIn("а", result)  # A -> А -> а (casefold)
+        self.assertEqual(ScheduleSearchCatalog.normalize("Y-24-1"), "у-24-1")
+        self.assertEqual(ScheduleSearchCatalog.normalize("y-24-1"), "у-24-1")
 
     def test_dash_normalization(self) -> None:
         """Разные виды тире должны нормализоваться."""
@@ -116,6 +118,51 @@ class TestFindFuzzy(unittest.TestCase):
         compact = ScheduleSearchCatalog._compact_name_key("абсолютнодругоеимя")
         result = self.catalog._find_fuzzy(compact, self.items)
         self.assertIsNone(result)
+
+
+class TestTeacherAmbiguity(unittest.IsolatedAsyncioTestCase):
+    """Тесты на разрешение неоднозначности при одинаковых фамилиях преподавателей."""
+
+    async def test_ambiguous_teacher_last_name_in_find(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+        from src.group_catalog import GroupCatalog
+
+        group_catalog = MagicMock(spec=GroupCatalog)
+        group_catalog.ensure_loaded = AsyncMock()
+        group_catalog.find_group = AsyncMock(return_value=None)
+
+        search_catalog = ScheduleSearchCatalog(
+            schedule_url="http://test-schedule.local",
+            group_catalog=group_catalog,
+        )
+        target1 = SearchTarget(kind="teacher", title="Иванов Алексей Петрович", url="/prep/101")
+        target2 = SearchTarget(kind="teacher", title="Иванов Борис Сергеевич", url="/prep/102")
+
+        search_catalog._preps_loaded = True
+        search_catalog._auds_loaded = True
+
+        # Register both targets
+        for target in (target1, target2):
+            for key in search_catalog._teacher_search_keys(target.title):
+                if key in search_catalog._preps and search_catalog._preps[key].url != target.url:
+                    search_catalog._ambiguous_preps.add(key)
+                    search_catalog._preps.pop(key, None)
+                elif key not in search_catalog._ambiguous_preps:
+                    search_catalog._preps[key] = target
+                search_catalog._prep_items.append((key, target))
+
+        # Direct search by ambiguous last name should return None (handled by caller disambiguation)
+        match_ambiguous = await search_catalog.find("Иванов")
+        self.assertIsNone(match_ambiguous)
+
+        # Exact full name search still finds each teacher accurately
+        match1 = await search_catalog.find("Иванов Алексей Петрович")
+        self.assertIsNotNone(match1)
+        self.assertEqual(match1.url, "/prep/101")
+
+        match2 = await search_catalog.find("Иванов Борис Сергеевич")
+        self.assertIsNotNone(match2)
+        self.assertEqual(match2.url, "/prep/102")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import re
 import unicodedata
 from datetime import datetime
@@ -426,13 +427,7 @@ class LessonCounterService:
                 "total": None,
             })
 
-        try:
-            with open(self.lesson_counters_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as exc:
-            logger.warning("Failed to save auto-incremented lesson counters JSON: %s", exc)
-            return False
+        return _atomic_write_json(self.lesson_counters_path, data)
 
     def reset_group_counters(self, group_name: str | None = None) -> bool:
         if not self.lesson_counters_path or not self.lesson_counters_path.exists():
@@ -446,9 +441,26 @@ class LessonCounterService:
                 if group_name is None or g_name.lower() == group_name.strip().lower():
                     for s in g.get("subjects", []):
                         s["passed"] = 0
-            with open(self.lesson_counters_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return True
+            return _atomic_write_json(self.lesson_counters_path, data)
         except Exception as exc:
             logger.warning("Failed to reset lesson counters: %s", exc)
             return False
+
+
+def _atomic_write_json(path: Path, data: dict) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = path.with_suffix(f"{path.suffix}.tmp.{os.getpid()}")
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        temp_file.replace(path)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to save JSON atomically to %s: %s", path, exc)
+        return False
+    finally:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass

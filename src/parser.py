@@ -146,11 +146,32 @@ class ScheduleParser:
         payload = "\n".join(normalized_parts).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
-    def _date_label_to_iso(self, label: str) -> str:
+    def _date_label_to_iso(self, label: str, now: datetime | None = None) -> str:
         parts = label.lower().replace(",", " ").split()
         if len(parts) < 2:
             return label
         day = parts[0].zfill(2)
         month = MONTHS.get(parts[1], "01")
-        year = str(datetime.now().year)
-        return f"{year}-{month}-{day}"
+
+        explicit_year: int | None = None
+        for part in parts[2:]:
+            if part.isdigit() and len(part) == 4:
+                explicit_year = int(part)
+                break
+
+        if explicit_year is not None:
+            year = explicit_year
+        else:
+            reference = now or datetime.now()
+            current_year = reference.year
+            current_month = reference.month
+            parsed_month = int(month) if month.isdigit() else 1
+
+            if current_month == 12 and parsed_month in (1, 2):
+                year = current_year + 1
+            elif current_month == 1 and parsed_month in (11, 12):
+                year = current_year - 1
+            else:
+                year = current_year
+
+        return f"{year:04d}-{month}-{day}"

@@ -71,6 +71,14 @@ class LessonEditorTests(unittest.IsolatedAsyncioTestCase):
         applied_config, num_g, num_s = await apply_imported_lessons_config(parsed, loaded, group_catalog=mock_catalog)
         self.assertEqual(len(applied_config["groups"]), 1)
 
+    def test_atomic_write_json_helper(self):
+        from src.lesson_counters import _atomic_write_json
+        test_path = Path(self.temp_dir.name) / "subdir" / "atomic.json"
+        data = {"test": 123, "text": "тест"}
+        self.assertTrue(_atomic_write_json(test_path, data))
+        self.assertTrue(test_path.exists())
+        self.assertEqual(json.loads(test_path.read_text(encoding="utf-8")), data)
+
 
 if __name__ == "__main__":
     unittest.main()
