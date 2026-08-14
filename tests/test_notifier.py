@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock
-from src.notifier import Broadcaster, CAMPAIGN_ADMIN_BROADCAST
+
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 
 
 class BroadcasterTargetPlatformTests(unittest.IsolatedAsyncioTestCase):

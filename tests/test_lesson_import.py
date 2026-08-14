@@ -1,9 +1,10 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock
+
 from web_configurator.lesson_editor import (
-    parse_imported_json_payload,
-    format_import_preview,
     apply_imported_lessons_config,
+    format_import_preview,
+    parse_imported_json_payload,
 )
 
 

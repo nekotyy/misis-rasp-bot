@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 import logging
+from collections import defaultdict
 from datetime import datetime
 from html import escape
 from pathlib import Path
 from time import monotonic
 from traceback import format_exception
+from typing import Any
 
 import httpx
 from aiohttp import ClientError, TCPConnector
@@ -23,17 +24,25 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
-from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
-from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
+from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
     make_teacher_subscription,
     subscription_caption,
 )
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
+from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
+from web_configurator.lesson_editor import (
+    apply_imported_lessons_config,
+    format_import_preview,
+    load_lesson_config,
+    parse_imported_json_payload,
+    save_lesson_config,
+    upsert_lesson_subject,
+    validate_lesson_config,
+)
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
@@ -346,9 +355,7 @@ def build_vk_bot(
                     if getattr(item, "is_admin", False) or getattr(item, "is_owner", False):
                         return True
                     join_by = getattr(item, "invited_by", None)
-                    if join_by == user_id:
-                        return True
-                    return False
+                    return join_by == user_id
         except Exception as exc:
             logger.warning("Failed to check conversation members for peer %s: %s", peer_id, exc)
             return True
@@ -2401,12 +2408,10 @@ def build_vk_bot(
                     )
                     return
             if mode == "admin_user_search_results":
-                if text == "Следующая страница":
-                    if await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) + 1):
-                        return
-                if text == "Предыдущая страница":
-                    if await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) - 1):
-                        return
+                if text == "Следующая страница" and await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) + 1):
+                    return
+                if text == "Предыдущая страница" and await show_admin_user_search_results(peer_id, peer_pages[peer_id].get("admin_user_search", 0) - 1):
+                    return
                 if text == "Искать снова":
                     peer_modes[peer_id] = "admin_user_search"
                     await show_screen(
@@ -2482,7 +2487,8 @@ def build_vk_bot(
                 for user in users:
                     try:
                         await bot.api.messages.send(peer_ids=[user.user_id], message="Тестовое уведомление: бот активен и рассылка работает.", random_id=0)
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("Failed to send test broadcast to VK user %s: %s", user.user_id, exc)
                         continue
                 await show_screen(peer_id, "Тестовая рассылка\n\nСообщение отправлено всем зарегистрированным пользователям VK.", keyboard=admin_keyboard())
                 return

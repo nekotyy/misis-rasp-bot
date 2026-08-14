@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
-
 
 logger = logging.getLogger(__name__)
 

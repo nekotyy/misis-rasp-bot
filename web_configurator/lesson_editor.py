@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -33,10 +34,8 @@ def save_lesson_config(path: Path, payload: dict[str, Any]) -> None:
         temp_file.replace(path)
     finally:
         if temp_file.exists():
-            try:
+            with contextlib.suppress(OSError):
                 temp_file.unlink()
-            except OSError:
-                pass
 
 
 def upsert_lesson_subject(
@@ -308,10 +307,7 @@ async def format_import_preview(
         subjects = group_item.get("subjects", [])
         sub_count = len(subjects)
 
-        if html:
-            group_title = f"• <b>{group_display}</b> ({sub_count} пар):"
-        else:
-            group_title = f"• {group_display} ({sub_count} пар):"
+        group_title = f"• <b>{group_display}</b> ({sub_count} пар):" if html else f"• {group_display} ({sub_count} пар):"
         lines.append(group_title)
 
         for s_item in subjects[:max_subjects_per_group]:

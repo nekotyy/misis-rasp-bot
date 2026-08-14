@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 
@@ -48,7 +47,7 @@ class Settings:
     web_session_ttl_seconds: int
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         database_path = Path(os.getenv("DATABASE_PATH", "bot.db")).resolve()
         admin_telegram_id_raw = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
         admin_vk_id_raw = os.getenv("ADMIN_VK_ID", "").strip()

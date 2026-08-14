@@ -49,7 +49,8 @@ ignore = [
     "S603",   # subprocess call
     "S607",   # starting a process with partial path
     "B008",   # function call in default argument (FastAPI Depends)
+    "S608",   # parameterized query placeholder construction
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "S106"]
+"tests/*" = ["S101", "S105", "S106", "S108", "S311"]

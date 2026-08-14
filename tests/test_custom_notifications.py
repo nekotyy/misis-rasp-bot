@@ -1,11 +1,11 @@
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from src.db import Database
 from src.models import UserRecord
-from src.notifier import Broadcaster, CAMPAIGN_NOTIFICATION
+from src.notifier import CAMPAIGN_NOTIFICATION, Broadcaster
 
 
 class CustomNotificationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -96,11 +96,12 @@ class SmokeCustomNotificationsTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     async def test_smoke_no_emojis_in_personalization_texts(self):
+        import re
+
         from src.telegram_bot import (
             build_personalization_keyboard,
             format_personalization_settings_text,
         )
-        import re
 
         emoji_pattern = re.compile(
             "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E6-\U0001F1FF]"

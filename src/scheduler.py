@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -359,7 +360,7 @@ class ScheduleJobs:
                 logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
 
     async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:
-        delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)
+        delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)  # noqa: S311
         if delay <= 0:
             return
         logger.info("Task %s waits %.1f seconds before next source (%s).", job_name, delay, source_title)
@@ -510,7 +511,6 @@ class ScheduleJobs:
 
     async def enqueue_or_run_auto_daily_lesson_counter(self, target_date_offset: int = 0) -> None:
         from datetime import timedelta
-        from collections import defaultdict
         target_date = (datetime.now() + timedelta(days=target_date_offset)).date().isoformat()
         job = AutoDailyLessonCounterJob(target_date_iso=target_date)
 

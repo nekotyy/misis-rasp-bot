@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.config import _parse_int_list, _env_bool
+from src.config import _env_bool, _parse_int_list
 
 
 class TestParseIntList(unittest.TestCase):
