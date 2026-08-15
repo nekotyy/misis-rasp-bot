@@ -163,12 +163,35 @@ def vk_help_personalization_text() -> str:
 def is_group_setup_command(text: str | None) -> bool:
     if not text:
         return False
-    raw = text.strip().casefold()
-    return (
-        raw.startswith("/startgroup")
-        or raw.startswith("/group")
-        or raw in {"/startgroup", "/group", "startgroup", "group"}
+    raw = " ".join(text.strip().casefold().split())
+    if not raw:
+        return False
+    exact_matches = {
+        "/startgroup",
+        "/group",
+        "startgroup",
+        "group",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа",
+    }
+    if raw in exact_matches:
+        return True
+    prefixes = (
+        "/startgroup",
+        "/group",
+        "startgroup ",
+        "group ",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа ",
+        "группа:",
+        "группа -",
+        "группа-",
     )
+    return any(raw.startswith(prefix) for prefix in prefixes)
 
 
 def vk_help_commands_text() -> str:

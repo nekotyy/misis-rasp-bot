@@ -454,12 +454,35 @@ def format_help_commands_text() -> str:
 def is_group_setup_command(text: str | None) -> bool:
     if not text:
         return False
-    raw = text.strip().casefold()
-    return (
-        raw.startswith("/startgroup")
-        or raw.startswith("/group")
-        or raw in {"/startgroup", "/group", "startgroup", "group"}
+    raw = " ".join(text.strip().casefold().split())
+    if not raw:
+        return False
+    exact_matches = {
+        "/startgroup",
+        "/group",
+        "startgroup",
+        "group",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа",
+    }
+    if raw in exact_matches:
+        return True
+    prefixes = (
+        "/startgroup",
+        "/group",
+        "startgroup ",
+        "group ",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа ",
+        "группа:",
+        "группа -",
+        "группа-",
     )
+    return any(raw.startswith(prefix) for prefix in prefixes)
 
 
 async def resolve_subscription_input(
@@ -2716,7 +2739,7 @@ def build_dispatcher(
             except Exception as exc:
                 logger.warning("Failed to send welcome message to chat %s: %s", event.chat.id, exc)
 
-    @dispatcher.message(Command("startgroup", "group"))
+    @dispatcher.message(F.text.func(is_group_setup_command))
     async def handle_startgroup_command(message: Message) -> None:
         await register_message_user(message)
         if message.chat.type == "private":
