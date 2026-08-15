@@ -81,6 +81,7 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ВКонтакте", group_text)
         self.assertIn("vk.ru/app6441755_-237526231", group_text)
         self.assertNotIn("https://vk.ru/app6441755_-237526231", group_text)
+        self.assertNotIn("Разрешать добавлять сообщество в беседы", group_text)
 
         vk_group_text = vk_help_group_setup_text()
         self.assertIn("/startgroup", vk_group_text)
@@ -88,6 +89,7 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ВКонтакте", vk_group_text)
         self.assertIn("vk.ru/app6441755_-237526231", vk_group_text)
         self.assertNotIn("https://vk.ru/app6441755_-237526231", vk_group_text)
+        self.assertNotIn("Разрешать добавлять сообщество в беседы", vk_group_text)
 
         cmd_text = format_help_commands_text()
         self.assertIn("/start", cmd_text)
