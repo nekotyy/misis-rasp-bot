@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from datetime import datetime
@@ -116,7 +115,6 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
 
     def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
         """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
-        import inspect
         from src.scheduler import ScheduleJobs
 
         jobs = ScheduleJobs.__new__(ScheduleJobs)

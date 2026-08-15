@@ -21,11 +21,10 @@ from src.message_broker import (
 )
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
-from src.scheduler import ScheduleJobs
 from src.schedule_search import ScheduleSearchCatalog
+from src.scheduler import ScheduleJobs
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
-
 
 logging.basicConfig(
     level=logging.INFO,

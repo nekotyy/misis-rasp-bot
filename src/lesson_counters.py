@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
+import contextlib
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -12,7 +13,6 @@ from pathlib import Path
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import ScheduleSnapshot
-
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ class LessonCounterService:
         json_counters: list[dict] = []
         if self.lesson_counters_path and self.lesson_counters_path.exists():
             try:
-                with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+                with open(self.lesson_counters_path, encoding="utf-8") as f:
                     data = json.load(f)
                 groups = data.get("groups", [])
                 target_group = None
@@ -369,7 +369,7 @@ class LessonCounterService:
         data: dict = {"groups": []}
         if self.lesson_counters_path.exists():
             try:
-                with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+                with open(self.lesson_counters_path, encoding="utf-8") as f:
                     data = json.load(f)
             except Exception as exc:
                 logger.warning("Failed to read JSON file before auto-increment: %s", exc)
@@ -433,7 +433,7 @@ class LessonCounterService:
         if not self.lesson_counters_path or not self.lesson_counters_path.exists():
             return False
         try:
-            with open(self.lesson_counters_path, "r", encoding="utf-8") as f:
+            with open(self.lesson_counters_path, encoding="utf-8") as f:
                 data = json.load(f)
             groups = data.get("groups", [])
             for g in groups:
@@ -460,7 +460,5 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
         return False
     finally:
         if temp_file.exists():
-            try:
+            with contextlib.suppress(OSError):
                 temp_file.unlink()
-            except OSError:
-                pass

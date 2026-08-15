@@ -125,6 +125,7 @@ class TestTeacherAmbiguity(unittest.IsolatedAsyncioTestCase):
 
     async def test_ambiguous_teacher_last_name_in_find(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
+
         from src.group_catalog import GroupCatalog
 
         group_catalog = MagicMock(spec=GroupCatalog)

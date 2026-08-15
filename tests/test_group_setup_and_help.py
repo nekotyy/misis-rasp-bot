@@ -1,23 +1,28 @@
-import unittest
 import re
-from unittest.mock import AsyncMock, MagicMock, patch
+import unittest
+from unittest.mock import AsyncMock, MagicMock
+
 from src.telegram_bot import (
-    format_help_main_text,
-    format_help_group_setup_text,
-    format_help_personal_setup_text,
-    format_help_notifications_text,
-    format_help_personalization_text,
     format_help_commands_text,
+    format_help_group_setup_text,
+    format_help_main_text,
+    format_help_notifications_text,
+    format_help_personal_setup_text,
+    format_help_personalization_text,
     resolve_subscription_input,
+)
+from src.telegram_bot import (
     is_group_setup_command as is_group_setup_tg,
 )
 from src.vk_bot import (
-    vk_help_group_setup_text,
-    vk_help_personal_setup_text,
-    vk_help_notifications_text,
-    vk_help_personalization_text,
-    vk_help_commands_text,
     is_group_setup_command as is_group_setup_vk,
+)
+from src.vk_bot import (
+    vk_help_commands_text,
+    vk_help_group_setup_text,
+    vk_help_notifications_text,
+    vk_help_personal_setup_text,
+    vk_help_personalization_text,
 )
 
 
@@ -74,6 +79,15 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/startgroup", group_text)
         self.assertIn("Telegram", group_text)
         self.assertIn("ВКонтакте", group_text)
+        self.assertIn("vk.ru/app6441755_-237526231", group_text)
+        self.assertNotIn("https://vk.ru/app6441755_-237526231", group_text)
+
+        vk_group_text = vk_help_group_setup_text()
+        self.assertIn("/startgroup", vk_group_text)
+        self.assertIn("Telegram", vk_group_text)
+        self.assertIn("ВКонтакте", vk_group_text)
+        self.assertIn("vk.ru/app6441755_-237526231", vk_group_text)
+        self.assertNotIn("https://vk.ru/app6441755_-237526231", vk_group_text)
 
         cmd_text = format_help_commands_text()
         self.assertIn("/start", cmd_text)

@@ -5,7 +5,6 @@ from html import escape
 
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
 
-
 MONTHS_RU = {
     1: "января",
     2: "февраля",

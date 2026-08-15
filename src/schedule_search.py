@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from difflib import SequenceMatcher
 import re
 import unicodedata
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
 import httpx

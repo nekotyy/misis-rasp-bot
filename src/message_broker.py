@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
-from typing import Awaitable, Callable
 from uuid import uuid4
 
 import aio_pika
 from aio_pika import DeliveryMode, IncomingMessage, Message
-
 
 logger = logging.getLogger(__name__)
 

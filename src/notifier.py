@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
-from typing import Callable, Awaitable
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -218,21 +218,24 @@ class Broadcaster:
         )
 
     async def notify_admins(self, telegram_message: str, vk_message: str | None = None) -> None:
-        if self.telegram_bot is not None and self.admin_telegram_id is not None:
-            if not await self._enqueue_or_send(
+        if (
+            self.telegram_bot is not None
+            and self.admin_telegram_id is not None
+            and not await self._enqueue_or_send(
                 OutboundMessage(
                     platform="telegram",
                     user_id=self.admin_telegram_id,
                     text=telegram_message,
                     campaign_type=CAMPAIGN_ADMIN_NOTIFY,
                 )
-            ):
-                await self._send_telegram(
-                    self.admin_telegram_id,
-                    telegram_message,
-                    campaign_type=CAMPAIGN_ADMIN_NOTIFY,
-                    via_broker=False,
-                )
+            )
+        ):
+            await self._send_telegram(
+                self.admin_telegram_id,
+                telegram_message,
+                campaign_type=CAMPAIGN_ADMIN_NOTIFY,
+                via_broker=False,
+            )
         if self.vk_bot is not None and self.admin_vk_id is not None:
             message_text = vk_message or telegram_message
             if not await self._enqueue_or_send(

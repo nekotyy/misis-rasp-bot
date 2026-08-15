@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 ALL_PERMISSIONS = [
     "stats_overview",
     "stats_users",

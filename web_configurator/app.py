@@ -33,7 +33,6 @@ from web_configurator.security import (
     validate_security_config,
 )
 
-
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,8 +45,8 @@ started_at = datetime.now()
 web_config_secret = (os.getenv("WEB_CONFIG_SECRET") or "").strip()
 web_superuser_password = (os.getenv("WEB_SUPERUSER_PASSWORD") or "").strip()
 
-DEFAULT_DEV_SECRET = "default-dev-secret-key-change-in-production-32chars"
-DEFAULT_DEV_PASSWORD = "admin-password-change-me"
+DEFAULT_DEV_SECRET = "default-dev-secret-key-change-in-production-32chars"  # noqa: S105
+DEFAULT_DEV_PASSWORD = "admin-password-change-me"  # noqa: S105
 
 _enforce_security = (os.getenv("WEB_ENFORCE_SECURITY") or "").strip().lower() in ("1", "true", "yes")
 if _enforce_security:
@@ -134,7 +133,7 @@ def client_ip(request: Request) -> str:
 
 def hashed_guard_key(kind: str, value: str) -> str:
     normalized = " ".join((value or "").strip().lower().split())
-    digest = hashlib.sha256(f"{kind}:{normalized}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{kind}:{normalized}".encode()).hexdigest()
     return f"{kind}:{digest}"
 
 
@@ -518,9 +517,9 @@ async def save_web_user(
     _: Annotated[WebUser, Depends(require("manage_web_users"))],
     login: Annotated[str, Form()],
     password: Annotated[str, Form()] = "",
-    permissions: Annotated[list[str], Form()] = [],
+    permissions: Annotated[list[str] | None, Form()] = None,
 ) -> RedirectResponse:
-    auth_store.upsert_user(login, password or None, permissions)
+    auth_store.upsert_user(login, password or None, permissions or [])
     return RedirectResponse("/web-users", status_code=303)
 
 

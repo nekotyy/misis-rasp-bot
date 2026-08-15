@@ -8,9 +8,9 @@ from time import monotonic
 
 import aiosqlite
 
-logger = logging.getLogger(__name__)
-
 from src.models import ScheduleSnapshot, UserRecord
+
+logger = logging.getLogger(__name__)
 
 
 class Database:

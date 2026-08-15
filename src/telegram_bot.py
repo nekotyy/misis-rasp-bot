@@ -1,22 +1,33 @@
 from __future__ import annotations
 
-from collections import defaultdict
 import asyncio
 import logging
 import tempfile
 import zipfile
+from collections import defaultdict
 from datetime import datetime
 from html import escape
 from pathlib import Path
 from time import monotonic
 from traceback import format_exception
+from typing import Any
 
 import httpx
 from aiogram import Bot, Dispatcher, F
+from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramNetworkError
 from aiogram.filters import Command, CommandStart
-from aiogram.enums import ChatMemberStatus
-from aiogram.types import CallbackQuery, ChatMemberUpdated, ErrorEvent, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import (
+    CallbackQuery,
+    ChatMemberUpdated,
+    ErrorEvent,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
 
 from src.config import Settings
 from src.db import Database
@@ -25,15 +36,22 @@ from src.lesson_counters import LessonCounterService, normalize_lesson_text, sub
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
-from src.schedule_service import ScheduleFormatter, get_day_by_offset, get_day_by_offset_from_content
+from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
     make_teacher_subscription,
     subscription_caption,
 )
-
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, upsert_lesson_subject, validate_lesson_config, parse_imported_json_payload, format_import_preview, apply_imported_lessons_config
+from web_configurator.lesson_editor import (
+    apply_imported_lessons_config,
+    format_import_preview,
+    load_lesson_config,
+    parse_imported_json_payload,
+    save_lesson_config,
+    upsert_lesson_subject,
+    validate_lesson_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +380,7 @@ def format_help_group_setup_text() -> str:
         "<i>Примечание: настраивать группу могут администраторы чата или пользователь, добавивший бота.</i>",
         "",
         "<b>2. ВКонтакте (Беседы):</b>",
-        "• Зайдите в сообщество бота ВКонтакте и нажмите кнопку <b>«Добавить в беседу»</b> (под обложкой или в меню действия).",
+        "• Зайдите в сообщество бота ВКонтакте и нажмите кнопку <b>«Добавить в беседу»</b> (под обложкой или в меню действия) либо перейдите по ссылке <code>vk.ru/app6441755_-237526231</code>.",
         "• Выберите нужную беседу и подтвердите добавление.",
         "• В настройках беседы разрешите боту доступ к переписке (или назначьте администратором).",
         "• Отправьте в беседу команду <code>/startgroup</code> или фразы <code>Настройка группы</code> / <code>Группа</code>.",
@@ -573,11 +591,7 @@ def format_user_profile_link(platform: str, user_id: int | None, username: str |
                 return f'<code>{user_id}</code> (<a href="tg://user?id={user_id}">профиль</a>)'
             return f"ID: {user_id}"
     else:  # vk
-        if clean_username:
-            link_text = f"vk.ru/{clean_username}"
-        else:
-            link_text = f"vk.ru/id{user_id}"
-
+        link_text = f"vk.ru/{clean_username}" if clean_username else f"vk.ru/id{user_id}"
         if html:
             return f'<a href="https://{link_text}">{link_text}</a> (ID: <code>{user_id}</code>)'
         return f"{link_text} (ID: {user_id})"
@@ -1206,11 +1220,11 @@ def build_dispatcher(
         username = getattr(user, "username", None)
         if username:
             return f"https://t.me/{username}"
-        return f"tg://user?id={getattr(user, 'user_id')}"
+        return f"tg://user?id={user.user_id}"
 
     def external_profile_link(user: object) -> str:
         if getattr(user, "platform", None) == "vk":
-            return f"https://vk.com/id{getattr(user, 'user_id')}"
+            return f"https://vk.com/id{user.user_id}"
         return telegram_profile_link(user)
 
     def format_admin_user_row(user: object) -> str:
@@ -1224,7 +1238,7 @@ def build_dispatcher(
             else (f"@{username}" if username else (getattr(user, "full_name", None) or "-"))
         )
         nick_link = f"<a href=\"{escape(profile_link, quote=True)}\">{escape(nick_or_name)}</a>" if nick_or_name != "-" else "-"
-        id_link = f"<a href=\"{escape(profile_link, quote=True)}\">{getattr(user, 'user_id')}</a>"
+        id_link = f"<a href=\"{escape(profile_link, quote=True)}\">{user.user_id}</a>"
         group_label = getattr(user, "subscription_title", None) or getattr(user, "group_name", None) or "-"
         role_flags: list[str] = []
         if getattr(user, "is_admin", False):
@@ -1462,7 +1476,7 @@ def build_dispatcher(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for index, group in enumerate(groups):
+        for group in groups:
             snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
             await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
             rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
@@ -1701,9 +1715,7 @@ def build_dispatcher(
                 await message.edit_text(text, reply_markup=reply_markup)
                 return True
             except TelegramBadRequest as exc:
-                if "message is not modified" in str(exc).lower():
-                    return True
-                return False
+                return "message is not modified" in str(exc).lower()
             except TelegramNetworkError:
                 if attempt >= retries:
                     return False
@@ -2689,21 +2701,23 @@ def build_dispatcher(
 
     @dispatcher.my_chat_member()
     async def handle_bot_added_to_chat(event: ChatMemberUpdated) -> None:
-        if event.new_chat_member.status in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}:
-            if event.old_chat_member.status not in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}:
-                welcome_msg = (
-                    "<b>Инструкция по настройке бота в групповом чате</b>\n\n"
-                    "Бот успешно добавлен в ваш чат.\n\n"
-                    "Пошаговая настройка:\n"
-                    "1. Назначьте бота администратором чата (с правом отправки сообщений).\n"
-                    "2. Отправьте в этот чат команду <code>/startgroup</code> (или <code>/group</code>).\n"
-                    "3. Напишите название вашей учебной группы (например: <code>ИСП-25-1</code>).\n\n"
-                    "После выполнения настройки бот привяжет расписание и будет автоматически отправлять ежедневные обновления и изменения пар."
-                )
-                try:
-                    await event.bot.send_message(event.chat.id, welcome_msg)
-                except Exception as exc:
-                    logger.warning("Failed to send welcome message to chat %s: %s", event.chat.id, exc)
+        if (
+            event.new_chat_member.status in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}
+            and event.old_chat_member.status not in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}
+        ):
+            welcome_msg = (
+                "<b>Инструкция по настройке бота в групповом чате</b>\n\n"
+                "Бот успешно добавлен в ваш чат.\n\n"
+                "Пошаговая настройка:\n"
+                "1. Назначьте бота администратором чата (с правом отправки сообщений).\n"
+                "2. Отправьте в этот чат команду <code>/startgroup</code> (или <code>/group</code>).\n"
+                "3. Напишите название вашей учебной группы (например: <code>ИСП-25-1</code>).\n\n"
+                "После выполнения настройки бот привяжет расписание и будет автоматически отправлять ежедневные обновления и изменения пар."
+            )
+            try:
+                await event.bot.send_message(event.chat.id, welcome_msg)
+            except Exception as exc:
+                logger.warning("Failed to send welcome message to chat %s: %s", event.chat.id, exc)
 
     @dispatcher.message(Command("startgroup", "group"))
     async def handle_startgroup_command(message: Message) -> None:
@@ -2715,7 +2729,7 @@ def build_dispatcher(
             msg_text = (
                 "<b>Настройка бота в групповом чате Telegram</b>\n\n"
                 "Чтобы получать расписание и уведомления об изменениях в вашем чате:\n"
-                f"1. Нажмите кнопку ниже и добавьте бота в ваш групповой чат.\n"
+                "1. Нажмите кнопку ниже и добавьте бота в ваш групповой чат.\n"
                 "2. Назначьте бота администратором чата (с правом отправки сообщений).\n"
                 "3. В чате отправьте команду <code>/startgroup</code> (или <code>/group</code>).\n"
                 "4. Напишите название вашей учебной группы (например: <code>ИСП-25-1</code>)."
@@ -2727,13 +2741,12 @@ def build_dispatcher(
             return
 
         # Executed in group / supergroup
-        if message.from_user is not None:
-            if not await user_can_manage_group(message):
-                await send_reply(
-                    message,
-                    "<b>Настройка группы доступна только администраторам чата или пользователю, добавившему бота.</b>"
-                )
-                return
+        if message.from_user is not None and not await user_can_manage_group(message):
+            await send_reply(
+                message,
+                "<b>Настройка группы доступна только администраторам чата или пользователю, добавившему бота.</b>"
+            )
+            return
 
         awaiting_group_subscription_input.add(message.chat.id)
         await send_reply(

@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from aiogram import Dispatcher
-from vkbottle.bot import Bot as VkBot
 
 from src.config import Settings
 from src.db import Database
@@ -33,7 +32,7 @@ class TestBotStartupErrors(unittest.IsolatedAsyncioTestCase):
         s.vk_disable_ssl_verify = overrides.get("vk_disable_ssl_verify", False)
         s.admin_telegram_ids = overrides.get("admin_telegram_ids", [])
         s.limited_admin_telegram_ids = overrides.get("limited_admin_telegram_ids", [])
-        s.admin_vk_id = overrides.get("admin_vk_id", None)
+        s.admin_vk_id = overrides.get("admin_vk_id")
         s.schedule_url = overrides.get("schedule_url", "http://localhost/schedule")
         s.database_path = self.db_path
         return s
@@ -76,7 +75,7 @@ class TestBotStartupErrors(unittest.IsolatedAsyncioTestCase):
     async def test_vk_bot_with_empty_token(self) -> None:
         """VK бот с пустым токеном — возвращает None или не крашится."""
         settings = self._make_settings(vk_bot_token="")
-        result = build_vk_bot(
+        _ = build_vk_bot(
             settings=settings, db=self.db,
             parser=MagicMock(), broadcaster=MagicMock(),
             group_catalog=MagicMock(), search_catalog=MagicMock(),

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.db import Database
 from src.models import UserRecord
@@ -69,7 +68,7 @@ class TestBroadcasterResilience(unittest.IsolatedAsyncioTestCase):
             broker=None,
         )
 
-        progress = await broadcaster.broadcast(
+        _ = await broadcaster.broadcast(
             "Тестовое сообщение",
             subscription_key="600",
         )

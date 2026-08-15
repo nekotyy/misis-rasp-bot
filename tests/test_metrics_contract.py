@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 
 from src.db import Database
-from src.models import DaySchedule, Lesson, ScheduleSnapshot
 
 
 class TestMetricsContract(unittest.IsolatedAsyncioTestCase):
@@ -125,6 +123,7 @@ class TestMetricsContract(unittest.IsolatedAsyncioTestCase):
 
     async def test_services_caching(self) -> None:
         from unittest.mock import AsyncMock, patch
+
         from web_configurator import metrics as m_module
 
         # Clear cache before test
