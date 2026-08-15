@@ -94,7 +94,17 @@ class TestVkSettingsKeyboard(unittest.TestCase):
         self.assertIn("Убрать кабинет", labels)
         self.assertIn("Отписаться от группы", labels)
 
+    def test_make_vk_keyboard_structure(self) -> None:
+        kb_json = make_vk_keyboard([["Кнопка 1", "Кнопка 2"], ["Кнопка 3"]])
+        parsed = json.loads(kb_json)
+        self.assertEqual(len(parsed["buttons"]), 2)
+        self.assertEqual(len(parsed["buttons"][0]), 2)
+        self.assertEqual(parsed["buttons"][0][0]["action"]["label"], "Кнопка 1")
+        self.assertEqual(parsed["buttons"][0][1]["action"]["label"], "Кнопка 2")
+        self.assertEqual(parsed["buttons"][1][0]["action"]["label"], "Кнопка 3")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
