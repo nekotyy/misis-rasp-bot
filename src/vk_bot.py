@@ -112,16 +112,12 @@ def vk_help_group_setup_text() -> str:
         "- В беседе отправьте команду /startgroup или фразы Настройка группы / Группа.",
         "- Укажите название вашей учебной группы (например: ИСП-25-1).",
         "",
-        "2. Включение добавления в беседы (для владельца бота в VK):",
-        "- Перейдите в Управление сообществом -> Сообщения -> Настройки для бота.",
-        "- Включите галочку «Разрешать добавлять сообщество в беседы».",
-        "",
-        "3. Telegram (Групповые чаты):",
+        "2. Telegram (Групповые чаты):",
         "- Добавьте бота в ваш групповой чат Telegram.",
         "- Назначьте администратором с правом отправки сообщений.",
         "- В чате отправьте /startgroup и напишите название группы.",
         "",
-        "4. Изменение и сброс группы в беседе:",
+        "3. Изменение и сброс группы в беседе:",
         "- Повторно отправьте /startgroup в беседу для смены учебной группы.",
         "- После привязки бот автоматически рассылает расписание и замены пар.",
     ])
@@ -167,12 +163,35 @@ def vk_help_personalization_text() -> str:
 def is_group_setup_command(text: str | None) -> bool:
     if not text:
         return False
-    raw = text.strip().casefold()
-    return (
-        raw.startswith("/startgroup")
-        or raw.startswith("/group")
-        or raw in {"/startgroup", "/group", "startgroup", "group"}
+    raw = " ".join(text.strip().casefold().split())
+    if not raw:
+        return False
+    exact_matches = {
+        "/startgroup",
+        "/group",
+        "startgroup",
+        "group",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа",
+    }
+    if raw in exact_matches:
+        return True
+    prefixes = (
+        "/startgroup",
+        "/group",
+        "startgroup ",
+        "group ",
+        "настройка группы",
+        "настройки группы",
+        "настроить группу",
+        "группа ",
+        "группа:",
+        "группа -",
+        "группа-",
     )
+    return any(raw.startswith(prefix) for prefix in prefixes)
 
 
 def vk_help_commands_text() -> str:

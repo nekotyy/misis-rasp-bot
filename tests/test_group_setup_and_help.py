@@ -81,6 +81,7 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ВКонтакте", group_text)
         self.assertIn("vk.ru/app6441755_-237526231", group_text)
         self.assertNotIn("https://vk.ru/app6441755_-237526231", group_text)
+        self.assertNotIn("Разрешать добавлять сообщество в беседы", group_text)
 
         vk_group_text = vk_help_group_setup_text()
         self.assertIn("/startgroup", vk_group_text)
@@ -88,6 +89,7 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ВКонтакте", vk_group_text)
         self.assertIn("vk.ru/app6441755_-237526231", vk_group_text)
         self.assertNotIn("https://vk.ru/app6441755_-237526231", vk_group_text)
+        self.assertNotIn("Разрешать добавлять сообщество в беседы", vk_group_text)
 
         cmd_text = format_help_commands_text()
         self.assertIn("/start", cmd_text)
@@ -99,6 +101,20 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
             "/group",
             "startgroup",
             "group",
+            "Группа",
+            "группа",
+            "ГРУППА",
+            "Настройка группы",
+            "настройка группы",
+            "НАСТРОЙКА ГРУППЫ",
+            "Настройки группы",
+            "настройки группы",
+            "Настроить группу",
+            "настроить группу",
+            "  настройка   группы  ",
+            "/startgroup@misis_bot",
+            "Группа ИСП-25-1",
+            "Настройка группы: ИСП-25-1",
         ]
         for var in valid_variations:
             self.assertTrue(is_group_setup_vk(var), f"VK failed on: {var}")
@@ -107,9 +123,9 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         invalid_variations = [
             "Привет",
             "ИСП-25-1",
-            "Группа",
-            "Настройка группы",
-            "Настройки группы",
+            "Расписание",
+            "Дополнительно",
+            "Помощь",
         ]
         for var in invalid_variations:
             self.assertFalse(is_group_setup_vk(var), f"VK false positive on: {var}")
