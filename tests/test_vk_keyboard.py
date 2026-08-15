@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 
-from src.vk_bot import vk_help_main_keyboard
+from src.vk_bot import (
+    build_vk_subscription_settings_keyboard,
+    make_vk_keyboard,
+    vk_help_main_keyboard,
+)
 
 
 class TestVkHelpMainKeyboard(unittest.TestCase):
@@ -38,9 +43,58 @@ class TestVkHelpMainKeyboard(unittest.TestCase):
 
     def test_inline_attribute(self) -> None:
         parsed = json.loads(vk_help_main_keyboard())
-        # VK keyboard может быть inline или обычной
         self.assertIn("inline", parsed)
+
+
+class TestVkSettingsKeyboard(unittest.TestCase):
+    """Тесты для build_vk_subscription_settings_keyboard — меню настроек VK."""
+
+    def _extract_labels(self, keyboard_json: str) -> list[str]:
+        parsed = json.loads(keyboard_json)
+        labels: list[str] = []
+        for row in parsed.get("buttons", []):
+            for btn in row:
+                labels.append(btn["action"]["label"])
+        return labels
+
+    def test_help_button_in_settings_keyboard_default(self) -> None:
+        kb_json = build_vk_subscription_settings_keyboard(None)
+        labels = self._extract_labels(kb_json)
+        self.assertIn("Помощь", labels)
+        self.assertIn("Пройденные пары", labels)
+        self.assertIn("Персонализация", labels)
+        self.assertIn("О проекте", labels)
+        self.assertIn("Назад в меню", labels)
+
+    def test_help_button_in_settings_keyboard_student(self) -> None:
+        user = SimpleNamespace(
+            homework_notifications_enabled=True,
+            subscription_key="ISP-25-1",
+            subscription_type="group",
+            audience_subscription_key=None,
+        )
+        kb_json = build_vk_subscription_settings_keyboard(user)
+        labels = self._extract_labels(kb_json)
+        self.assertIn("Помощь", labels)
+        self.assertIn("Отписаться от группы", labels)
+        self.assertIn("Отключить уведомления", labels)
+
+    def test_help_button_in_settings_keyboard_teacher(self) -> None:
+        user = SimpleNamespace(
+            homework_notifications_enabled=False,
+            subscription_key="Ivanov",
+            subscription_type="teacher",
+            audience_subscription_key="101",
+        )
+        kb_json = build_vk_subscription_settings_keyboard(user)
+        labels = self._extract_labels(kb_json)
+        self.assertIn("Помощь", labels)
+        self.assertIn("Включить уведомления", labels)
+        self.assertIn("Изменить кабинет", labels)
+        self.assertIn("Убрать кабинет", labels)
+        self.assertIn("Отписаться от группы", labels)
 
 
 if __name__ == "__main__":
     unittest.main()
+
