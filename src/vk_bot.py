@@ -33,6 +33,15 @@ from src.subscription_utils import (
     make_teacher_subscription,
     subscription_caption,
 )
+from src.system_status import (
+    BOT_VERSION,
+    STARTED_AT,
+    check_database_status,
+    check_schedule_site,
+    format_daily_errors_report,
+    format_uptime,
+    get_memory_usage_mb,
+)
 from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
@@ -251,7 +260,7 @@ SATURDAY_BELLS_TEXT = "\n".join(
 )
 
 
-async def build_vk_admin_status_text(db: Database) -> str:
+async def build_vk_admin_status_text(db: Database, settings: Settings | None = None) -> str:
     users = await db.list_users()
     active_groups = await db.get_active_sources()
     active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
@@ -262,6 +271,13 @@ async def build_vk_admin_status_text(db: Database) -> str:
     delivery_stats = await db.get_delivery_stats()
     tg_auto_disabled = await db.count_auto_disabled_users("telegram")
     tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
+    daily_errors_summary = await db.get_daily_errors_summary()
+    first_created_at = await db.get_db_first_created_at()
+
+    schedule_url = settings.schedule_url if settings else "http://asu.sf-misis.ru/rasp/600"
+    rabbitmq_url = settings.rabbitmq_url if settings else ""
+    site_status = await check_schedule_site(schedule_url, timeout=3.0)
+    db_status = await check_database_status(db)
 
     vk_users = sum(1 for user in users if user.platform == "vk")
     tg_users = sum(1 for user in users if user.platform == "telegram")
@@ -308,8 +324,35 @@ async def build_vk_admin_status_text(db: Database) -> str:
             return f"{title}: еще не было"
         return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
+    uptime_str = format_uptime()
+    started_str = STARTED_AT.strftime("%d.%m.%Y %H:%M:%S")
+    installed_str = first_created_at or "Не определено"
+    if "T" in installed_str:
+        installed_str = installed_str.replace("T", " ")
+    ram_mb = get_memory_usage_mb()
+    db_size_str = db_status.get("size_formatted", "0 Б")
+
+    site_status_label = f"🟢 Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"🔴 Недоступен ({str(site_status.get('error') or 'Ошибка')})"
+    rmq_label = "🟢 Подключен" if rabbitmq_url else "🟡 Direct Fallback (не настроен)"
+
     return "\n".join([
         "Статус бота",
+        "───────────────────────────",
+        "⚙️ Системная информация:",
+        f"• Версия бота: v{BOT_VERSION}.",
+        f"• Аптайм: {uptime_str} (старт: {started_str}).",
+        f"• Поставлен на сервер: {installed_str}.",
+        f"• Память процесса (RAM): {ram_mb} МБ.",
+        f"• Размер базы данных: {db_size_str}.",
+        "───────────────────────────",
+        "🌐 Сайт расписания и службы:",
+        f"• Сайт МИСИС: {site_status_label}.",
+        f"• RabbitMQ: {rmq_label}.",
+        "• Telegram Bot API: 🟢 Работает.",
+        "• VK Bot API: 🟢 Работает.",
+        f"• База данных SQLite: 🟢 OK ({db_size_str}).",
+        "• Фоновый планировщик: 🟢 Активен.",
+        f"• Ошибок за сегодня: {daily_errors_summary['total_errors']} (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
         "👥 Пользователи и источники:",
         f"• Пользователей: {len(users)}.",
@@ -786,17 +829,27 @@ def build_vk_bot(
     def admin_keyboard() -> str:
         return make_keyboard(
             [
-                ["Статус", "Перепарсить"],
-                ["Сохранить эталон", "Последнее изменение"],
+                ["Статус", "Ошибки за день"],
+                ["Перепарсить", "Сохранить эталон"],
+                ["Последнее изменение", "Информация по группам"],
                 ["Скачать БД", "Скачать пары"],
-                ['Добавить пару', 'Изменить пару'],
-                ['Импорт пар из JSON'],
-                ['Удалить пару', 'Удалить пары'],
-                ["Пользователи", "Информация по группам"],
-                ["Разослать", "Тестовая рассылка"],
-                ["Очистить БД", "Закрыть админку"],
+                ["Добавить пару", "Изменить пару"],
+                ["Импорт пар из JSON"],
+                ["Удалить пару", "Удалить пары"],
+                ["Пользователи", "Разослать"],
+                ["Тестовая рассылка", "Очистить БД"],
+                ["Закрыть админку"],
             ]
         )
+
+    def admin_back_keyboard() -> str:
+        return make_keyboard([["Назад в меню"]])
+
+    def admin_status_keyboard() -> str:
+        return make_keyboard([["Ошибки за день"], ["Обновить статус", "Назад в меню"]])
+
+    def admin_daily_errors_keyboard() -> str:
+        return make_keyboard([["Статус", "Назад в меню"]])
 
     def admin_user_profile_link(user) -> str:
         if user.platform == "vk":
@@ -1107,7 +1160,7 @@ def build_vk_bot(
         return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
     async def admin_status_text() -> str:
-        return await build_vk_admin_status_text(db)
+        return await build_vk_admin_status_text(db, settings)
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
@@ -2365,12 +2418,20 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
+            if text in {"Назад в меню", "Назад в админку"} and mode in {"admin_menu", "admin_status", "admin_daily_errors", "admin_users", "admin_user_search", "admin_user_search_results", "admin_editors"}:
+                admin_broadcast_drafts.pop(peer_id, None)
+                admin_lesson_drafts.pop(peer_id, None)
+                admin_user_search_state.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+
             if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):
                 await show_screen(
                     peer_id,
                     "⚡ Запущена принудительная очистка базы данных через RabbitMQ...\n\n"
                     "После завершения очистки служебный отчёт будет выслан администраторам.",
-                    keyboard=admin_keyboard(),
+                    keyboard=admin_back_keyboard(),
                 )
                 if schedule_jobs is not None:
                     await schedule_jobs.enqueue_or_run_db_cleanup()
@@ -2428,8 +2489,13 @@ def build_vk_bot(
                 peer_modes[peer_id] = "admin_lesson_delete_one"
                 await show_screen(peer_id, format_admin_lesson_delete_one_prompt("group"), keyboard=make_keyboard([["Отменить"]]))
                 return
-            if text == "Статус":
-                await show_screen(peer_id, await admin_status_text(), keyboard=admin_keyboard())
+            if text in {"Статус", "Обновить статус"}:
+                peer_modes[peer_id] = "admin_status"
+                await show_screen(peer_id, await admin_status_text(), keyboard=admin_status_keyboard())
+                return
+            if text == "Ошибки за день":
+                peer_modes[peer_id] = "admin_daily_errors"
+                await show_screen(peer_id, await format_daily_errors_report(db, html=False), keyboard=admin_daily_errors_keyboard())
                 return
             if text == "Перепарсить":
                 await show_screen(
@@ -2438,12 +2504,12 @@ def build_vk_bot(
                 )
                 report_rows = await refresh_all_active_sources()
                 if not report_rows:
-                    await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_keyboard())
+                    await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_back_keyboard())
                     return
                 await show_screen(
                     peer_id,
                     format_group_action_report("Перепарсинг активных групп", report_rows),
-                    keyboard=admin_keyboard(),
+                    keyboard=admin_back_keyboard(),
                 )
                 return
             if text == "Сохранить эталон":
@@ -2453,23 +2519,24 @@ def build_vk_bot(
                 )
                 report_rows = await save_baseline_for_all_active_sources()
                 if not report_rows:
-                    await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_keyboard())
+                    await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_back_keyboard())
                     return
                 await show_screen(
                     peer_id,
                     format_group_action_report("Эталоны для активных групп", report_rows),
-                    keyboard=admin_keyboard(),
+                    keyboard=admin_back_keyboard(),
                 )
                 return
             if text == "Последнее изменение":
                 today_prefix = datetime.now().date().isoformat()
                 daily_changes = await db.get_daily_change_groups(today_prefix)
                 response = format_daily_change_report("Последние изменения за сегодня", daily_changes)
-                await show_screen(peer_id, response, keyboard=admin_keyboard())
+                await show_screen(peer_id, response, keyboard=admin_back_keyboard())
                 return
             if text == "Пользователи":
                 admin_user_search_state.pop(peer_id, None)
                 peer_pages[peer_id].pop("admin_user_search", None)
+                peer_modes[peer_id] = "admin_users"
                 await show_admin_users(peer_id, 0)
                 return
             if text == "Поиск пользователя":
@@ -2479,11 +2546,16 @@ def build_vk_bot(
                 await show_screen(
                     peer_id,
                     "Поиск пользователя\n\nНапиши запрос одним сообщением. Поддерживается поиск по айди, @username, имени, фамилии и названию группы.",
-                    keyboard=make_keyboard([["Все пользователи"], ["Назад в админку"]]),
+                    keyboard=make_keyboard([["Все пользователи"], ["Назад в меню"]]),
                 )
                 return
             if text == "Информация по группам":
-                await show_screen(peer_id, format_group_user_stats(await db.get_group_user_stats()), keyboard=admin_keyboard())
+                await show_screen(peer_id, format_group_user_stats(await db.get_group_user_stats()), keyboard=admin_back_keyboard())
+                return
+            if text == "Тестовая рассылка":
+                if broadcaster is not None:
+                    await broadcaster.broadcast_test_message()
+                await show_screen(peer_id, "Тестовая рассылка\n\nСообщение отправлено всем зарегистрированным пользователям.", keyboard=admin_back_keyboard())
                 return
             if mode == "admin_users":
                 if text == "Следующая страница":

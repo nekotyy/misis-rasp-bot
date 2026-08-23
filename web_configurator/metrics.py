@@ -10,6 +10,8 @@ import aio_pika
 import aiosqlite
 import httpx
 
+from src.system_status import BOT_VERSION
+
 _SERVICES_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 SERVICES_CACHE_TTL = 45.0
 
@@ -24,7 +26,15 @@ async def _cached_service_status(cache_key: str, check_func, *args) -> dict[str,
     return res
 
 
-async def collect_metrics(db_path: Path, *, rabbitmq_url: str, telegram_token: str, vk_token: str, started_at: datetime) -> dict[str, Any]:
+async def collect_metrics(
+    db_path: Path,
+    *,
+    rabbitmq_url: str,
+    telegram_token: str,
+    vk_token: str,
+    started_at: datetime,
+    schedule_url: str = "http://asu.sf-misis.ru/rasp/600",
+) -> dict[str, Any]:
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = sqlite3.Row
         users = await _fetch_all(db, "SELECT * FROM users ORDER BY created_at DESC")
@@ -74,7 +84,9 @@ async def collect_metrics(db_path: Path, *, rabbitmq_url: str, telegram_token: s
             "auto_disabled": sum(1 for user in users if int(user["delivery_disabled_auto"] or 0) == 1),
         },
         "user_rows": [_user_row(user, new_threshold) for user in users],
+        "bot_version": BOT_VERSION,
         "services": {
+            "schedule_site": await _cached_service_status("schedule_site", _schedule_site_status, schedule_url),
             "telegram": await _cached_service_status("telegram", _telegram_status, telegram_token),
             "vk": await _cached_service_status("vk", _vk_status, vk_token),
             "rabbitmq": await _cached_service_status("rabbitmq", _rabbitmq_status, rabbitmq_url),
@@ -140,6 +152,24 @@ async def _lesson_counter_status(db: aiosqlite.Connection) -> dict[str, Any]:
         "last_event": dict(last_event) if last_event else None,
         "counters": [dict(row) for row in counters],
     }
+
+
+async def _schedule_site_status(url: str) -> dict[str, Any]:
+    if not url:
+        return {"ok": False, "label": "url missing"}
+    try:
+        t0 = monotonic()
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            response = await client.get(url)
+        latency_ms = int((monotonic() - t0) * 1000)
+        return {
+            "ok": response.status_code == 200,
+            "label": f"{response.status_code} ({latency_ms} ms)",
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+        }
+    except Exception as exc:
+        return {"ok": False, "label": type(exc).__name__}
 
 
 async def _telegram_status(token: str) -> dict[str, Any]:

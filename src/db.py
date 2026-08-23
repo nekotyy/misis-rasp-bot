@@ -1,10 +1,10 @@
-from __future__ import annotations
-
+import contextlib
 import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
+from typing import Any
 
 import aiosqlite
 
@@ -143,6 +143,15 @@ class Database:
                     group_name TEXT NOT NULL,
                     processed_at TEXT NOT NULL,
                     UNIQUE(target_date_iso, group_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS system_errors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    component TEXT NOT NULL,
+                    error_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    details TEXT,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -1526,6 +1535,16 @@ class Database:
                 logger.warning("Failed to cleanup old schedule_snapshots: %s", exc)
                 deleted_counts["schedule_snapshots"] = 0
 
+            # 4. system_errors
+            try:
+                cursor = await db.execute(
+                    f"DELETE FROM system_errors WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                )
+                deleted_counts["system_errors"] = cursor.rowcount if cursor.rowcount is not None else 0
+            except Exception as exc:
+                logger.warning("Failed to cleanup old system_errors: %s", exc)
+                deleted_counts["system_errors"] = 0
+
             await db.commit()
             try:
                 await db.execute("VACUUM")
@@ -1573,3 +1592,148 @@ class Database:
                 (target_date_iso, group_name, now_str),
             )
             await db.commit()
+
+    async def log_system_error(
+        self,
+        component: str,
+        error_type: str,
+        message: str,
+        details: str | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        now_str = created_at or datetime.now().isoformat(timespec="seconds")
+        safe_msg = (message or "").strip()[:500]
+        safe_details = (details or "").strip()[:1000] if details else None
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO system_errors (component, error_type, message, details, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (component, error_type, safe_msg, safe_details, now_str),
+            )
+            await db.commit()
+
+    async def get_daily_errors(
+        self,
+        date_prefix: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        target_date = date_prefix or datetime.now().date().isoformat()
+        like_pattern = f"{target_date}%"
+        errors: list[dict[str, Any]] = []
+        async with aiosqlite.connect(self.path) as db:
+            # 1. System errors
+            cursor = await db.execute(
+                """
+                SELECT id, component, error_type, message, details, created_at
+                FROM system_errors
+                WHERE created_at LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (like_pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                errors.append({
+                    "kind": "system",
+                    "id": row[0],
+                    "component": row[1],
+                    "error_type": row[2],
+                    "message": row[3],
+                    "details": row[4],
+                    "created_at": row[5],
+                })
+
+            # 2. Delivery errors
+            cursor = await db.execute(
+                """
+                SELECT id, campaign_type, platform, user_id, via_broker, status, attempt, error_text, created_at
+                FROM delivery_events
+                WHERE status = 'failed' AND created_at LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (like_pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            for row in rows:
+                errors.append({
+                    "kind": "delivery",
+                    "id": row[0],
+                    "campaign_type": row[1],
+                    "platform": row[2],
+                    "user_id": row[3],
+                    "via_broker": bool(row[4]),
+                    "status": row[5],
+                    "attempt": row[6],
+                    "message": row[7] or "Неизвестная ошибка доставки",
+                    "details": f"Platform: {row[2]}, user_id: {row[3]}, via_broker: {row[4]}",
+                    "created_at": row[8],
+                })
+
+        # Sort all errors by created_at DESC
+        errors.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        return errors[:limit]
+
+    async def get_daily_errors_summary(self, date_prefix: str | None = None) -> dict[str, Any]:
+        target_date = date_prefix or datetime.now().date().isoformat()
+        like_pattern = f"{target_date}%"
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT component, COUNT(*) AS cnt
+                FROM system_errors
+                WHERE created_at LIKE ?
+                GROUP BY component
+                """,
+                (like_pattern,),
+            )
+            system_counts = {row[0]: row[1] for row in await cursor.fetchall()}
+
+            cursor = await db.execute(
+                """
+                SELECT platform, COUNT(*) AS cnt
+                FROM delivery_events
+                WHERE status = 'failed' AND created_at LIKE ?
+                GROUP BY platform
+                """,
+                (like_pattern,),
+            )
+            delivery_counts = {row[0]: row[1] for row in await cursor.fetchall()}
+
+        total_system = sum(system_counts.values())
+        total_delivery = sum(delivery_counts.values())
+        return {
+            "total_errors": total_system + total_delivery,
+            "system_errors_total": total_system,
+            "delivery_errors_total": total_delivery,
+            "by_component": system_counts,
+            "by_delivery_platform": delivery_counts,
+            "date": target_date,
+        }
+
+    async def get_db_first_created_at(self) -> str | None:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT MIN(created_at) FROM (
+                    SELECT created_at FROM users WHERE created_at IS NOT NULL
+                    UNION ALL
+                    SELECT created_at FROM schedule_snapshots WHERE created_at IS NOT NULL
+                    UNION ALL
+                    SELECT created_at FROM change_events WHERE created_at IS NOT NULL
+                )
+                """
+            )
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return str(row[0])
+
+        if self.path.exists():
+            with contextlib.suppress(Exception):
+                mtime = datetime.fromtimestamp(self.path.stat().st_ctime)
+                return mtime.isoformat(timespec="seconds")
+        return None
+

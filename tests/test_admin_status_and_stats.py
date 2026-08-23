@@ -63,6 +63,15 @@ class TestAdminStatusAndStats(unittest.IsolatedAsyncioTestCase):
 
         status_text = await build_admin_status_text(self.db)
 
+        self.assertIn("Версия бота:", status_text)
+        self.assertIn("Аптайм:", status_text)
+        self.assertIn("Поставлен на сервер:", status_text)
+        self.assertIn("Сайт МИСИС:", status_text)
+        self.assertIn("RabbitMQ:", status_text)
+        self.assertIn("Telegram Bot API:", status_text)
+        self.assertIn("VK Bot API:", status_text)
+        self.assertIn("База данных SQLite:", status_text)
+        self.assertIn("Ошибок за сегодня:", status_text)
         self.assertIn("Пользователей: <b>4</b>.", status_text)
         self.assertIn("Пользователей с VK: <b>2</b>.", status_text)
         self.assertIn("Пользователей с TG: <b>2</b>.", status_text)
@@ -83,6 +92,15 @@ class TestAdminStatusAndStats(unittest.IsolatedAsyncioTestCase):
 
         status_text = await build_vk_admin_status_text(self.db)
 
+        self.assertIn("Версия бота:", status_text)
+        self.assertIn("Аптайм:", status_text)
+        self.assertIn("Поставлен на сервер:", status_text)
+        self.assertIn("Сайт МИСИС:", status_text)
+        self.assertIn("RabbitMQ:", status_text)
+        self.assertIn("Telegram Bot API:", status_text)
+        self.assertIn("VK Bot API:", status_text)
+        self.assertIn("База данных SQLite:", status_text)
+        self.assertIn("Ошибок за сегодня:", status_text)
         self.assertIn("Пользователей: 3.", status_text)
         self.assertIn("Пользователей с VK: 1.", status_text)
         self.assertIn("Пользователей с TG: 2.", status_text)

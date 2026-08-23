@@ -101,5 +101,46 @@ class TestFormatUserProfileLink(unittest.TestCase):
         self.assertIn("t.me/alice", result)
 
 
+class TestAdminKeyboards(unittest.TestCase):
+    """Тесты для админских клавиатур и навигации."""
+
+    def test_admin_keyboards_structure(self) -> None:
+        from src.telegram_bot import (
+            ADMIN_BACK_KEYBOARD,
+            ADMIN_DAILY_ERRORS_KEYBOARD,
+            ADMIN_KEYBOARD,
+            ADMIN_KEYBOARD_LIMITED,
+            ADMIN_STATUS_KEYBOARD,
+        )
+
+        # ADMIN_KEYBOARD
+        full_callbacks = [btn.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for btn in row]
+        self.assertIn("admin:status", full_callbacks)
+        self.assertIn("admin:daily_errors", full_callbacks)
+        self.assertIn("admin:download_db", full_callbacks)
+        self.assertIn("admin:download_counters", full_callbacks)
+        self.assertIn("admin:close", full_callbacks)
+
+        # ADMIN_KEYBOARD_LIMITED
+        limited_callbacks = [btn.callback_data for row in ADMIN_KEYBOARD_LIMITED.inline_keyboard for btn in row]
+        self.assertIn("admin:status", limited_callbacks)
+        self.assertIn("admin:daily_errors", limited_callbacks)
+
+        # ADMIN_BACK_KEYBOARD
+        back_callbacks = [btn.callback_data for row in ADMIN_BACK_KEYBOARD.inline_keyboard for btn in row]
+        self.assertEqual(back_callbacks, ["admin:back"])
+
+        # ADMIN_STATUS_KEYBOARD
+        status_callbacks = [btn.callback_data for row in ADMIN_STATUS_KEYBOARD.inline_keyboard for btn in row]
+        self.assertIn("admin:daily_errors", status_callbacks)
+        self.assertIn("admin:status", status_callbacks)
+        self.assertIn("admin:back", status_callbacks)
+
+        # ADMIN_DAILY_ERRORS_KEYBOARD
+        daily_errors_callbacks = [btn.callback_data for row in ADMIN_DAILY_ERRORS_KEYBOARD.inline_keyboard for btn in row]
+        self.assertIn("admin:status", daily_errors_callbacks)
+        self.assertIn("admin:back", daily_errors_callbacks)
+
+
 if __name__ == "__main__":
     unittest.main()

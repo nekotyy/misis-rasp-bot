@@ -23,6 +23,7 @@ from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
+from src.system_status import SystemAlertManager
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
 
@@ -165,6 +166,7 @@ async def main() -> None:
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
     )
+    alert_manager = SystemAlertManager(db=db, broadcaster=broadcaster)
     jobs = ScheduleJobs(
         db=db,
         parser=parser,
@@ -182,6 +184,8 @@ async def main() -> None:
         admin_telegram_id=settings.admin_telegram_id,
         lesson_counters_path=settings.lesson_counters_path,
         database_path=settings.database_path,
+        alert_manager=alert_manager,
+        rabbitmq_url=settings.rabbitmq_url,
     )
     jobs.start()
 
@@ -190,24 +194,29 @@ async def main() -> None:
 
     try:
         await broadcaster.start()
-    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
+        await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска consumer RabbitMQ")
     try:
         await jobs.start_lesson_counter_consumer()
-    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+        await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска lesson_counter consumer RabbitMQ")
     try:
         await jobs.start_db_cleanup_consumer()
-    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("Database cleanup RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+        await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска db_cleanup consumer RabbitMQ")
     try:
         await jobs.start_auto_daily_lesson_counter_consumer()
-    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError):
+    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("Auto daily lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
+        await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска auto_daily_lesson_counter consumer RabbitMQ")
     try:
         await jobs.sync_current_snapshot()
-    except Exception:
+    except Exception as exc:
         logging.exception("Initial schedule sync failed. Background scheduler will retry later.")
+        await alert_manager.report_component_status("schedule_site", False, str(exc), details="Первоначальная синхронизация расписания не удалась")
 
     await asyncio.Event().wait()
 
