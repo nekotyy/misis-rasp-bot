@@ -251,6 +251,108 @@ SATURDAY_BELLS_TEXT = "\n".join(
 )
 
 
+async def build_vk_admin_status_text(db: Database) -> str:
+    users = await db.list_users()
+    active_groups = await db.get_active_sources()
+    active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
+    active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
+    current_snapshot = await db.get_latest_snapshot("current")
+    baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
+    last_change = await db.get_last_change()
+    delivery_stats = await db.get_delivery_stats()
+    tg_auto_disabled = await db.count_auto_disabled_users("telegram")
+    tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
+
+    vk_users = sum(1 for user in users if user.platform == "vk")
+    tg_users = sum(1 for user in users if user.platform == "telegram")
+    tg_personal = sum(1 for u in users if u.platform == "telegram" and u.user_id > 0)
+    tg_chats = sum(1 for u in users if u.platform == "telegram" and u.user_id < 0)
+    vk_personal = sum(1 for u in users if u.platform == "vk" and u.user_id < 2000000000)
+    vk_chats = sum(1 for u in users if u.platform == "vk" and u.user_id >= 2000000000)
+    total_personal = tg_personal + vk_personal
+    total_chats = tg_chats + vk_chats
+
+    chat_groups_map: dict[str, dict[str, int]] = {}
+    for u in users:
+        is_chat = (u.platform == "telegram" and u.user_id < 0) or (u.platform == "vk" and u.user_id >= 2000000000)
+        if not is_chat:
+            continue
+        g_title = u.subscription_title or u.group_name or "Без группы"
+        if g_title not in chat_groups_map:
+            chat_groups_map[g_title] = {"total": 0, "tg": 0, "vk": 0}
+        chat_groups_map[g_title]["total"] += 1
+        if u.platform == "telegram":
+            chat_groups_map[g_title]["tg"] += 1
+        else:
+            chat_groups_map[g_title]["vk"] += 1
+
+    sorted_chat_groups = sorted(chat_groups_map.items(), key=lambda x: x[1]["total"], reverse=True)
+    if sorted_chat_groups:
+        chat_groups_lines = [
+            f"  • {g}: {stats['total']} (TG: {stats['tg']}, VK: {stats['vk']})."
+            for g, stats in sorted_chat_groups[:15]
+        ]
+        if len(sorted_chat_groups) > 15:
+            chat_groups_lines.append(f"  • ... и ещё {len(sorted_chat_groups) - 15} групп.")
+    else:
+        chat_groups_lines = ["  • Нет настроенных пользовательских групп."]
+
+    last_change_at = last_change["created_at"] if last_change else "еще не было"
+    tg_top_error_lines = "\n".join(
+        f"• {item['count']}: {item['error_text']}."
+        for item in tg_top_errors
+    ) or "• Нет зарегистрированных ошибок."
+
+    def snapshot_line(title: str, snapshot: dict | None) -> str:
+        if snapshot is None:
+            return f"{title}: еще не было"
+        return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
+
+    return "\n".join([
+        "Статус бота",
+        "───────────────────────────",
+        "👥 Пользователи и источники:",
+        f"• Пользователей: {len(users)}.",
+        f"• Пользователей с VK: {vk_users}.",
+        f"• Пользователей с TG: {tg_users}.",
+        f"• Личных пользователей: {total_personal} (TG: {tg_personal}, VK: {vk_personal}).",
+        f"• Активных групп: {active_group_count}.",
+        f"• Активных преподавателей: {active_teacher_count}.",
+        "",
+        "💬 Активные пользовательские группы:",
+        f"• Всего бесед и групп: {total_chats}.",
+        f"• Групповых чатов в Telegram: {tg_chats}.",
+        f"• Бесед ВКонтакте: {vk_chats}.",
+        "• Где настроен бот:",
+        *chat_groups_lines,
+        "───────────────────────────",
+        "🔄 Состояние расписания:",
+        f"• Последнее изменение: {last_change_at}.",
+        f"• {snapshot_line('Последний обычный парс', current_snapshot)}.",
+        f"• {snapshot_line('Последний сохраненный эталон', baseline_snapshot)}.",
+        "───────────────────────────",
+        "📬 Статистика отправок:",
+        f"• Всего событий доставки: {delivery_stats['events_total']}.",
+        f"• Успешно / ошибок: {delivery_stats['sent_total']} / {delivery_stats['failed_total']}.",
+        f"• За 24 часа (успешно / ошибок): {delivery_stats['sent_last_24h']} / {delivery_stats['failed_last_24h']}.",
+        f"• Уведомлений отправлено: {delivery_stats['notifications_sent']}.",
+        f"• Админских рассылок отправлено: {delivery_stats['admin_broadcast_sent']}.",
+        f"• Служебных уведомлений админу: {delivery_stats['admin_notify_sent']}.",
+        f"• Через RabbitMQ / напрямую: {delivery_stats['sent_via_rabbitmq']} / {delivery_stats['sent_direct']} .",
+        f"• Ошибок через RabbitMQ / напрямую: {delivery_stats['failed_via_rabbitmq']} / {delivery_stats['failed_direct']} .",
+        f"• Доставлено после ретрая: {delivery_stats['sent_after_retry']} .",
+        f"• TG (успешно / ошибок): {delivery_stats['tg_sent']} / {delivery_stats['tg_failed']}.",
+        f"  - Ошибок через RabbitMQ / напрямую: {delivery_stats['tg_failed_via_rabbitmq']} / {delivery_stats['tg_failed_direct']}.",
+        f"  - Ошибок за 24ч: {delivery_stats['tg_failed_last_24h']} .",
+        f"  - Перманентных ошибок (всего / 24ч): {delivery_stats['tg_failed_permanent']} / {delivery_stats['tg_failed_permanent_last_24h']}.",
+        f"  - TG авто-отключено из-за доставки: {tg_auto_disabled}.",
+        f"• VK (успешно / ошибок): {delivery_stats['vk_sent']} / {delivery_stats['vk_failed']}.",
+        "───────────────────────────",
+        "⚠️ Топ TG ошибок за 24ч:",
+        tg_top_error_lines,
+    ])
+
+
 def build_vk_bot(
     settings: Settings,
     db: Database,
@@ -573,13 +675,15 @@ def build_vk_bot(
 
     def admin_broadcast_prompt_text(error_text: str | None = None) -> str:
         lines = [
-            "Разослать",
+            "Массовая рассылка",
+            "───────────────────────────",
+            "Отправьте текст сообщения для рассылки одним сообщением.",
+            "После отправки текста откроется окно настройки параметров и предпросмотра.",
             "",
-            "Отправь текст сообщения одним сообщением.",
-            "После этого покажу предпросмотр.",
+            "Для отмены используйте кнопку «Отменить».",
         ]
         if error_text:
-            lines.extend(["", error_text])
+            lines.extend(["", f"Ошибка: {error_text}."])
         return "\n".join(lines)
 
     def admin_broadcast_preview_text(
@@ -593,20 +697,20 @@ def build_vk_bot(
             "vk": "ВКонтакте",
         }
         audience_map = {
-            "all": "Всем",
+            "all": "Всем пользователям",
             "students": "Студентам",
             "teachers": "Преподавателям",
         }
         platform_str = platform_map.get(target_platform, "Глобально (везде)")
-        audience_str = audience_map.get(target_audience, "Всем")
+        audience_str = audience_map.get(target_audience, "Всем пользователям")
 
         return "\n".join([
             "Предпросмотр рассылки",
-            "",
-            "ℹ️ Служебная информация:",
-            f"• Платформа: {platform_str}",
-            f"• Кому: {audience_str}",
-            "",
+            "───────────────────────────",
+            "ℹ️ Параметры отправки:",
+            f"• Платформа: {platform_str}.",
+            f"• Аудитория: {audience_str}.",
+            "───────────────────────────",
             "Текст сообщения:",
             text,
         ])
@@ -809,37 +913,35 @@ def build_vk_bot(
         )
 
     def format_admin_lesson_prompt(step: str, draft: dict[str, object] | None = None, error_text: str | None = None) -> str:
-        header = 'Изменить пару' if draft and draft.get("mode") == "edit" else 'Добавление пары'
+        header = 'Редактирование пары' if draft and draft.get("mode") == "edit" else 'Добавление пары'
         prompt_map = {
-            "group": "Шаг 1/5. Укажи группу или schedule_id.",
-            "subject": "Шаг 2/5. Укажи дисциплину.",
-            "teacher": "Шаг 3/5. Укажи преподавателя.",
-            "passed": "Шаг 4/5. Сколько пар уже прошло? (число)",
-            "total": "Шаг 5/5. Сколько пар всего? (число)",
+            "group": "Шаг 1/5. Укажите группу или schedule_id.",
+            "subject": "Шаг 2/5. Укажите название дисциплины.",
+            "teacher": "Шаг 3/5. Укажите ФИО преподавателя.",
+            "passed": "Шаг 4/5. Сколько пар уже прошло (число)?",
+            "total": "Шаг 5/5. Сколько пар запланировано всего (число)?",
         }
-        lines = [header, "", prompt_map.get(step, 'Продолжай ввод.')]
+        lines = [header, "───────────────────────────", prompt_map.get(step, 'Продолжайте ввод.')]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: {draft['group_name']}"])
+            lines.extend(["", f"• Группа: {draft['group_name']}."])
         if error_text:
-            lines.extend(["", f"Ошибка: {error_text}"])
-        lines.append("\nОтмена: Отменить")
+            lines.extend(["", f"Ошибка: {error_text}."])
+        lines.extend(["───────────────────────────", "Для отмены нажмите кнопку «Отменить»."])
         return "\n".join(lines)
 
     def format_admin_lesson_preview(draft: dict[str, object]) -> str:
-        return "\n".join(
-            [
-                "Проверь данные",
-                "",
-                f"Группа: {draft.get('group_name', '')}",
-                f"schedule_id: {draft.get('schedule_id', '')}",
-                f"Дисциплина: {draft.get('subject', '')}",
-                f"Преподаватель: {draft.get('teacher', '')}",
-                f"Прошло: {draft.get('passed', 0)}",
-                f"Всего: {draft.get('total', 0)}",
-                "",
-                "Подтвердить добавление пары?",
-            ]
-        )
+        return "\n".join([
+            "Проверка данных пары",
+            "───────────────────────────",
+            f"• Группа: {draft.get('group_name', '')}.",
+            f"• Schedule ID: {draft.get('schedule_id', '')}.",
+            f"• Дисциплина: {draft.get('subject', '')}.",
+            f"• Преподаватель: {draft.get('teacher', '')}.",
+            f"• Пройдено пар: {draft.get('passed', 0)}.",
+            f"• Всего пар: {draft.get('total', 0)}.",
+            "───────────────────────────",
+            "Подтвердить сохранение пары?",
+        ])
 
     def format_admin_lesson_delete_prompt(
         step: str,
@@ -847,15 +949,15 @@ def build_vk_bot(
         error_text: str | None = None,
     ) -> str:
         prompt_map = {
-            "group": "Шаг 1/2. Укажи группу или schedule_id.",
-            "confirm": "Шаг 2/2. Подтверди удаление всех пар у группы.",
+            "group": "Шаг 1/2. Укажите группу или schedule_id.",
+            "confirm": "Шаг 2/2. Подтвердите удаление всех пар у выбранной группы.",
         }
-        lines = ["Удаление пар", "", prompt_map.get(step, "Продолжай ввод.")]
+        lines = ["Удаление всех пар группы", "───────────────────────────", prompt_map.get(step, "Продолжайте ввод.")]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: {draft['group_name']}"])
+            lines.extend(["", f"• Группа: {draft['group_name']}."])
         if error_text:
-            lines.extend(["", f"Ошибка: {error_text}"])
-        lines.append("\nОтмена: Отменить")
+            lines.extend(["", f"Ошибка: {error_text}."])
+        lines.extend(["───────────────────────────", "Для отмены нажмите кнопку «Отменить»."])
         return "\n".join(lines)
 
     def format_admin_lesson_delete_one_prompt(
@@ -864,21 +966,21 @@ def build_vk_bot(
         error_text: str | None = None,
     ) -> str:
         prompt_map = {
-            "group": "Шаг 1/4. Укажи группу или schedule_id.",
-            "subject": "Шаг 2/4. Укажи дисциплину.",
-            "teacher": "Шаг 3/4. Укажи преподавателя.",
-            "confirm": "Шаг 4/4. Подтверди удаление пары.",
+            "group": "Шаг 1/4. Укажите группу или schedule_id.",
+            "subject": "Шаг 2/4. Укажите дисциплину.",
+            "teacher": "Шаг 3/4. Укажите преподавателя.",
+            "confirm": "Шаг 4/4. Подтвердите удаление пары.",
         }
-        lines = ["Удаление пары", "", prompt_map.get(step, "Продолжай ввод.")]
+        lines = ["Удаление пары", "───────────────────────────", prompt_map.get(step, "Продолжайте ввод.")]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: {draft['group_name']}"])
+            lines.extend(["", f"• Группа: {draft['group_name']}."])
         if draft and draft.get("subject"):
-            lines.append(f"Дисциплина: {draft['subject']}")
+            lines.append(f"• Дисциплина: {draft['subject']}.")
         if draft and draft.get("teacher"):
-            lines.append(f"Преподаватель: {draft['teacher']}")
+            lines.append(f"• Преподаватель: {draft['teacher']}.")
         if error_text:
-            lines.extend(["", f"Ошибка: {error_text}"])
-        lines.append("\nОтмена: Отменить")
+            lines.extend(["", f"Ошибка: {error_text}."])
+        lines.extend(["───────────────────────────", "Для отмены нажмите кнопку «Отменить»."])
         return "\n".join(lines)
 
     async def send_admin_document(peer_id: int, path: Path, title: str) -> None:
@@ -917,40 +1019,53 @@ def build_vk_bot(
         )
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
-        lines = [title, ""]
+        lines = [title, "───────────────────────────"]
         if not rows:
             lines.append("Нет записей.")
             return "\n".join(lines)
-        lines.append(f"Затронуто групп: {len(rows)}")
-        lines.append("")
-        for group_name, action_time, action_name in rows:
-            lines.append(f"{group_name} | {action_time} | {action_name}")
+        lines.append(f"Затронуто источников: {len(rows)}.")
+        lines.append("───────────────────────────")
+        for index, (group_name, action_time, action_name) in enumerate(rows, start=1):
+            lines.append(f"{index}. {group_name} — {action_time} ({action_name}).")
         return "\n".join(lines)
 
     def format_daily_change_report(title: str, rows: list[dict]) -> str:
-        lines = [title, ""]
+        lines = [title, "───────────────────────────"]
         if not rows:
-            lines.append("За сегодня изменений пока не было.")
+            lines.append("Сегодня изменений расписания пока не было.")
             return "\n".join(lines)
-        lines.append(f"Затронуто групп: {len(rows)}")
-        lines.append("")
-        for row in rows:
-            lines.append(f"{row['group_name']} | {row['created_at']}")
+        lines.append(f"Всего изменений: {len(rows)}.")
+        lines.append("───────────────────────────")
+        for index, row in enumerate(rows, start=1):
+            name = row.get("group_name") or row.get("subscription_title") or "Без названия"
+            t = row.get("created_at") or ""
+            lines.append(f"{index}. {name} — {t}.")
         return "\n".join(lines)
 
     def format_group_user_stats(rows: list[dict[str, int | str]]) -> str:
-        lines = ["Информация по группам", ""]
+        lines = [
+            "Информация по учебным группам",
+            "───────────────────────────",
+        ]
         if not rows:
             lines.append("Пока нет пользователей с выбранной учебной группой.")
             return "\n".join(lines)
         total_users = sum(int(row["users_count"]) for row in rows)
-        lines.append(f"Групп найдено: {len(rows)}")
-        lines.append(f"Всего пользователей с группой: {total_users}")
-        lines.append("")
-        lines.append("№ | группа | кол-во юзеров")
-        lines.append("")
+        total_personal = sum(int(row.get("personal_count", 0)) for row in rows)
+        total_chats = sum(int(row.get("chat_count", 0)) for row in rows)
+        lines.append(f"• Всего групп с подписчиками: {len(rows)}.")
+        lines.append(f"• Всего подписчиков на группы: {total_users} (Личных: {total_personal}, Бесед/чатов: {total_chats}).")
+        lines.append("───────────────────────────")
+        lines.append("Список групп:")
         for index, row in enumerate(rows, start=1):
-            lines.append(f"{index} | {row['group_name']} | {int(row['users_count'])}")
+            g_name = str(row["group_name"])
+            u_count = int(row["users_count"])
+            p_count = int(row.get("personal_count", 0))
+            c_count = int(row.get("chat_count", 0))
+            tg_c = int(row.get("tg_chat_count", 0))
+            vk_c = int(row.get("vk_chat_count", 0))
+            chat_info = f", Бесед: {c_count} [TG: {tg_c}, VK: {vk_c}]" if c_count > 0 else ""
+            lines.append(f"{index}. {g_name} — {u_count} подп. (Личных: {p_count}{chat_info}).")
         return "\n".join(lines)
 
     async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
@@ -985,58 +1100,14 @@ def build_vk_bot(
         for lesson in day.lessons:
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
+
     def snapshot_line(title: str, snapshot: dict | None) -> str:
         if snapshot is None:
             return f"{title}: еще не было"
-        return f"{title}: {snapshot['created_at']}\nСайт отдал данные: {snapshot['fetched_at']}"
+        return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
     async def admin_status_text() -> str:
-        users = await db.list_users()
-        active_groups = await db.get_active_sources()
-        active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
-        active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
-        current_snapshot = await db.get_latest_snapshot("current")
-        baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
-        last_change = await db.get_last_change()
-        delivery_stats = await db.get_delivery_stats()
-        tg_auto_disabled = await db.count_auto_disabled_users("telegram")
-        tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
-        vk_users = sum(1 for user in users if user.platform == "vk")
-        tg_users = sum(1 for user in users if user.platform == "telegram")
-        last_change_at = last_change["created_at"] if last_change else "еще не было"
-        tg_top_error_lines = "\n".join(
-            f"- {item['count']}: {item['error_text']}"
-            for item in tg_top_errors
-        ) or "- нет данных"
-        return (
-            "Статус бота\n\n"
-            f"Пользователей: {len(users)}\n"
-            f"Пользователей с VK: {vk_users}\n"
-            f"Пользователей с TG: {tg_users}\n"
-            f"Активных групп: {active_group_count}\n"
-            f"Активных преподавателей: {active_teacher_count}\n"
-            f"Последнее изменение: {last_change_at}\n\n"
-            "Статистика отправок\n"
-            f"Всего событий доставки: {delivery_stats['events_total']}\n"
-            f"Успешно / ошибок: {delivery_stats['sent_total']} / {delivery_stats['failed_total']}\n"
-            f"За 24 часа (успешно / ошибок): {delivery_stats['sent_last_24h']} / {delivery_stats['failed_last_24h']}\n"
-            f"Уведомлений отправлено: {delivery_stats['notifications_sent']}\n"
-            f"Админских рассылок отправлено: {delivery_stats['admin_broadcast_sent']}\n"
-            f"Служебных уведомлений админу: {delivery_stats['admin_notify_sent']}\n"
-            f"Через RabbitMQ / напрямую: {delivery_stats['sent_via_rabbitmq']} / {delivery_stats['sent_direct']}\n"
-            f"Ошибок через RabbitMQ / напрямую: {delivery_stats['failed_via_rabbitmq']} / {delivery_stats['failed_direct']}\n"
-            f"Доставлено после ретрая: {delivery_stats['sent_after_retry']}\n"
-            f"TG (успешно / ошибок): {delivery_stats['tg_sent']} / {delivery_stats['tg_failed']}\n"
-            f"TG ошибок через RabbitMQ / напрямую: {delivery_stats['tg_failed_via_rabbitmq']} / {delivery_stats['tg_failed_direct']}\n"
-            f"TG ошибок за 24ч: {delivery_stats['tg_failed_last_24h']}\n"
-            f"TG перманентных ошибок (всего / 24ч): {delivery_stats['tg_failed_permanent']} / {delivery_stats['tg_failed_permanent_last_24h']}\n"
-            f"TG авто-отключено из-за доставки: {tg_auto_disabled}\n"
-            f"VK (успешно / ошибок): {delivery_stats['vk_sent']} / {delivery_stats['vk_failed']}\n\n"
-            "Топ TG ошибок за 24ч\n"
-            f"{tg_top_error_lines}\n\n"
-            f"{snapshot_line('Последний обычный парс', current_snapshot)}\n\n"
-            f"{snapshot_line('Последний сохраненный эталон', baseline_snapshot)}"
-        )
+        return await build_vk_admin_status_text(db)
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
@@ -1361,7 +1432,7 @@ def build_vk_bot(
 
         if not users:
             peer_modes[peer_id] = "admin_users"
-            await show_screen(peer_id, "Пользователи\n\nПока никто не зарегистрирован.", keyboard=make_keyboard([["Назад в админку"]]))
+            await show_screen(peer_id, "Пользователи бота\n───────────────────────────\nПока никто не зарегистрирован.", keyboard=make_keyboard([["Назад в админку"]]))
             return
 
         user_rows: list[str] = []
@@ -1377,7 +1448,7 @@ def build_vk_bot(
             if user.is_editor:
                 role_flags.append("редактор")
             role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-            user_rows.append(f"- {platform_label} | {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {profile_link}")
+            user_rows.append(f"• [{platform_label}] {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {profile_link}")
 
         page_size = 20
         total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
@@ -1388,12 +1459,11 @@ def build_vk_bot(
         start = page * page_size
         end = start + page_size
         lines = [
-            "Пользователи",
-            "",
-            "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
-            "",
-            f"Страница {page + 1}/{total_pages}",
-            "",
+            "Пользователи бота",
+            "───────────────────────────",
+            "Формат: [платформа] Имя | Ник/ФИ | ID | Группа (роли)",
+            f"Страница {page + 1}/{total_pages} (всего: {len(user_rows)}).",
+            "───────────────────────────",
             *user_rows[start:end],
         ]
 
@@ -1425,24 +1495,24 @@ def build_vk_bot(
             peer_modes[peer_id] = "admin_user_search"
             await show_screen(
                 peer_id,
-                f"\u041f\u043e\u0438\u0441\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f\n\n\u041f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443 \u00ab{state['query']}\u00bb \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e.",
-                keyboard=make_keyboard([["\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430"], ["\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438"], ["\u041d\u0430\u0437\u0430\u0434 \u0432 \u0430\u0434\u043c\u0438\u043d\u043a\u0443"]]),
+                f"Поиск пользователя\n───────────────────────────\nПо запросу «{state['query']}» ничего не найдено.",
+                keyboard=make_keyboard([["Искать снова"], ["Все пользователи"], ["Назад в админку"]]),
             )
             return True
 
         user_rows: list[str] = []
         for user in matches:
             platform_label = "tg" if user.platform == "telegram" else user.platform
-            user_label = user.full_name or "\u0411\u0435\u0437 \u0438\u043c\u0435\u043d\u0438"
+            user_label = user.full_name or "Без имени"
             nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
             group_label = user.subscription_title or user.group_name or "-"
             role_flags: list[str] = []
             if user.is_admin:
-                role_flags.append("\u0430\u0434\u043c\u0438\u043d")
+                role_flags.append("админ")
             if user.is_editor:
-                role_flags.append("\u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440")
+                role_flags.append("редактор")
             role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-            user_rows.append(f"- {platform_label} | {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {admin_user_profile_link(user)}")
+            user_rows.append(f"• [{platform_label}] {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {admin_user_profile_link(user)}")
 
         page_size = 20
         total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
@@ -1453,29 +1523,26 @@ def build_vk_bot(
         start = page * page_size
         end = start + page_size
         lines = [
-            "\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u043f\u043e\u0438\u0441\u043a\u0430",
-            "",
-            f"\u0417\u0430\u043f\u0440\u043e\u0441: {state['query']}",
-            f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e: {len(matches)}",
-            "",
-            "\u0424\u043e\u0440\u043c\u0430\u0442: \u043f\u043b\u0430\u0442\u0444\u043e\u0440\u043c\u0430 | \u044e\u0437\u0435\u0440 | \u043d\u0438\u043a/\u0424\u0418 | \u0430\u0439\u0434\u0438 | \u0433\u0440\u0443\u043f\u043f\u0430 (\u0440\u043e\u043b\u0438)",
-            "",
-            f"\u0421\u0442\u0440\u0430\u043d\u0438\u0446\u0430 {page + 1}/{total_pages}",
-            "",
+            "Результаты поиска",
+            "───────────────────────────",
+            f"Запрос: {state['query']}.",
+            f"Найдено пользователей: {len(matches)}.",
+            f"Страница: {page + 1}/{total_pages}.",
+            "───────────────────────────",
             *user_rows[start:end],
         ]
 
         rows: list[list[str]] = []
         nav: list[str] = []
         if page > 0:
-            nav.append("\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430")
+            nav.append("Предыдущая страница")
         if page < total_pages - 1:
-            nav.append("\u0421\u043b\u0435\u0434\u0443\u044e\u0449\u0430\u044f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u0430")
+            nav.append("Следующая страница")
         if nav:
             rows.append(nav)
-        rows.append(["\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430"])
-        rows.append(["\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438"])
-        rows.append(["\u041d\u0430\u0437\u0430\u0434 \u0432 \u0430\u0434\u043c\u0438\u043d\u043a\u0443"])
+        rows.append(["Искать снова"])
+        rows.append(["Все пользователи"])
+        rows.append(["Назад в админку"])
 
         await show_screen(peer_id, "\n".join(lines), keyboard=make_keyboard(rows))
         return True
