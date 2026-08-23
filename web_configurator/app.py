@@ -350,6 +350,7 @@ async def api_metrics(user: Annotated[WebUser, Depends(current_user)]):
         telegram_token=fresh_settings.telegram_bot_token,
         vk_token=fresh_settings.vk_bot_token,
         started_at=started_at,
+        schedule_url=fresh_settings.schedule_url,
     )
     return filter_metrics_for_user(metrics, user)
 
@@ -1148,7 +1149,7 @@ def can(user: WebUser, permission: str) -> bool:
 
 
 def filter_metrics_for_user(metrics: dict, user: WebUser) -> dict:
-    filtered = {"uptime_seconds": metrics["uptime_seconds"]}
+    filtered = {"uptime_seconds": metrics["uptime_seconds"], "bot_version": metrics.get("bot_version", "1.4.0")}
     if can(user, "stats_overview"):
         filtered["users"] = metrics["users"]
         filtered["extra"] = metrics["extra"]

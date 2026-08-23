@@ -43,6 +43,15 @@ from src.subscription_utils import (
     make_teacher_subscription,
     subscription_caption,
 )
+from src.system_status import (
+    BOT_VERSION,
+    STARTED_AT,
+    check_database_status,
+    check_schedule_site,
+    format_daily_errors_report,
+    format_uptime,
+    get_memory_usage_mb,
+)
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -270,21 +279,28 @@ START_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
-ADMIN_KEYBOARD = InlineKeyboardMarkup(
+ADMIN_BACK_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back")],
+    ]
+)
+
+ADMIN_STATUS_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors")],
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin:status"),
+            InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back"),
+        ],
+    ]
+)
+
+ADMIN_DAILY_ERRORS_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
+            InlineKeyboardButton(text="« Назад к статусу", callback_data="admin:status"),
+            InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back"),
         ],
-        [
-            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Редакторы", callback_data="admin:editors"),
-        ],
-        [
-            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
-            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
-        ],
-        [InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close")],
     ]
 )
 
@@ -292,19 +308,19 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(text="Статус", callback_data="admin:status"),
+            InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors"),
+        ],
+        [
             InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
-        ],
-        [
             InlineKeyboardButton(text="Сохранить эталон", callback_data="admin:baseline"),
-            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
         ],
         [
-            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
+            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
             InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
         ],
         [
+            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
             InlineKeyboardButton(text="Разослать", callback_data="admin:broadcast"),
-            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
         ],
         [
             InlineKeyboardButton(text="Скачать БД", callback_data="admin:download_db"),
@@ -323,6 +339,9 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Очистить БД", callback_data="admin:cleandb"),
+            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
+        ],
+        [
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -332,17 +351,18 @@ ADMIN_KEYBOARD_LIMITED = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
+            InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors"),
         ],
         [
-            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
+            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
             InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
         ],
         [
+            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
             InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
-            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
         ],
         [
+            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
             InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
         ],
     ]
@@ -617,7 +637,7 @@ def format_user_profile_link(platform: str, user_id: int | None, username: str |
         return f"{link_text} (ID: {user_id})"
 
 
-async def build_admin_status_text(db: Database) -> str:
+async def build_admin_status_text(db: Database, settings: Settings | None = None) -> str:
     users = await db.list_users()
     active_groups = await db.get_active_sources()
     active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
@@ -628,6 +648,13 @@ async def build_admin_status_text(db: Database) -> str:
     delivery_stats = await db.get_delivery_stats()
     tg_auto_disabled = await db.count_auto_disabled_users("telegram")
     tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
+    daily_errors_summary = await db.get_daily_errors_summary()
+    first_created_at = await db.get_db_first_created_at()
+
+    schedule_url = settings.schedule_url if settings else "http://asu.sf-misis.ru/rasp/600"
+    rabbitmq_url = settings.rabbitmq_url if settings else ""
+    site_status = await check_schedule_site(schedule_url, timeout=3.0)
+    db_status = await check_database_status(db)
 
     vk_users = sum(1 for user in users if user.platform == "vk")
     tg_users = sum(1 for user in users if user.platform == "telegram")
@@ -677,8 +704,35 @@ async def build_admin_status_text(db: Database) -> str:
             f"  Сайт отдал данные: <b>{escape(snapshot_row['fetched_at'])}</b>"
         )
 
+    uptime_str = format_uptime()
+    started_str = STARTED_AT.strftime("%d.%m.%Y %H:%M:%S")
+    installed_str = escape(first_created_at or "Не определено")
+    if "T" in installed_str:
+        installed_str = installed_str.replace("T", " ")
+    ram_mb = get_memory_usage_mb()
+    db_size_str = db_status.get("size_formatted", "0 Б")
+
+    site_status_label = f"🟢 Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"🔴 Недоступен ({escape(str(site_status.get('error') or 'Ошибка'))})"
+    rmq_label = "🟢 Подключен" if rabbitmq_url else "🟡 Direct Fallback (не настроен)"
+
     return "\n".join([
         "<b>Статус бота</b>",
+        "───────────────────────────",
+        "⚙️ <b>Системная информация:</b>",
+        f"• Версия бота: <b>v{BOT_VERSION}</b>.",
+        f"• Аптайм: <b>{uptime_str}</b> (старт: {started_str}).",
+        f"• Поставлен на сервер: <b>{installed_str}</b>.",
+        f"• Память процесса (RAM): <b>{ram_mb} МБ</b>.",
+        f"• Размер базы данных: <b>{db_size_str}</b>.",
+        "───────────────────────────",
+        "🌐 <b>Сайт расписания и службы:</b>",
+        f"• Сайт МИСИС: <b>{site_status_label}</b>.",
+        f"• RabbitMQ: <b>{rmq_label}</b>.",
+        "• Telegram Bot API: <b>🟢 Работает</b>.",
+        "• VK Bot API: <b>🟢 Работает</b>.",
+        f"• База данных SQLite: <b>🟢 OK</b> ({db_size_str}).",
+        "• Фоновый планировщик: <b>🟢 Активен</b>.",
+        f"• Ошибок за сегодня: <b>{daily_errors_summary['total_errors']}</b> (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
         "👥 <b>Пользователи и источники:</b>",
         f"• Пользователей: <b>{len(users)}</b>.",
@@ -1515,7 +1569,7 @@ def build_dispatcher(
         )
 
     async def format_admin_status() -> str:
-        return await build_admin_status_text(db)
+        return await build_admin_status_text(db, settings)
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [f"<b>{title}</b>", "───────────────────────────"]
@@ -3395,7 +3449,13 @@ def build_dispatcher(
             return
         if action == "status":
             text = await format_admin_status()
-            await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_KEYBOARD)
+            await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_STATUS_KEYBOARD)
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback)
+            return
+        if action == "daily_errors":
+            text = await format_daily_errors_report(db, html=True)
+            await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_DAILY_ERRORS_KEYBOARD)
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
             await safe_callback_answer(callback)
             return
@@ -3411,14 +3471,14 @@ def build_dispatcher(
                 await safe_edit_message_text(
                     callback.message,
                     "Нет активных групп для сохранения эталона.",
-                    reply_markup=ADMIN_KEYBOARD,
+                    reply_markup=ADMIN_BACK_KEYBOARD,
                 )
                 context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
                 return
             await safe_edit_message_text(
                 callback.message,
                 format_group_action_report("Эталоны для активных групп", report_rows),
-                reply_markup=ADMIN_KEYBOARD,
+                reply_markup=ADMIN_BACK_KEYBOARD,
             )
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
             return
@@ -3445,20 +3505,34 @@ def build_dispatcher(
             admin_lesson_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson")
-            await safe_edit_message_text(callback.message, format_admin_panel(), reply_markup=ADMIN_KEYBOARD)
+            keyboard = ADMIN_KEYBOARD if user_is_full_admin(callback.from_user.id) else ADMIN_KEYBOARD_LIMITED
+            await safe_edit_message_text(callback.message, format_admin_panel(), reply_markup=keyboard)
             await safe_callback_answer(callback)
             return
 
-        if action == "status":
-            users = await db.list_users()
-            last_change = await db.get_last_change()
-            last_change_at = escape(last_change["created_at"]) if last_change else "пока не было"
-            text = (
-                "<b>Статус бота</b>\n\n"
-                f"Пользователей: <b>{len(users)}</b>\n"
-                f"Последнее изменение: <b>{last_change_at}</b>"
+        if action == "refresh":
+            await safe_edit_message_text(
+                callback.message,
+                "<b>Перепарсинг...</b>\n\nПарсю активные источники и обновляю текущие слепки. Это может занять до минуты.",
             )
-            reply_markup = ADMIN_KEYBOARD
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback, "Перепарсинг запущен...")
+            report_rows = await refresh_all_active_sources()
+            if not report_rows:
+                await safe_edit_message_text(
+                    callback.message,
+                    "Нет активных групп для перепарсинга.",
+                    reply_markup=ADMIN_BACK_KEYBOARD,
+                )
+                context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+                return
+            await safe_edit_message_text(
+                callback.message,
+                format_group_action_report("Перепарсинг активных групп", report_rows),
+                reply_markup=ADMIN_BACK_KEYBOARD,
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            return
         elif action == "users" or action.startswith("users:"):
             awaiting_admin_user_search.discard(callback.from_user.id)
             admin_user_search_state.pop(callback.from_user.id, None)
@@ -3514,11 +3588,12 @@ def build_dispatcher(
                     page = int(action_parts[2])
             search_result = await format_admin_search_results(callback.from_user.id, page=page, sort_mode=sort_mode)
             if search_result is None:
-                text = "<b>РџРѕРёСЃРє РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ</b>\n\nРџРѕРёСЃРє СѓР¶Рµ РЅРµР°РєС‚СѓР°Р»РµРЅ. Р—Р°РїСѓСЃС‚Рё РµРіРѕ РµС‰Рµ СЂР°Р·."
+                text = "<b>Поиск пользователя</b>\n\nПоиск уже неактуален. Запусти его еще раз."
                 reply_markup = InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [InlineKeyboardButton(text="РџРѕРёСЃРє", callback_data="admin:users_search:kind_group")],
-                        [InlineKeyboardButton(text="Р’СЃРµ РїРѕР»СЊР·РѕРІР°С‚РµР»Рё", callback_data="admin:users:kind_group:0")],
+                        [InlineKeyboardButton(text="Поиск", callback_data="admin:users_search:kind_group")],
+                        [InlineKeyboardButton(text="Все пользователи", callback_data="admin:users:kind_group:0")],
+                        [InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back")],
                     ]
                 )
             else:
@@ -3535,7 +3610,7 @@ def build_dispatcher(
             reply_markup = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="Назад к списку", callback_data=f"admin:users:{sort_mode}:0")],
-                    [InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")],
+                    [InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back")],
                 ]
             )
         elif action == "editors":
@@ -3546,38 +3621,15 @@ def build_dispatcher(
             today_prefix = datetime.now().date().isoformat()
             daily_changes = await db.get_daily_change_groups(today_prefix)
             text = format_daily_change_report("Последние изменения за сегодня", daily_changes)
-            reply_markup = ADMIN_KEYBOARD
+            reply_markup = ADMIN_BACK_KEYBOARD
         elif action == "group_info":
             text = format_group_user_stats(await db.get_group_user_stats())
-            reply_markup = ADMIN_KEYBOARD
-        elif action == "refresh":
-            await safe_edit_message_text(
-                callback.message,
-                "<b>Перепарсинг...</b>\n\nПарсю активные источники и обновляю текущие слепки. Это может занять до минуты.",
-            )
-            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            await safe_callback_answer(callback, "Перепарсинг запущен...")
-            report_rows = await refresh_all_active_sources()
-            if not report_rows:
-                await safe_edit_message_text(
-                    callback.message,
-                    "Нет активных групп для перепарсинга.",
-                    reply_markup=ADMIN_KEYBOARD,
-                )
-                context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-                return
-            await safe_edit_message_text(
-                callback.message,
-                format_group_action_report("Перепарсинг активных групп", report_rows),
-                reply_markup=ADMIN_KEYBOARD,
-            )
-            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
-            return
+            reply_markup = ADMIN_BACK_KEYBOARD
         else:
             if broadcaster is not None:
                 await broadcaster.broadcast_test_message()
             text = "<b>Тестовая рассылка</b>\n\nСообщение отправлено всем зарегистрированным пользователям."
-            reply_markup = ADMIN_KEYBOARD
+            reply_markup = ADMIN_BACK_KEYBOARD
 
         await safe_edit_message_text(callback.message, text, reply_markup=reply_markup)
         context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]

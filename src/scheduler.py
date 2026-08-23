@@ -25,6 +25,13 @@ from src.message_broker import (
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser
 from src.schedule_service import ScheduleComparator
+from src.system_status import (
+    SystemAlertManager,
+    check_database_status,
+    check_rabbitmq_status,
+    check_schedule_site,
+    check_web_dashboard_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +126,9 @@ class ScheduleJobs:
         admin_telegram_id: int | None = None,
         lesson_counters_path: Path | None = None,
         database_path: Path | None = None,
+        alert_manager: SystemAlertManager | None = None,
+        rabbitmq_url: str = "",
+        web_port: int = 8080,
     ) -> None:
         self.db = db
         self.parser = parser
@@ -136,6 +146,9 @@ class ScheduleJobs:
         self.admin_telegram_id = admin_telegram_id
         self.lesson_counters_path = lesson_counters_path
         self.database_path = database_path
+        self.alert_manager = alert_manager
+        self.rabbitmq_url = rabbitmq_url
+        self.web_port = web_port
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
         self._lesson_counter_lock = asyncio.Lock()
@@ -201,6 +214,47 @@ class ScheduleJobs:
             max_instances=1,
             coalesce=True,
         )
+        self.scheduler.add_job(
+            self.run_system_health_check,
+            IntervalTrigger(minutes=5),
+            max_instances=1,
+            coalesce=True,
+        )
+
+    async def run_system_health_check(self) -> dict[str, Any]:
+        """Runs periodic diagnostic checks and notifies admins on status changes."""
+        site_res = await check_schedule_site(self.parser.schedule_base_url)
+        db_res = await check_database_status(self.db)
+        rmq_res = await check_rabbitmq_status(self.rabbitmq_url) if self.rabbitmq_url else {"ok": True, "label": "disabled"}
+        web_res = await check_web_dashboard_status(port=self.web_port)
+
+        if self.alert_manager is not None:
+            await self.alert_manager.report_component_status(
+                "schedule_site",
+                site_res["ok"],
+                site_res.get("error"),
+                details=f"URL: {self.parser.schedule_base_url} (status: {site_res.get('status_code')}, ping: {site_res.get('latency_ms')} мс)",
+            )
+            if self.rabbitmq_url:
+                await self.alert_manager.report_component_status(
+                    "rabbitmq",
+                    rmq_res["ok"],
+                    rmq_res.get("error"),
+                    details=f"URL: {self.rabbitmq_url} ({rmq_res.get('label')})",
+                )
+            await self.alert_manager.report_component_status(
+                "database",
+                db_res["ok"],
+                db_res.get("error"),
+                details=f"File: {self.db.path} ({db_res.get('size_formatted')})",
+            )
+
+        return {
+            "schedule_site": site_res,
+            "database": db_res,
+            "rabbitmq": rmq_res,
+            "web_dashboard": web_res,
+        }
 
     def start(self) -> None:
         self.configure()
@@ -351,13 +405,25 @@ class ScheduleJobs:
             logger.info("Task %s skipped because there are no active sources.", job_name)
             return
 
+        any_failed = False
         for index, source in enumerate(sources):
             if index:
                 await self._sleep_between_sources(job_name, str(source["source_title"]))
             try:
                 await worker(source, **kwargs)
             except Exception as exc:
+                any_failed = True
                 logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
+                if self.alert_manager is not None:
+                    await self.alert_manager.report_component_status(
+                        "schedule_site",
+                        False,
+                        str(exc),
+                        details=f"Ошибка в задаче {job_name} для {source.get('source_title')}",
+                    )
+
+        if not any_failed and self.alert_manager is not None:
+            await self.alert_manager.report_component_status("schedule_site", True)
 
     async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:
         delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)  # noqa: S311
