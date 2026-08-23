@@ -1,6 +1,6 @@
+import tempfile
 import unittest
 from pathlib import Path
-import tempfile
 
 from src.db import Database
 from src.telegram_bot import build_admin_status_text
