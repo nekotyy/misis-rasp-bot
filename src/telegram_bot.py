@@ -617,6 +617,111 @@ def format_user_profile_link(platform: str, user_id: int | None, username: str |
         return f"{link_text} (ID: {user_id})"
 
 
+async def build_admin_status_text(db: Database) -> str:
+    users = await db.list_users()
+    active_groups = await db.get_active_sources()
+    active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
+    active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
+    last_change = await db.get_last_change()
+    current_snapshot = await db.get_latest_snapshot("current")
+    baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
+    delivery_stats = await db.get_delivery_stats()
+    tg_auto_disabled = await db.count_auto_disabled_users("telegram")
+    tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
+
+    vk_users = sum(1 for user in users if user.platform == "vk")
+    tg_users = sum(1 for user in users if user.platform == "telegram")
+    tg_personal = sum(1 for u in users if u.platform == "telegram" and u.user_id > 0)
+    tg_chats = sum(1 for u in users if u.platform == "telegram" and u.user_id < 0)
+    vk_personal = sum(1 for u in users if u.platform == "vk" and u.user_id < 2000000000)
+    vk_chats = sum(1 for u in users if u.platform == "vk" and u.user_id >= 2000000000)
+    total_personal = tg_personal + vk_personal
+    total_chats = tg_chats + vk_chats
+
+    chat_groups_map: dict[str, dict[str, int]] = {}
+    for u in users:
+        is_chat = (u.platform == "telegram" and u.user_id < 0) or (u.platform == "vk" and u.user_id >= 2000000000)
+        if not is_chat:
+            continue
+        g_title = u.subscription_title or u.group_name or "Без группы"
+        if g_title not in chat_groups_map:
+            chat_groups_map[g_title] = {"total": 0, "tg": 0, "vk": 0}
+        chat_groups_map[g_title]["total"] += 1
+        if u.platform == "telegram":
+            chat_groups_map[g_title]["tg"] += 1
+        else:
+            chat_groups_map[g_title]["vk"] += 1
+
+    sorted_chat_groups = sorted(chat_groups_map.items(), key=lambda x: x[1]["total"], reverse=True)
+    if sorted_chat_groups:
+        chat_groups_lines = [
+            f"  • {escape(g)}: <b>{stats['total']}</b> (TG: {stats['tg']}, VK: {stats['vk']})."
+            for g, stats in sorted_chat_groups[:15]
+        ]
+        if len(sorted_chat_groups) > 15:
+            chat_groups_lines.append(f"  • ... и ещё {len(sorted_chat_groups) - 15} групп.")
+    else:
+        chat_groups_lines = ["  • Нет настроенных пользовательских групп."]
+
+    last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
+    tg_top_error_lines = "\n".join(
+        f"• <b>{item['count']}</b>: {escape(str(item['error_text']))}."
+        for item in tg_top_errors
+    ) or "• Нет зарегистрированных ошибок."
+
+    def snapshot_line(title: str, snapshot_row: dict | None) -> str:
+        if snapshot_row is None:
+            return f"{title}: <b>еще не было</b>"
+        return (
+            f"{title}: <b>{escape(snapshot_row['created_at'])}</b>\n"
+            f"  Сайт отдал данные: <b>{escape(snapshot_row['fetched_at'])}</b>"
+        )
+
+    return "\n".join([
+        "<b>Статус бота</b>",
+        "───────────────────────────",
+        "👥 <b>Пользователи и источники:</b>",
+        f"• Пользователей: <b>{len(users)}</b>.",
+        f"• Пользователей с VK: <b>{vk_users}</b>.",
+        f"• Пользователей с TG: <b>{tg_users}</b>.",
+        f"• Личных пользователей: <b>{total_personal}</b> (TG: {tg_personal}, VK: {vk_personal}).",
+        f"• Активных групп: <b>{active_group_count}</b>.",
+        f"• Активных преподавателей: <b>{active_teacher_count}</b>.",
+        "",
+        "💬 <b>Активные пользовательские группы:</b>",
+        f"• Всего бесед и групп: <b>{total_chats}</b>.",
+        f"• Групповых чатов в Telegram: <b>{tg_chats}</b>.",
+        f"• Бесед ВКонтакте: <b>{vk_chats}</b>.",
+        "• Где настроен бот:",
+        *chat_groups_lines,
+        "───────────────────────────",
+        "🔄 <b>Состояние расписания:</b>",
+        f"• Последнее изменение: <b>{last_change_at}</b>.",
+        f"• {snapshot_line('Последний обычный парс', current_snapshot)}.",
+        f"• {snapshot_line('Последний сохраненный эталон', baseline_snapshot)}.",
+        "───────────────────────────",
+        "📬 <b>Статистика отправок:</b>",
+        f"• Всего событий доставки: <b>{delivery_stats['events_total']}</b>.",
+        f"• Успешно / ошибок: <b>{delivery_stats['sent_total']}</b> / <b>{delivery_stats['failed_total']}</b>.",
+        f"• За 24 часа (успешно / ошибок): <b>{delivery_stats['sent_last_24h']}</b> / <b>{delivery_stats['failed_last_24h']}</b>.",
+        f"• Уведомлений отправлено: <b>{delivery_stats['notifications_sent']}</b>.",
+        f"• Админских рассылок отправлено: <b>{delivery_stats['admin_broadcast_sent']}</b>.",
+        f"• Служебных уведомлений админу: <b>{delivery_stats['admin_notify_sent']}</b>.",
+        f"• Через RabbitMQ / напрямую: <b>{delivery_stats['sent_via_rabbitmq']}</b> / <b>{delivery_stats['sent_direct']}</b>.",
+        f"• Ошибок через RabbitMQ / напрямую: <b>{delivery_stats['failed_via_rabbitmq']}</b> / <b>{delivery_stats['failed_direct']}</b>.",
+        f"• Доставлено после ретрая: <b>{delivery_stats['sent_after_retry']}</b>.",
+        f"• TG (успешно / ошибок): <b>{delivery_stats['tg_sent']}</b> / <b>{delivery_stats['tg_failed']}</b>.",
+        f"  - Ошибок через RabbitMQ / напрямую: <b>{delivery_stats['tg_failed_via_rabbitmq']}</b> / <b>{delivery_stats['tg_failed_direct']}</b>.",
+        f"  - Ошибок за 24ч: <b>{delivery_stats['tg_failed_last_24h']}</b>.",
+        f"  - Перманентных ошибок (всего / 24ч): <b>{delivery_stats['tg_failed_permanent']}</b> / <b>{delivery_stats['tg_failed_permanent_last_24h']}</b>.",
+        f"  - TG авто-отключено из-за доставки: <b>{tg_auto_disabled}</b>.",
+        f"• VK (успешно / ошибок): <b>{delivery_stats['vk_sent']}</b> / <b>{delivery_stats['vk_failed']}</b>.",
+        "───────────────────────────",
+        "⚠️ <b>Топ TG ошибок за 24ч:</b>",
+        tg_top_error_lines,
+    ])
+
+
 def build_dispatcher(
     settings: Settings,
     db: Database,
@@ -949,23 +1054,29 @@ def build_dispatcher(
         return await build_subscription_settings_keyboard(user_id)
 
     def format_admin_panel() -> str:
-        return (
-            "<b>Админ-панель</b>\n\n"
-            "Здесь можно перепарсить сайт, сохранить эталон для сравнения и посмотреть статистику."
-        )
+        return "\n".join([
+            "<b>Панель администратора</b>",
+            "───────────────────────────",
+            "Выберите нужное действие для управления ботом:",
+            "• Просмотр статуса, статистики и пользовательских групп.",
+            "• Перепарсинг расписания и сохранение эталонов.",
+            "• Управление парами и импорт конфигурации.",
+            "• Рассылка сообщений и поиск пользователей.",
+            "• Очистка и выгрузка базы данных.",
+        ])
 
     def format_admin_broadcast_prompt(error_text: str | None = None) -> str:
         lines = [
-            "<b>Разослать</b>",
+            "<b>Массовая рассылка</b>",
+            "───────────────────────────",
+            "Отправьте текст сообщения для рассылки одним сообщением.",
+            "После отправки текста откроется окно настройки параметров и предпросмотра.",
             "",
-            "Отправь текст сообщения одним сообщением.",
-            "После этого я покажу предпросмотр.",
+            "Для отмены используйте кнопку «Отменить».",
         ]
         if error_text:
-            lines.extend(["", error_text])
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}."])
         return "\n".join(lines)
-
-
 
     def format_admin_broadcast_preview(
         text: str,
@@ -978,56 +1089,54 @@ def build_dispatcher(
             "vk": "ВКонтакте",
         }
         audience_map = {
-            "all": "Всем",
+            "all": "Всем пользователям",
             "students": "Студентам",
             "teachers": "Преподавателям",
         }
         platform_str = platform_map.get(target_platform, "Глобально (везде)")
-        audience_str = audience_map.get(target_audience, "Всем")
+        audience_str = audience_map.get(target_audience, "Всем пользователям")
 
         return "\n".join([
             "<b>Предпросмотр рассылки</b>",
-            "",
-            "ℹ️ <b>Служебная информация:</b>",
-            f"• <b>Платформа:</b> {platform_str}",
-            f"• <b>Кому:</b> {audience_str}",
-            "",
+            "───────────────────────────",
+            "ℹ️ <b>Параметры отправки:</b>",
+            f"• Платформа: <b>{escape(platform_str)}</b>.",
+            f"• Аудитория: <b>{escape(audience_str)}</b>.",
+            "───────────────────────────",
             "<b>Текст сообщения:</b>",
             escape(text),
         ])
 
     def format_admin_lesson_prompt(step: str, draft: dict[str, object] | None = None, error_text: str | None = None) -> str:
-        header = "<b>Изменение пары</b>" if draft and draft.get("mode") == "edit" else "<b>Добавление пары</b>"
+        header = "<b>Редактирование пары</b>" if draft and draft.get("mode") == "edit" else "<b>Добавление пары</b>"
         prompt_map = {
-            "group": "Шаг 1/5. Укажи группу или schedule_id.",
-            "subject": "Шаг 2/5. Укажи дисциплину.",
-            "teacher": "Шаг 3/5. Укажи преподавателя.",
-            "passed": "Шаг 4/5. Сколько пар уже прошло? (число)",
-            "total": "Шаг 5/5. Сколько пар всего? (число)",
+            "group": "Шаг 1/5. Укажите группу или schedule_id.",
+            "subject": "Шаг 2/5. Укажите название дисциплины.",
+            "teacher": "Шаг 3/5. Укажите ФИО преподавателя.",
+            "passed": "Шаг 4/5. Сколько пар уже прошло (число)?",
+            "total": "Шаг 5/5. Сколько пар запланировано всего (число)?",
         }
-        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        lines = [header, "───────────────────────────", prompt_map.get(step, "Продолжайте ввод.")]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+            lines.extend(["", f"• Группа: <b>{escape(str(draft['group_name']))}</b>."])
         if error_text:
-            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
-        lines.append("\nОтмена: /cancel")
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}."])
+        lines.extend(["───────────────────────────", "Для отмены используйте /cancel."])
         return "\n".join(lines)
 
     def format_admin_lesson_preview(draft: dict[str, object]) -> str:
-        return "\n".join(
-            [
-                "<b>Проверь данные</b>",
-                "",
-                f"Группа: <b>{escape(str(draft.get('group_name', ''))) }</b>",
-                f"schedule_id: <b>{escape(str(draft.get('schedule_id', ''))) }</b>",
-                f"Дисциплина: <b>{escape(str(draft.get('subject', ''))) }</b>",
-                f"Преподаватель: <b>{escape(str(draft.get('teacher', ''))) }</b>",
-                f"Прошло: <b>{escape(str(draft.get('passed', 0)))}</b>",
-                f"Всего: <b>{escape(str(draft.get('total', 0)))}</b>",
-                "",
-                "Подтвердить добавление пары?",
-            ]
-        )
+        return "\n".join([
+            "<b>Проверка данных пары</b>",
+            "───────────────────────────",
+            f"• Группа: <b>{escape(str(draft.get('group_name', '')))}</b>.",
+            f"• Schedule ID: <b>{escape(str(draft.get('schedule_id', '')))}</b>.",
+            f"• Дисциплина: <b>{escape(str(draft.get('subject', '')))}</b>.",
+            f"• Преподаватель: <b>{escape(str(draft.get('teacher', '')))}</b>.",
+            f"• Пройдено пар: <b>{escape(str(draft.get('passed', 0)))}</b>.",
+            f"• Всего пар: <b>{escape(str(draft.get('total', 0)))}</b>.",
+            "───────────────────────────",
+            "Подтвердить сохранение пары?",
+        ])
 
     def admin_lesson_input_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -1058,17 +1167,17 @@ def build_dispatcher(
         draft: dict[str, object] | None = None,
         error_text: str | None = None,
     ) -> str:
-        header = "<b>Удаление пар</b>"
+        header = "<b>Удаление всех пар группы</b>"
         prompt_map = {
-            "group": "Шаг 1/2. Укажи группу или schedule_id.",
-            "confirm": "Шаг 2/2. Подтверди удаление всех пар у группы.",
+            "group": "Шаг 1/2. Укажите группу или schedule_id.",
+            "confirm": "Шаг 2/2. Подтвердите удаление всех пар у выбранной группы.",
         }
-        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        lines = [header, "───────────────────────────", prompt_map.get(step, "Продолжайте ввод.")]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+            lines.extend(["", f"• Группа: <b>{escape(str(draft['group_name']))}</b>."])
         if error_text:
-            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
-        lines.append("\nОтмена: /cancel")
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}."])
+        lines.extend(["───────────────────────────", "Для отмены используйте /cancel."])
         return "\n".join(lines)
 
     def admin_lesson_delete_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -1086,21 +1195,21 @@ def build_dispatcher(
     ) -> str:
         header = "<b>Удаление пары</b>"
         prompt_map = {
-            "group": "Шаг 1/4. Укажи группу или schedule_id.",
-            "subject": "Шаг 2/4. Укажи дисциплину.",
-            "teacher": "Шаг 3/4. Укажи преподавателя.",
-            "confirm": "Шаг 4/4. Подтверди удаление пары.",
+            "group": "Шаг 1/4. Укажите группу или schedule_id.",
+            "subject": "Шаг 2/4. Укажите дисциплину.",
+            "teacher": "Шаг 3/4. Укажите преподавателя.",
+            "confirm": "Шаг 4/4. Подтвердите удаление пары.",
         }
-        lines = [header, "", prompt_map.get(step, "Продолжай ввод.")]
+        lines = [header, "───────────────────────────", prompt_map.get(step, "Продолжайте ввод.")]
         if draft and draft.get("group_name"):
-            lines.extend(["", f"Группа: <b>{escape(str(draft['group_name']))}</b>"])
+            lines.extend(["", f"• Группа: <b>{escape(str(draft['group_name']))}</b>."])
         if draft and draft.get("subject"):
-            lines.extend([f"Дисциплина: <b>{escape(str(draft['subject']))}</b>"])
+            lines.extend([f"• Дисциплина: <b>{escape(str(draft['subject']))}</b>."])
         if draft and draft.get("teacher"):
-            lines.extend([f"Преподаватель: <b>{escape(str(draft['teacher']))}</b>"])
+            lines.extend([f"• Преподаватель: <b>{escape(str(draft['teacher']))}</b>."])
         if error_text:
-            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}"])
-        lines.append("\nОтмена: /cancel")
+            lines.extend(["", f"<b>Ошибка:</b> {escape(error_text)}."])
+        lines.extend(["───────────────────────────", "Для отмены используйте /cancel."])
         return "\n".join(lines)
 
     def admin_lesson_delete_one_confirm_keyboard() -> InlineKeyboardMarkup:
@@ -1293,13 +1402,16 @@ def build_dispatcher(
         end = start + page_size
         lines = [
             f"<b>{title}</b>",
-            "",
-            "Формат: платформа | юзер | ник/ФИ | айди | группа (роли)",
+            "───────────────────────────",
+            "Формат: <code>[платформа] | Имя | Ник/ФИ | ID | Группа (роли)</code>.",
         ]
         if summary:
-            lines.extend(["", summary])
-        lines.extend(["", f"Страница {page + 1}/{total_pages}", ""])
-        lines.extend(user_rows[start:end] or ["Ничего не найдено."])
+            lines.append(f"• {summary}.")
+        lines.extend([
+            f"• Страница: <b>{page + 1}/{total_pages}</b> (всего: <b>{len(user_rows)}</b>).",
+            "───────────────────────────",
+        ])
+        lines.extend(user_rows[start:end] or ["Пользователи не найдены."])
         return "\n".join(lines), build_admin_users_keyboard(
             page=page,
             total_pages=total_pages,
@@ -1332,7 +1444,7 @@ def build_dispatcher(
         rows.append([InlineKeyboardButton(text=kind_button_text, callback_data=f"{callback_prefix}:{next_kind_mode}:0")])
         rows.append([InlineKeyboardButton(text=platform_button_text, callback_data=f"{callback_prefix}:{next_platform_mode}:0")])
         if search_results_mode:
-            rows.append([InlineKeyboardButton(text="\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438", callback_data="admin:users:kind_group:0")])
+            rows.append([InlineKeyboardButton(text="Все пользователи", callback_data="admin:users:kind_group:0")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1353,13 +1465,14 @@ def build_dispatcher(
             admin_user_search_state.pop(user_id, None)
             return (
                 (
-                    "<b>\u041f\u043e\u0438\u0441\u043a \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f</b>\n\n"
-                    f"\u041f\u043e \u0437\u0430\u043f\u0440\u043e\u0441\u0443 <b>{escape(state['query'])}</b> \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e."
+                    "<b>Поиск пользователя</b>\n"
+                    "───────────────────────────\n"
+                    f"По запросу <b>{escape(state['query'])}</b> ничего не найдено."
                 ),
                 InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [InlineKeyboardButton(text="\u0418\u0441\u043a\u0430\u0442\u044c \u0441\u043d\u043e\u0432\u0430", callback_data=f"admin:users_search:{resolved_sort_mode}")],
-                        [InlineKeyboardButton(text="\u0412\u0441\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0438", callback_data="admin:users:kind_group:0")],
+                        [InlineKeyboardButton(text="Искать снова", callback_data=f"admin:users_search:{resolved_sort_mode}")],
+                        [InlineKeyboardButton(text="Все пользователи", callback_data="admin:users:kind_group:0")],
                     ]
                 ),
             )
@@ -1369,8 +1482,8 @@ def build_dispatcher(
             matches,
             sort_mode=resolved_sort_mode,
             page=page,
-            title=f"\u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u043f\u043e\u0438\u0441\u043a\u0430: {escape(state['query'])}",
-            summary=f"\u041d\u0430\u0439\u0434\u0435\u043d\u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435\u0439: {len(matches)}",
+            title=f"Результаты поиска: {escape(state['query'])}",
+            summary=f"Найдено пользователей: <b>{len(matches)}</b>",
             search_results_mode=True,
         )
         return text, reply_markup
@@ -1398,95 +1511,63 @@ def build_dispatcher(
             return f"{title}: <b>еще не было</b>"
         return (
             f"{title}: <b>{escape(snapshot_row['created_at'])}</b>\n"
-            f"Сайт отдал данные: <b>{escape(snapshot_row['fetched_at'])}</b>"
+            f"  Сайт отдал данные: <b>{escape(snapshot_row['fetched_at'])}</b>"
         )
 
     async def format_admin_status() -> str:
-        users = await db.list_users()
-        active_groups = await db.get_active_sources()
-        active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
-        active_teacher_count = sum(1 for item in active_groups if item.get("source_type") == "teacher")
-        last_change = await db.get_last_change()
-        current_snapshot = await db.get_latest_snapshot("current")
-        baseline_snapshot = await db.get_latest_snapshot("daily_baseline")
-        delivery_stats = await db.get_delivery_stats()
-        tg_auto_disabled = await db.count_auto_disabled_users("telegram")
-        tg_top_errors = await db.get_top_delivery_errors(platform="telegram", hours=24, limit=3)
-        vk_users = sum(1 for user in users if user.platform == "vk")
-        tg_users = sum(1 for user in users if user.platform == "telegram")
-        last_change_at = escape(last_change["created_at"]) if last_change else "еще не было"
-        tg_top_error_lines = "\n".join(
-            f"- <b>{item['count']}</b>: {escape(str(item['error_text']))}"
-            for item in tg_top_errors
-        ) or "- нет данных"
-        return (
-            "<b>Статус бота</b>\n\n"
-            f"Пользователей: <b>{len(users)}</b>\n"
-            f"Пользователей с VK: <b>{vk_users}</b>\n"
-            f"Пользователей с TG: <b>{tg_users}</b>\n"
-            f"Активных групп: <b>{active_group_count}</b>\n"
-            f"Активных преподавателей: <b>{active_teacher_count}</b>\n"
-            f"Последнее изменение: <b>{last_change_at}</b>\n\n"
-            "<b>Статистика отправок</b>\n"
-            f"Всего событий доставки: <b>{delivery_stats['events_total']}</b>\n"
-            f"Успешно / ошибок: <b>{delivery_stats['sent_total']}</b> / <b>{delivery_stats['failed_total']}</b>\n"
-            f"За 24 часа (успешно / ошибок): <b>{delivery_stats['sent_last_24h']}</b> / <b>{delivery_stats['failed_last_24h']}</b>\n"
-            f"Уведомлений отправлено: <b>{delivery_stats['notifications_sent']}</b>\n"
-            f"Админских рассылок отправлено: <b>{delivery_stats['admin_broadcast_sent']}</b>\n"
-            f"Служебных уведомлений админу: <b>{delivery_stats['admin_notify_sent']}</b>\n"
-            f"Через RabbitMQ / напрямую: <b>{delivery_stats['sent_via_rabbitmq']}</b> / <b>{delivery_stats['sent_direct']}</b>\n"
-            f"Ошибок через RabbitMQ / напрямую: <b>{delivery_stats['failed_via_rabbitmq']}</b> / <b>{delivery_stats['failed_direct']}</b>\n"
-            f"Доставлено после ретрая: <b>{delivery_stats['sent_after_retry']}</b>\n"
-            f"TG (успешно / ошибок): <b>{delivery_stats['tg_sent']}</b> / <b>{delivery_stats['tg_failed']}</b>\n"
-            f"TG ошибок через RabbitMQ / напрямую: <b>{delivery_stats['tg_failed_via_rabbitmq']}</b> / <b>{delivery_stats['tg_failed_direct']}</b>\n"
-            f"TG ошибок за 24ч: <b>{delivery_stats['tg_failed_last_24h']}</b>\n"
-            f"TG перманентных ошибок (всего / 24ч): <b>{delivery_stats['tg_failed_permanent']}</b> / <b>{delivery_stats['tg_failed_permanent_last_24h']}</b>\n"
-            f"TG авто-отключено из-за доставки: <b>{tg_auto_disabled}</b>\n"
-            f"VK (успешно / ошибок): <b>{delivery_stats['vk_sent']}</b> / <b>{delivery_stats['vk_failed']}</b>\n\n"
-            "<b>Топ TG ошибок за 24ч</b>\n"
-            f"{tg_top_error_lines}\n\n"
-            f"{format_snapshot_info('Последний обычный парс', current_snapshot)}\n\n"
-            f"{format_snapshot_info('Последний сохраненный эталон', baseline_snapshot)}"
-        )
+        return await build_admin_status_text(db)
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
-        lines = [f"<b>{title}</b>", ""]
+        lines = [f"<b>{title}</b>", "───────────────────────────"]
         if not rows:
             lines.append("Нет записей.")
             return "\n".join(lines)
-        lines.append(f"Затронуто источников: <b>{len(rows)}</b>")
-        lines.append("")
-        for group_name, action_time, action_name in rows:
+        lines.append(f"Затронуто источников: <b>{len(rows)}</b>.")
+        lines.append("───────────────────────────")
+        for index, (group_name, action_time, action_name) in enumerate(rows, start=1):
             lines.append(
-                f"{escape(group_name)} | <b>{escape(action_time)}</b> | {escape(action_name)}"
+                f"{index}. <b>{escape(group_name)}</b> — {escape(action_time)} ({escape(action_name)})."
             )
         return "\n".join(lines)
 
     def format_daily_change_report(title: str, rows: list[dict]) -> str:
-        lines = [f"<b>{title}</b>", ""]
+        lines = [f"<b>{title}</b>", "───────────────────────────"]
         if not rows:
-            lines.append("За сегодня изменений пока не было.")
+            lines.append("Сегодня изменений расписания пока не было.")
             return "\n".join(lines)
-        lines.append(f"Затронуто источников: <b>{len(rows)}</b>")
-        lines.append("")
-        for row in rows:
-            lines.append(f"{escape(row['group_name'])} | <b>{escape(row['created_at'])}</b>")
+        lines.append(f"Всего изменений: <b>{len(rows)}</b>.")
+        lines.append("───────────────────────────")
+        for index, row in enumerate(rows, start=1):
+            name = escape(str(row.get("group_name") or row.get("subscription_title") or "Без названия"))
+            t = escape(str(row.get("created_at") or ""))
+            lines.append(f"{index}. <b>{name}</b> — <b>{t}</b>.")
         return "\n".join(lines)
 
     def format_group_user_stats(rows: list[dict[str, int | str]]) -> str:
-        lines = ["<b>Информация по группам</b>", ""]
+        lines = [
+            "<b>Информация по учебным группам</b>",
+            "───────────────────────────",
+        ]
         if not rows:
             lines.append("Пока нет пользователей с выбранной учебной группой.")
             return "\n".join(lines)
         total_users = sum(int(row["users_count"]) for row in rows)
-        lines.append(f"Групп найдено: <b>{len(rows)}</b>")
-        lines.append(f"Всего пользователей с группой: <b>{total_users}</b>")
-        lines.append("")
-        lines.append("№ | группа | кол-во юзеров")
-        lines.append("")
+        total_personal = sum(int(row.get("personal_count", 0)) for row in rows)
+        total_chats = sum(int(row.get("chat_count", 0)) for row in rows)
+        lines.append(f"• Всего групп с подписчиками: <b>{len(rows)}</b>.")
+        lines.append(f"• Всего подписчиков на группы: <b>{total_users}</b> (Личных: {total_personal}, Бесед/чатов: {total_chats}).")
+        lines.append("───────────────────────────")
+        lines.append("<b>Список групп:</b>")
         for index, row in enumerate(rows, start=1):
+            g_name = escape(str(row["group_name"]))
+            u_count = int(row["users_count"])
+            p_count = int(row.get("personal_count", 0))
+            c_count = int(row.get("chat_count", 0))
+            tg_c = int(row.get("tg_chat_count", 0))
+            vk_c = int(row.get("vk_chat_count", 0))
+            chat_info = f", Бесед: {c_count} [TG: {tg_c}, VK: {vk_c}]" if c_count > 0 else ""
             lines.append(
-                f"{index} | {escape(str(row['group_name']))} | <b>{int(row['users_count'])}</b>"
+                f"{index}. <b>{g_name}</b> — <b>{u_count}</b> подп. (Личных: {p_count}{chat_info})."
             )
         return "\n".join(lines)
 

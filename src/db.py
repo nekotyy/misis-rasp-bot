@@ -746,12 +746,15 @@ class Database:
                 """
                 SELECT
                     subscription_title,
-                    COUNT(*) AS users_count
+                    COUNT(*) AS users_count,
+                    SUM(CASE WHEN (platform = 'telegram' AND user_id > 0) OR (platform = 'vk' AND user_id < 2000000000) THEN 1 ELSE 0 END) AS personal_count,
+                    SUM(CASE WHEN (platform = 'telegram' AND user_id < 0) OR (platform = 'vk' AND user_id >= 2000000000) THEN 1 ELSE 0 END) AS chat_count,
+                    SUM(CASE WHEN platform = 'telegram' AND user_id < 0 THEN 1 ELSE 0 END) AS tg_chat_count,
+                    SUM(CASE WHEN platform = 'vk' AND user_id >= 2000000000 THEN 1 ELSE 0 END) AS vk_chat_count
                 FROM users
                 WHERE subscription_type = 'group'
                   AND subscription_title IS NOT NULL
                   AND subscription_title != ''
-                  AND NOT (platform = 'telegram' AND user_id < 0)
                 GROUP BY subscription_key, subscription_title
                 ORDER BY users_count DESC, subscription_title ASC
                 """
@@ -762,6 +765,10 @@ class Database:
             {
                 "group_name": str(row[0]),
                 "users_count": int(row[1] or 0),
+                "personal_count": int(row[2] or 0),
+                "chat_count": int(row[3] or 0),
+                "tg_chat_count": int(row[4] or 0),
+                "vk_chat_count": int(row[5] or 0),
             }
             for row in rows
         ]
