@@ -617,6 +617,18 @@ ADMIN_OCR_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+def is_ocr_photo_candidate(chat_type: str, is_admin: bool) -> bool:
+    """Нужно ли распознавать присланную картинку.
+
+    Раньше требовалось сначала нажать кнопку в админ-панели, и без неё бот
+    молча игнорировал фото — со стороны это выглядело как поломка. Теперь
+    достаточно прислать картинку в личку от имени администратора.
+    """
+    if chat_type in GROUP_CHAT_TYPES:
+        return False
+    return is_admin
+
+
 def format_admin_ocr_prompt(error: str = "") -> str:
     lines = ["<b>Импорт расписания с фото</b>", ""]
     if error:
@@ -3768,9 +3780,36 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is None:
             return
-        if message.from_user.id not in awaiting_admin_ocr_photo or not user_is_admin(message.from_user.id):
+        if not is_ocr_photo_candidate(message.chat.type, user_is_admin(message.from_user.id)):
             return
+
+        # Кнопка в админке не обязательна: админ прислал фото в личку — значит,
+        # хочет импортировать расписание. Раньше без кнопки бот молчал.
+        awaiting_admin_ocr_photo.add(message.from_user.id)
+        try:
+            await run_admin_ocr_import(message)
+        except Exception as exc:
+            logger.exception("Импорт расписания с фото упал.")
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
+                reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
+            )
+
+    async def run_admin_ocr_import(message: Message) -> None:
         await wait_message_rate_limit(message.from_user.id)
+
+        available, availability_message = ocr_service.availability()
+        if not available:
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_prompt(availability_message),
+            )
+            return
 
         image_bytes, download_error = await download_admin_image(message)
         if image_bytes is None:
@@ -3829,13 +3868,13 @@ def build_dispatcher(
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
             return
-        except Exception:
+        except Exception as exc:
             logger.exception("Ошибка распознавания расписания с фото.")
             await send_new_context_message(
                 message.bot,
                 message.chat.id,
                 "admin_ocr",
-                format_admin_ocr_prompt("Внутренняя ошибка распознавания. Попробуй другое фото."),
+                format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
             return
