@@ -24,7 +24,13 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
-from src.ocr_import import OcrScheduleImporter, build_ocr_importer, format_ocr_preview
+from src.ocr_import import (
+    OCR_STAGE_UPLOAD,
+    OcrScheduleImporter,
+    build_ocr_importer,
+    format_ocr_preview,
+    format_progress_bar,
+)
 from src.ocr_schedule import OcrEngineError
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -291,7 +297,11 @@ SATURDAY_BELLS_TEXT = "\n".join(
 )
 
 
-async def build_vk_admin_status_text(db: Database, settings: Settings | None = None) -> str:
+async def build_vk_admin_status_text(
+    db: Database,
+    settings: Settings | None = None,
+    ocr_importer=None,
+) -> str:
     users = await db.list_users()
     active_groups = await db.get_active_sources()
     active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
@@ -383,6 +393,7 @@ async def build_vk_admin_status_text(db: Database, settings: Settings | None = N
         "• VK Bot API: 🟢 Работает.",
         f"• База данных SQLite: 🟢 OK ({db_size_str}).",
         "• Фоновый планировщик: 🟢 Активен.",
+        "• " + (ocr_importer.status_line(html=False) if ocr_importer is not None else "Распознавание с фото: не настроено") + ".",
         f"• Ошибок за сегодня: {daily_errors_summary['total_errors']} (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
         "👥 Пользователи и источники:",
@@ -1246,7 +1257,7 @@ def build_vk_bot(
         return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
     async def admin_status_text() -> str:
-        return await build_vk_admin_status_text(db, settings)
+        return await build_vk_admin_status_text(db, settings, ocr_service)
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
@@ -1924,14 +1935,14 @@ def build_vk_bot(
                 )
                 return
 
-            await show_screen(
-                peer_id,
-                "Распознаю расписание с фото. Обычно это занимает до минуты, "
-                "после первой перезагрузки бота — дольше.",
-            )
+            await show_screen(peer_id, format_progress_bar(OCR_STAGE_UPLOAD, 10))
+
+            async def report_progress(stage: str, percent: int) -> None:
+                await show_screen(peer_id, format_progress_bar(stage, percent))
+
             try:
                 draft = await asyncio.wait_for(
-                    ocr_service.build_draft(image_bytes),
+                    ocr_service.build_draft(image_bytes, progress=report_progress),
                     timeout=ocr_service.recognize_timeout,
                 )
             except TimeoutError:

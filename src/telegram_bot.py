@@ -34,7 +34,13 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
-from src.ocr_import import OcrScheduleImporter, build_ocr_importer, format_ocr_preview
+from src.ocr_import import (
+    OCR_STAGE_UPLOAD,
+    OcrScheduleImporter,
+    build_ocr_importer,
+    format_ocr_preview,
+    format_progress_bar,
+)
 from src.ocr_schedule import OcrEngineError
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
@@ -678,7 +684,11 @@ def format_user_profile_link(platform: str, user_id: int | None, username: str |
         return f"{link_text} (ID: {user_id})"
 
 
-async def build_admin_status_text(db: Database, settings: Settings | None = None) -> str:
+async def build_admin_status_text(
+    db: Database,
+    settings: Settings | None = None,
+    ocr_importer=None,
+) -> str:
     users = await db.list_users()
     active_groups = await db.get_active_sources()
     active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
@@ -773,6 +783,7 @@ async def build_admin_status_text(db: Database, settings: Settings | None = None
         "• VK Bot API: <b>🟢 Работает</b>.",
         f"• База данных SQLite: <b>🟢 OK</b> ({db_size_str}).",
         "• Фоновый планировщик: <b>🟢 Активен</b>.",
+        "• " + (ocr_importer.status_line(html=True) if ocr_importer is not None else "<b>Распознавание с фото</b>: не настроено") + ".",
         f"• Ошибок за сегодня: <b>{daily_errors_summary['total_errors']}</b> (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
         "👥 <b>Пользователи и источники:</b>",
@@ -1614,7 +1625,7 @@ def build_dispatcher(
         )
 
     async def format_admin_status() -> str:
-        return await build_admin_status_text(db, settings)
+        return await build_admin_status_text(db, settings, ocr_service)
 
     def format_group_action_report(title: str, rows: list[tuple[str, str, str]]) -> str:
         lines = [f"<b>{title}</b>", "───────────────────────────"]
@@ -3772,16 +3783,28 @@ def build_dispatcher(
             )
             return
 
-        await send_new_context_message(
+        progress_message = await safe_send_message(
             message.bot,
             message.chat.id,
-            "admin_ocr",
-            "Распознаю расписание с фото. Обычно это занимает до минуты, "
-            "после первой перезагрузки бота — дольше.",
+            format_progress_bar(OCR_STAGE_UPLOAD, 10),
         )
+
+        async def report_progress(stage: str, percent: int) -> None:
+            if progress_message is None:
+                return
+            try:
+                await message.bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=progress_message.message_id,
+                    text=format_progress_bar(stage, percent),
+                )
+            except (TelegramBadRequest, TelegramNetworkError):
+                # Индикатор не должен ронять импорт: не обновился — и ладно.
+                logger.debug("Не удалось обновить индикатор прогресса OCR.", exc_info=True)
+
         try:
             draft = await asyncio.wait_for(
-                ocr_service.build_draft(image_bytes),
+                ocr_service.build_draft(image_bytes, progress=report_progress),
                 timeout=ocr_service.recognize_timeout,
             )
         except TimeoutError:
@@ -3816,6 +3839,9 @@ def build_dispatcher(
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
             return
+
+        if progress_message is not None:
+            await safe_delete_message(message.bot, message.chat.id, progress_message.message_id)
 
         admin_ocr_drafts[message.from_user.id] = draft
         preview = format_ocr_preview(draft, html=True, max_length=TELEGRAM_MESSAGE_LIMIT)

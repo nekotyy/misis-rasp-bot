@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
+from time import monotonic
 
 import aio_pika
 from aiogram import Bot
@@ -123,6 +125,66 @@ def start_vk_polling(
     start_background_task("vk-supervisor", run_forever("VK bot", _run_once))
 
 
+OCR_READY_HTML = (
+    "<b>Распознавание расписания с фото готово</b>"
+    "\n\nДвижок: <b>{engine}</b>"
+    "\nМодели загружены за {elapsed} с."
+    "\n\nМожно присылать фото через админ-панель."
+)
+OCR_READY_TEXT = (
+    "Распознавание расписания с фото готово."
+    "\n\nДвижок: {engine}"
+    "\nМодели загружены за {elapsed} с."
+    "\n\nМожно присылать фото через админ-панель."
+)
+OCR_FAILED_HTML = (
+    "<b>Распознавание расписания с фото не поднялось</b>"
+    "\n\n{reason}"
+    "\n\nИмпорт фото работать не будет, остальные функции — как обычно."
+)
+OCR_FAILED_TEXT = (
+    "Распознавание расписания с фото не поднялось."
+    "\n\n{reason}"
+    "\n\nИмпорт фото работать не будет, остальные функции — как обычно."
+)
+OCR_UNAVAILABLE_HTML = (
+    "<b>Распознавание расписания с фото недоступно</b>"
+    "\n\n{reason}"
+    "\n\nОстальные функции бота работают как обычно."
+)
+OCR_UNAVAILABLE_TEXT = (
+    "Распознавание расписания с фото недоступно."
+    "\n\n{reason}"
+    "\n\nОстальные функции бота работают как обычно."
+)
+
+
+async def warm_up_ocr_and_notify(ocr_importer, broadcaster: Broadcaster, engine_message: str) -> None:
+    """Греет модели распознавания и сообщает администраторам результат.
+
+    Прогрев идёт десятки секунд и потому вынесен в фон. Админу важно знать, что
+    фото уже можно присылать, и тем более важно узнать, если движок не поднялся.
+    """
+    started = monotonic()
+    await ocr_importer.warm_up()
+    elapsed = f"{monotonic() - started:.0f}"
+
+    if ocr_importer.is_warm:
+        logging.info("Распознавание с фото готово за %s с.", elapsed)
+        await broadcaster.notify_admins(
+            OCR_READY_HTML.format(engine=escape(engine_message), elapsed=elapsed),
+            OCR_READY_TEXT.format(engine=engine_message, elapsed=elapsed),
+        )
+        return
+
+    reason = ocr_importer.last_error or "причина неизвестна"
+    logging.error("Распознавание с фото не поднялось: %s", reason)
+    await broadcaster.notify_admins(
+        OCR_FAILED_HTML.format(reason=escape(reason)),
+        OCR_FAILED_TEXT.format(reason=reason),
+    )
+
+
 async def main() -> None:
     settings = Settings.from_env()
     if not settings.rabbitmq_url:
@@ -196,15 +258,22 @@ async def main() -> None:
     )
     jobs.start()
 
-    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog)
+    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog, alert_manager)
     ocr_available, ocr_message = ocr_importer.availability()
     if ocr_available:
         logging.info("Импорт расписания из фото доступен (%s).", ocr_message)
         # Модели грузятся десятки секунд. Без прогрева эта цена платится внутри
         # первого запроса, и админ видит только "Распознаю..." и тишину.
-        start_background_task("ocr-warmup", ocr_importer.warm_up())
+        start_background_task(
+            "ocr-warmup",
+            warm_up_ocr_and_notify(ocr_importer, broadcaster, ocr_message),
+        )
     else:
         logging.warning("Импорт расписания из фото недоступен: %s", ocr_message)
+        await broadcaster.notify_admins(
+            OCR_UNAVAILABLE_HTML.format(reason=escape(ocr_message)),
+            OCR_UNAVAILABLE_TEXT.format(reason=ocr_message),
+        )
 
     start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
     start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape
 
 from src.db import Database
@@ -36,6 +37,31 @@ MAX_PREVIEW_LESSONS = 40
 MAX_PREVIEW_ISSUES = 12
 MAX_PREVIEW_CORRECTIONS = 10
 MAX_PREVIEW_SKIPPED = 5
+
+# Этапы распознавания для индикатора прогресса. Проценты приблизительные:
+# движок не сообщает реальный ход, но админу важно видеть, что процесс жив
+# и на каком он шаге.
+OCR_STAGE_UPLOAD = 'Загружаю фото'
+OCR_STAGE_RECOGNIZE = 'Распознаю текст'
+OCR_STAGE_PARSE = 'Разбираю таблицу'
+OCR_STAGE_MATCH = 'Сверяю с прошлым расписанием'
+OCR_STAGE_PREVIEW = 'Готовлю предпросмотр'
+
+OCR_STAGES: tuple[tuple[str, int], ...] = (
+    (OCR_STAGE_UPLOAD, 10),
+    (OCR_STAGE_RECOGNIZE, 35),
+    (OCR_STAGE_PARSE, 70),
+    (OCR_STAGE_MATCH, 85),
+    (OCR_STAGE_PREVIEW, 95),
+)
+
+
+def format_progress_bar(stage: str, percent: int, *, width: int = 12) -> str:
+    """Текстовый индикатор хода распознавания."""
+    percent = max(0, min(100, percent))
+    filled = round(width * percent / 100)
+    bar = chr(9608) * filled + chr(9617) * (width - filled)
+    return f"{bar} {percent}%" + '\n' + f"{stage}..."
 PREVIEW_TRUNCATION_MARK = "\n…"
 
 
@@ -70,12 +96,17 @@ class OcrScheduleImporter:
         min_confidence: float = 0.6,
         fuzzy_threshold: float = 0.78,
         recognize_timeout: float = 180.0,
+        alert_manager=None,
     ) -> None:
         self.db = db
         self.schedule_jobs = schedule_jobs
         self.group_catalog = group_catalog
         self.enabled = enabled
         self.recognize_timeout = max(30.0, recognize_timeout)
+        self.alert_manager = alert_manager
+        self.is_warm = False
+        self.last_error: str = ""
+        self.last_success_at: str = ""
         self.parser = OcrScheduleParser(
             engine,
             fuzzy_threshold=fuzzy_threshold,
@@ -106,23 +137,78 @@ class OcrScheduleImporter:
         try:
             await asyncio.to_thread(self.engine.warm_up)
         except Exception as exc:
+            self.last_error = str(exc)
             logger.warning("Не удалось прогреть OCR-движок: %s", exc)
+            await self._report(False, str(exc), "Прогрев моделей распознавания не удался")
             return
+        self.is_warm = True
+        self.last_error = ""
         logger.info("OCR-движок %s готов к работе.", self.engine.name)
+        await self._report(True)
 
-    async def build_draft(self, image_bytes: bytes) -> OcrImportDraft:
-        """Распознаёт фото и готовит черновик к подтверждению."""
+    async def _report(self, ok: bool, error: str | None = None, details: str | None = None) -> None:
+        if self.alert_manager is None:
+            return
+        try:
+            await self.alert_manager.report_component_status("ocr", ok, error, details=details)
+        except Exception:
+            logger.exception("Не удалось отправить статус OCR в мониторинг.")
+
+    def status_line(self, html: bool = True) -> str:
+        """Строка о состоянии распознавания для экрана статуса."""
+        available, message = self.availability()
+        if not available:
+            mark, state = "🔴", message
+        elif not self.is_warm:
+            mark, state = "🟡", "модели греются"
+        elif self.last_error:
+            mark, state = "🟡", f"последняя ошибка: {self.last_error}"
+        else:
+            engine = getattr(self.engine, "name", "?")
+            state = f"готов ({engine})"
+            if self.last_success_at:
+                state += f", последнее фото {self.last_success_at}"
+            mark = "🟢"
+        title = "Распознавание с фото"
+        if html:
+            return f"{mark} <b>{title}</b>: {escape(state)}"
+        return f"{mark} {title}: {state}"
+
+    async def build_draft(self, image_bytes: bytes, progress=None) -> OcrImportDraft:
+        """Распознаёт фото и готовит черновик к подтверждению.
+
+        `progress` — необязательная корутина `(stage, percent)`. Вызывается между
+        этапами, чтобы админ видел ход работы: распознавание идёт десятки секунд,
+        и без индикатора непонятно, живо оно или зависло.
+        """
         available, message = self.availability()
         if not available:
             raise OcrEngineError(message)
 
-        raw_text = await self.parser.recognize_image(image_bytes)
+        async def notify_stage(stage: str, percent: int) -> None:
+            if progress is None:
+                return
+            try:
+                await progress(stage, percent)
+            except Exception:
+                # Индикатор не должен ронять импорт.
+                logger.debug("Не удалось обновить индикатор прогресса.", exc_info=True)
 
+        await notify_stage(OCR_STAGE_RECOGNIZE, 35)
+        try:
+            raw_text = await self.parser.recognize_image(image_bytes)
+        except Exception as exc:
+            self.last_error = str(exc)
+            await self._report(False, str(exc), "Ошибка распознавания фото")
+            raise
+
+        await notify_stage(OCR_STAGE_PARSE, 70)
         # Первый проход нужен только чтобы узнать группу и подобрать источник,
         # второй — уже со словарём известных значений этого источника.
         probe = self.parser.parse_text(raw_text)
         source, source_error = await self._resolve_source(probe.snapshot.group_name)
 
+        await notify_stage(OCR_STAGE_MATCH, 85)
         vocabulary = await self._build_vocabulary(source)
         result = self.parser.parse_text(raw_text, vocabulary=vocabulary)
 
@@ -135,10 +221,14 @@ class OcrScheduleImporter:
             )
             base_content = latest.get("content") if latest else None
 
+        await notify_stage(OCR_STAGE_PREVIEW, 95)
         merge = merge_ocr_days(base_content, result.snapshot)
         if source is not None and not merge.snapshot.group_name.strip():
             merge.snapshot.group_name = str(source.get("group_name") or source.get("source_title") or "")
 
+        self.last_error = ""
+        self.last_success_at = datetime.now().strftime("%d.%m %H:%M")
+        await self._report(True)
         return OcrImportDraft(
             result=result,
             merge=merge,
@@ -261,6 +351,7 @@ def build_ocr_importer(
     db: Database,
     schedule_jobs: ScheduleJobs | None,
     group_catalog: GroupCatalog | None,
+    alert_manager=None,
 ) -> OcrScheduleImporter:
     """Собирает сервис импорта по настройкам окружения."""
     engine = build_ocr_engine(
@@ -279,6 +370,7 @@ def build_ocr_importer(
         min_confidence=_float_setting(settings, "ocr_min_confidence", 0.6),
         fuzzy_threshold=_float_setting(settings, "ocr_fuzzy_threshold", 0.78),
         recognize_timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
+        alert_manager=alert_manager,
     )
 
 
