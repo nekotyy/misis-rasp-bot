@@ -60,7 +60,7 @@ schedule_data.json
 bot.db (3).zip
 
 # Локальное окружение для проверки OCR-движка
-.venv-ocr/
+.venv*/
 .ocr_boxes_cache.json
 
 # Фото для ручной проверки OCR (координаты зафиксированы в tests/test_ocr_real_photo.py)

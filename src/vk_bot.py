@@ -72,6 +72,33 @@ SEARCH_NOT_FOUND_TEXT = (
 logger = logging.getLogger(__name__)
 
 
+# Лимиты обычной (не inline) клавиатуры VK. Превышение любого из них — ошибка
+# API 911 "Keyboard format is invalid", то есть отвалившийся экран у пользователя.
+VK_KEYBOARD_MAX_ROWS = 10
+VK_KEYBOARD_MAX_BUTTONS_PER_ROW = 5
+VK_KEYBOARD_MAX_BUTTONS = 40
+
+
+def vk_admin_keyboard_rows() -> list[list[str]]:
+    """Раскладка админ-панели VK.
+
+    Вынесена на уровень модуля, чтобы тесты держали её в рамках лимитов VK:
+    лишний ряд роняет весь экран админки ошибкой 911.
+    """
+    return [
+        ["Статус", "Ошибки за день"],
+        ["Перепарсить", "Сохранить эталон"],
+        ["Последнее изменение", "Информация по группам"],
+        ["Скачать БД", "Скачать пары"],
+        ["Добавить пару", "Изменить пару"],
+        ["Импорт пар из JSON", "Расписание с фото"],
+        ["Удалить пару", "Удалить пары"],
+        ["Пользователи", "Разослать"],
+        ["Тестовая рассылка", "Очистить БД"],
+        ["Закрыть админку"],
+    ]
+
+
 def make_vk_keyboard(rows: list[list[str]]) -> str:
     from vkbottle import Keyboard, Text
     keyboard = Keyboard(one_time=False, inline=False)
@@ -899,21 +926,7 @@ def build_vk_bot(
             last_pers_menu_message_id[peer_id] = msg_id
 
     def admin_keyboard() -> str:
-        return make_keyboard(
-            [
-                ["Статус", "Ошибки за день"],
-                ["Перепарсить", "Сохранить эталон"],
-                ["Последнее изменение", "Информация по группам"],
-                ["Скачать БД", "Скачать пары"],
-                ["Добавить пару", "Изменить пару"],
-                ["Импорт пар из JSON"],
-                ["Расписание с фото"],
-                ["Удалить пару", "Удалить пары"],
-                ["Пользователи", "Разослать"],
-                ["Тестовая рассылка", "Очистить БД"],
-                ["Закрыть админку"],
-            ]
-        )
+        return make_keyboard(vk_admin_keyboard_rows())
 
     def admin_back_keyboard() -> str:
         return make_keyboard([["Назад в меню"]])
@@ -1911,9 +1924,27 @@ def build_vk_bot(
                 )
                 return
 
-            await show_screen(peer_id, "Распознаю расписание с фото, это займёт несколько секунд...")
+            await show_screen(
+                peer_id,
+                "Распознаю расписание с фото. Обычно это занимает до минуты, "
+                "после первой перезагрузки бота — дольше.",
+            )
             try:
-                draft = await ocr_service.build_draft(image_bytes)
+                draft = await asyncio.wait_for(
+                    ocr_service.build_draft(image_bytes),
+                    timeout=ocr_service.recognize_timeout,
+                )
+            except TimeoutError:
+                logger.warning("Распознавание фото не уложилось в %s с (VK).", ocr_service.recognize_timeout)
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_prompt(
+                        f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
+                        "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
+                    ),
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
             except OcrEngineError as exc:
                 await show_screen(
                     peer_id,

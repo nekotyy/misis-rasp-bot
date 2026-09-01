@@ -3776,10 +3776,27 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "admin_ocr",
-            "Распознаю расписание с фото, это займёт несколько секунд...",
+            "Распознаю расписание с фото. Обычно это занимает до минуты, "
+            "после первой перезагрузки бота — дольше.",
         )
         try:
-            draft = await ocr_service.build_draft(image_bytes)
+            draft = await asyncio.wait_for(
+                ocr_service.build_draft(image_bytes),
+                timeout=ocr_service.recognize_timeout,
+            )
+        except TimeoutError:
+            logger.warning("Распознавание фото не уложилось в %s с.", ocr_service.recognize_timeout)
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_prompt(
+                    f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
+                    "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
+                ),
+                reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
+            )
+            return
         except OcrEngineError as exc:
             await send_new_context_message(
                 message.bot,
