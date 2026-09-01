@@ -21,7 +21,10 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --extra ocr
+# Кэш uv переживает пересборки: torch и компания не качаются заново каждый раз,
+# когда меняется состав зависимостей.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --extra ocr
 
 # Прогреваем модели EasyOCR в образ, чтобы бот не качал их при первом фото.
 RUN uv run --frozen python -c "import easyocr; easyocr.Reader(['ru'], gpu=False, verbose=False)"
