@@ -20,6 +20,7 @@ from src.message_broker import (
     RabbitMQBroker,
 )
 from src.notifier import Broadcaster
+from src.ocr_import import OcrScheduleImporter, build_ocr_importer
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
@@ -70,6 +71,7 @@ def start_telegram_polling(
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
+    ocr_importer: OcrScheduleImporter | None = None,
 ) -> None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
@@ -81,7 +83,9 @@ def start_telegram_polling(
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         broadcaster.telegram_bot = bot
-        dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
+        dispatcher = build_dispatcher(
+            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
+        )
         try:
             await dispatcher.start_polling(bot)
         finally:
@@ -98,13 +102,16 @@ def start_vk_polling(
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
+    ocr_importer: OcrScheduleImporter | None = None,
 ) -> None:
     if not settings.vk_bot_token:
         logging.warning("VK_BOT_TOKEN не задан. VK-бот не будет запущен.")
         return
 
     async def _run_once() -> None:
-        vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
+        vk_bot = build_vk_bot(
+            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
+        )
         if vk_bot is None:
             return
         broadcaster.vk_bot = vk_bot
@@ -189,8 +196,15 @@ async def main() -> None:
     )
     jobs.start()
 
-    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
-    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
+    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog)
+    ocr_available, ocr_message = ocr_importer.availability()
+    if ocr_available:
+        logging.info("Импорт расписания из фото доступен (%s).", ocr_message)
+    else:
+        logging.warning("Импорт расписания из фото недоступен: %s", ocr_message)
+
+    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
+    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
 
     try:
         await broadcaster.start()

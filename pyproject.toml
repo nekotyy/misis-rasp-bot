@@ -17,10 +17,31 @@ dependencies = [
     "fastapi>=0.115.0,<1.0.0",
     "uvicorn[standard]>=0.34.0,<1.0.0",
     "python-multipart>=0.0.20,<1.0.0",
+    "pillow>=11.0.0,<13.0.0",
+    "pytesseract>=0.3.13,<1.0.0",
+]
+
+[project.optional-dependencies]
+# Движок OCR с детекцией текста. Нужен для импорта расписания с фотографий:
+# Tesseract справляется только со скриншотами, на снимках экрана он бесполезен.
+# Тяжёлый (тянет torch), поэтому вынесен в extra: ставится через `uv sync --extra ocr`.
+ocr = [
+    "easyocr>=1.7.2,<2.0.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
 ]
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [dependency-groups]
 dev = [
