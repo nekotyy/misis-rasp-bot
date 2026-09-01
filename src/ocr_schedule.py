@@ -1083,7 +1083,11 @@ class EasyOcrEngine:
         languages: str = "ru",
         min_confidence: float = 0.15,
         gpu: bool = False,
+        threads: int = 2,
+        max_image_side: int = MAX_DETECTION_SIDE,
     ) -> None:
+        self.threads = max(0, threads)
+        self.max_image_side = max(600, max_image_side)
         self.languages = [part.strip() for part in languages.replace("+", ",").split(",") if part.strip()] or ["ru"]
         self.min_confidence = min_confidence
         self.gpu = gpu
@@ -1096,10 +1100,28 @@ class EasyOcrEngine:
             return False, "EasyOCR не установлен. Поставь пакет easyocr или переключись на OCR_ENGINE=tesseract."
         return True, f"easyocr ({', '.join(self.languages)})"
 
+    def _limit_torch_threads(self) -> None:
+        """Ограничивает число потоков torch.
+
+        На слабых VPS torch по умолчанию берёт потоков по числу ядер, и каждый
+        тянет свою память. При отсутствии ускорения NNPACK это не ускоряет, а
+        только приближает контейнер к OOM.
+        """
+        if self.threads <= 0:
+            return
+        try:
+            import torch
+
+            torch.set_num_threads(self.threads)
+            logger.info("Число потоков torch ограничено до %s.", self.threads)
+        except Exception as exc:
+            logger.debug("Не удалось ограничить потоки torch: %s", exc)
+
     def _get_reader(self):
         if self._reader is None:
             import easyocr
 
+            self._limit_torch_threads()
             started = time.monotonic()
             logger.info("Загружаю модели EasyOCR (%s)...", ", ".join(self.languages))
             self._reader = easyocr.Reader(self.languages, gpu=self.gpu, verbose=False)
@@ -1124,8 +1146,8 @@ class EasyOcrEngine:
             with Image.open(io.BytesIO(image_bytes)) as image:
                 prepared = ImageOps.exif_transpose(image).convert("RGB")
                 longest = max(prepared.width, prepared.height)
-                if longest > MAX_DETECTION_SIDE:
-                    scale = MAX_DETECTION_SIDE / longest
+                if longest > self.max_image_side:
+                    scale = self.max_image_side / longest
                     prepared = prepared.resize(
                         (max(1, int(prepared.width * scale)), max(1, int(prepared.height * scale))),
                         Image.LANCZOS,
@@ -1302,6 +1324,8 @@ def build_ocr_engine(
     languages: str = "rus+eng",
     psm: int = 6,
     timeout: float = 60.0,
+    threads: int = 2,
+    max_image_side: int = MAX_DETECTION_SIDE,
 ) -> TesseractOcrEngine | EasyOcrEngine:
     """Собирает движок по имени, молча откатываясь на доступный.
 
@@ -1310,7 +1334,11 @@ def build_ocr_engine(
     """
     requested = (engine or "").strip().lower()
     if requested in {"", "auto", "easyocr"}:
-        easy = EasyOcrEngine(languages=_easyocr_languages(languages))
+        easy = EasyOcrEngine(
+            languages=_easyocr_languages(languages),
+            threads=threads,
+            max_image_side=max_image_side,
+        )
         if easy.availability()[0]:
             return easy
         if requested == "easyocr":

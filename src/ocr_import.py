@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -37,6 +38,8 @@ MAX_PREVIEW_LESSONS = 40
 MAX_PREVIEW_ISSUES = 12
 MAX_PREVIEW_CORRECTIONS = 10
 MAX_PREVIEW_SKIPPED = 5
+# Как часто обновлять индикатор во время долгого распознавания.
+HEARTBEAT_INTERVAL_SECONDS = 10
 
 # Этапы распознавания для индикатора прогресса. Проценты приблизительные:
 # движок не сообщает реальный ход, но админу важно видеть, что процесс жив
@@ -195,12 +198,29 @@ class OcrScheduleImporter:
                 logger.debug("Не удалось обновить индикатор прогресса.", exc_info=True)
 
         await notify_stage(OCR_STAGE_RECOGNIZE, 35)
+        started = time.monotonic()
+
+        async def heartbeat() -> None:
+            """Показывает, что распознавание живо.
+
+            Это самый долгий этап: на слабом процессоре он идёт минуты, и без
+            пульса индикатор выглядит зависшим на 35%.
+            """
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                elapsed = int(time.monotonic() - started)
+                await notify_stage(f"{OCR_STAGE_RECOGNIZE} ({elapsed} с)", 35)
+
+        ticker = asyncio.create_task(heartbeat())
         try:
             raw_text = await self.parser.recognize_image(image_bytes)
         except Exception as exc:
             self.last_error = str(exc)
             await self._report(False, str(exc), "Ошибка распознавания фото")
             raise
+        finally:
+            ticker.cancel()
+        logger.info("Распознавание заняло %.1f с.", time.monotonic() - started)
 
         await notify_stage(OCR_STAGE_PARSE, 70)
         # Первый проход нужен только чтобы узнать группу и подобрать источник,
@@ -360,6 +380,8 @@ def build_ocr_importer(
         languages=str(getattr(settings, "ocr_languages", "rus+eng") or "rus"),
         psm=int(_float_setting(settings, "ocr_psm", 6)),
         timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
+        threads=int(_float_setting(settings, "ocr_threads", 2)),
+        max_image_side=int(_float_setting(settings, "ocr_max_image_side", 2000)),
     )
     return OcrScheduleImporter(
         db,
