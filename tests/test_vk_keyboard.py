@@ -5,8 +5,12 @@ import unittest
 from types import SimpleNamespace
 
 from src.vk_bot import (
+    VK_KEYBOARD_MAX_BUTTONS,
+    VK_KEYBOARD_MAX_BUTTONS_PER_ROW,
+    VK_KEYBOARD_MAX_ROWS,
     build_vk_subscription_settings_keyboard,
     make_vk_keyboard,
+    vk_admin_keyboard_rows,
     vk_help_main_keyboard,
 )
 
@@ -108,3 +112,42 @@ if __name__ == "__main__":
     unittest.main()
 
 
+
+
+class TestVkKeyboardLimits(unittest.TestCase):
+    """Превышение лимитов VK роняет весь экран ошибкой API 911.
+
+    Так уже случилось: отдельный ряд под кнопку импорта с фото сделал в
+    админ-панели 11 рядов вместо допустимых 10, и админка перестала открываться.
+    """
+
+    def test_admin_keyboard_fits_row_limit(self) -> None:
+        rows = vk_admin_keyboard_rows()
+        self.assertLessEqual(
+            len(rows),
+            VK_KEYBOARD_MAX_ROWS,
+            f"В админ-панели VK {len(rows)} рядов при лимите {VK_KEYBOARD_MAX_ROWS}",
+        )
+
+    def test_admin_keyboard_fits_buttons_per_row(self) -> None:
+        for row in vk_admin_keyboard_rows():
+            self.assertLessEqual(len(row), VK_KEYBOARD_MAX_BUTTONS_PER_ROW, f"Слишком длинный ряд: {row}")
+
+    def test_admin_keyboard_fits_total_buttons(self) -> None:
+        total = sum(len(row) for row in vk_admin_keyboard_rows())
+        self.assertLessEqual(total, VK_KEYBOARD_MAX_BUTTONS)
+
+    def test_admin_keyboard_has_no_empty_rows(self) -> None:
+        for row in vk_admin_keyboard_rows():
+            self.assertTrue(row, "Пустой ряд в клавиатуре")
+            for label in row:
+                self.assertTrue(label.strip(), "Кнопка без текста")
+
+    def test_admin_keyboard_keeps_ocr_button(self) -> None:
+        labels = [label for row in vk_admin_keyboard_rows() for label in row]
+        self.assertIn("Расписание с фото", labels)
+        self.assertIn("Импорт пар из JSON", labels)
+
+    def test_admin_keyboard_serialises(self) -> None:
+        parsed = json.loads(make_vk_keyboard(vk_admin_keyboard_rows()))
+        self.assertEqual(len(parsed["buttons"]), len(vk_admin_keyboard_rows()))
