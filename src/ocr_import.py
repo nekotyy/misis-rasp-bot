@@ -380,7 +380,7 @@ def build_ocr_importer(
         languages=str(getattr(settings, "ocr_languages", "rus+eng") or "rus"),
         psm=int(_float_setting(settings, "ocr_psm", 6)),
         timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
-        threads=int(_float_setting(settings, "ocr_threads", 2)),
+        threads=int(_float_setting(settings, "ocr_threads", 0)),
         max_image_side=int(_float_setting(settings, "ocr_max_image_side", 2000)),
     )
     return OcrScheduleImporter(

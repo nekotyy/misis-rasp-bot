@@ -1083,7 +1083,7 @@ class EasyOcrEngine:
         languages: str = "ru",
         min_confidence: float = 0.15,
         gpu: bool = False,
-        threads: int = 2,
+        threads: int = 0,
         max_image_side: int = MAX_DETECTION_SIDE,
     ) -> None:
         self.threads = max(0, threads)
@@ -1103,9 +1103,10 @@ class EasyOcrEngine:
     def _limit_torch_threads(self) -> None:
         """Ограничивает число потоков torch.
 
-        На слабых VPS torch по умолчанию берёт потоков по числу ядер, и каждый
-        тянет свою память. При отсутствии ускорения NNPACK это не ускоряет, а
-        только приближает контейнер к OOM.
+        По умолчанию не ограничиваем: замер показал, что потоки — главный фактор
+        скорости распознавания (2 потока — 15 с, 4 — 9 с, все 12 ядер — 7 с),
+        а память при этом растёт незначительно. Ограничение нужно только на
+        машинах, где памяти действительно мало.
         """
         if self.threads <= 0:
             return
@@ -1324,7 +1325,7 @@ def build_ocr_engine(
     languages: str = "rus+eng",
     psm: int = 6,
     timeout: float = 60.0,
-    threads: int = 2,
+    threads: int = 0,
     max_image_side: int = MAX_DETECTION_SIDE,
 ) -> TesseractOcrEngine | EasyOcrEngine:
     """Собирает движок по имени, молча откатываясь на доступный.

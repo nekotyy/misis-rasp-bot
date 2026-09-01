@@ -97,7 +97,7 @@ class Settings:
             ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "180").strip()),
             ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),
             ocr_fuzzy_threshold=_clamp_float(os.getenv("OCR_FUZZY_THRESHOLD", "0.78"), 0.5, 1.0, 0.78),
-            ocr_threads=int(_clamp_float(os.getenv("OCR_THREADS", "2"), 0, 32, 2)),
+            ocr_threads=int(_clamp_float(os.getenv("OCR_THREADS", "0"), 0, 32, 0)),
             ocr_max_image_side=int(_clamp_float(os.getenv("OCR_MAX_IMAGE_SIDE", "2000"), 600, 4000, 2000)),
             ocr_warmup_on_start=_env_bool("OCR_WARMUP_ON_START", default=True),
             ocr_ready_notice_hours=_clamp_float(os.getenv("OCR_READY_NOTICE_HOURS", "12"), 0, 720, 12),
