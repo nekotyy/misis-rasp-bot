@@ -90,7 +90,7 @@ class Settings:
             ocr_tesseract_cmd=os.getenv("OCR_TESSERACT_CMD", "").strip(),
             ocr_languages=os.getenv("OCR_LANGUAGES", "rus+eng").strip() or "rus",
             ocr_psm=int(os.getenv("OCR_PSM", "6").strip()),
-            ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "60").strip()),
+            ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "180").strip()),
             ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),
             ocr_fuzzy_threshold=_clamp_float(os.getenv("OCR_FUZZY_THRESHOLD", "0.78"), 0.5, 1.0, 0.78),
         )

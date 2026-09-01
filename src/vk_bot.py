@@ -1911,9 +1911,27 @@ def build_vk_bot(
                 )
                 return
 
-            await show_screen(peer_id, "Распознаю расписание с фото, это займёт несколько секунд...")
+            await show_screen(
+                peer_id,
+                "Распознаю расписание с фото. Обычно это занимает до минуты, "
+                "после первой перезагрузки бота — дольше.",
+            )
             try:
-                draft = await ocr_service.build_draft(image_bytes)
+                draft = await asyncio.wait_for(
+                    ocr_service.build_draft(image_bytes),
+                    timeout=ocr_service.recognize_timeout,
+                )
+            except TimeoutError:
+                logger.warning("Распознавание фото не уложилось в %s с (VK).", ocr_service.recognize_timeout)
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_prompt(
+                        f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
+                        "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
+                    ),
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
             except OcrEngineError as exc:
                 await show_screen(
                     peer_id,

@@ -26,6 +26,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,6 +44,9 @@ MAX_LESSON_NUMBER = 12
 MAX_CLASSROOM_LENGTH = 20
 MIN_SUBJECT_LENGTH = 3
 MAX_DATE_DRIFT_DAYS = 400
+# Длинная сторона, до которой ужимается фото перед детекцией. Телефонные
+# снимки бывают по 4000 px: время и память растут квадратично, а точность нет.
+MAX_DETECTION_SIDE = 2000
 
 # Латинские буквы, которые Tesseract часто подставляет вместо кириллических.
 _LATIN_TO_CYRILLIC = str.maketrans(
@@ -1096,8 +1100,19 @@ class EasyOcrEngine:
         if self._reader is None:
             import easyocr
 
+            started = time.monotonic()
+            logger.info("Загружаю модели EasyOCR (%s)...", ", ".join(self.languages))
             self._reader = easyocr.Reader(self.languages, gpu=self.gpu, verbose=False)
+            logger.info("Модели EasyOCR загружены за %.1f с.", time.monotonic() - started)
         return self._reader
+
+    def warm_up(self) -> None:
+        """Заранее поднимает модели, чтобы первое фото не ждало их загрузки.
+
+        Без прогрева первое распознавание тянет загрузку и инициализацию моделей
+        прямо внутри запроса: админ видит «Распознаю...» и тишину на минуты.
+        """
+        self._get_reader()
 
     def detect(self, image_bytes: bytes) -> list[TextBox]:
         if not image_bytes:
@@ -1107,8 +1122,21 @@ class EasyOcrEngine:
             from PIL import Image
 
             with Image.open(io.BytesIO(image_bytes)) as image:
-                array = np.array(ImageOps.exif_transpose(image).convert("RGB"))
+                prepared = ImageOps.exif_transpose(image).convert("RGB")
+                longest = max(prepared.width, prepared.height)
+                if longest > MAX_DETECTION_SIDE:
+                    scale = MAX_DETECTION_SIDE / longest
+                    prepared = prepared.resize(
+                        (max(1, int(prepared.width * scale)), max(1, int(prepared.height * scale))),
+                        Image.LANCZOS,
+                    )
+                array = np.array(prepared)
+            started = time.monotonic()
             detections = self._get_reader().readtext(array, detail=1, paragraph=False)
+            logger.info(
+                "EasyOCR распознал %s блоков за %.1f с (кадр %sx%s).",
+                len(detections), time.monotonic() - started, array.shape[1], array.shape[0],
+            )
         except OcrEngineError:
             raise
         except Exception as exc:
@@ -1183,6 +1211,10 @@ class TesseractOcrEngine:
             return False, "Tesseract вернул ошибку при проверке версии."
         version = (completed.stdout or b"").decode("utf-8", "replace").splitlines()
         return True, version[0].strip() if version else "tesseract"
+
+    def warm_up(self) -> None:
+        """Tesseract поднимается процессом на каждый вызов, греть нечего."""
+        return None
 
     def recognize(self, image_bytes: bytes) -> str:
         if not image_bytes:

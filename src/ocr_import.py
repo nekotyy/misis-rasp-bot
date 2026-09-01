@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from html import escape
@@ -68,11 +69,13 @@ class OcrScheduleImporter:
         enabled: bool = True,
         min_confidence: float = 0.6,
         fuzzy_threshold: float = 0.78,
+        recognize_timeout: float = 180.0,
     ) -> None:
         self.db = db
         self.schedule_jobs = schedule_jobs
         self.group_catalog = group_catalog
         self.enabled = enabled
+        self.recognize_timeout = max(30.0, recognize_timeout)
         self.parser = OcrScheduleParser(
             engine,
             fuzzy_threshold=fuzzy_threshold,
@@ -91,6 +94,21 @@ class OcrScheduleImporter:
         if self.schedule_jobs is None:
             return False, "Планировщик расписания недоступен, импорт невозможен."
         return self.engine.availability()
+
+    async def warm_up(self) -> None:
+        """Поднимает модели заранее, чтобы первое фото не ждало их загрузки."""
+        if not self.enabled or self.engine is None:
+            return
+        available, message = self.engine.availability()
+        if not available:
+            logger.warning("Прогрев OCR пропущен: %s", message)
+            return
+        try:
+            await asyncio.to_thread(self.engine.warm_up)
+        except Exception as exc:
+            logger.warning("Не удалось прогреть OCR-движок: %s", exc)
+            return
+        logger.info("OCR-движок %s готов к работе.", self.engine.name)
 
     async def build_draft(self, image_bytes: bytes) -> OcrImportDraft:
         """Распознаёт фото и готовит черновик к подтверждению."""
@@ -230,6 +248,14 @@ class OcrScheduleImporter:
         return None, f"Группа «{group_name}» не найдена среди подписанных источников.{hint}"
 
 
+def _float_setting(settings, name: str, default: float) -> float:
+    """Числовая настройка с защитой от мусора в окружении."""
+    try:
+        return float(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def build_ocr_importer(
     settings,
     db: Database,
@@ -238,20 +264,21 @@ def build_ocr_importer(
 ) -> OcrScheduleImporter:
     """Собирает сервис импорта по настройкам окружения."""
     engine = build_ocr_engine(
-        engine=getattr(settings, "ocr_engine", "easyocr"),
-        command=getattr(settings, "ocr_tesseract_cmd", ""),
-        languages=getattr(settings, "ocr_languages", "rus+eng"),
-        psm=getattr(settings, "ocr_psm", 6),
-        timeout=getattr(settings, "ocr_timeout_seconds", 60.0),
+        engine=str(getattr(settings, "ocr_engine", "easyocr") or "easyocr"),
+        command=str(getattr(settings, "ocr_tesseract_cmd", "") or ""),
+        languages=str(getattr(settings, "ocr_languages", "rus+eng") or "rus"),
+        psm=int(_float_setting(settings, "ocr_psm", 6)),
+        timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
     )
     return OcrScheduleImporter(
         db,
         schedule_jobs,
         group_catalog,
         engine=engine,
-        enabled=getattr(settings, "ocr_enabled", True),
-        min_confidence=getattr(settings, "ocr_min_confidence", 0.6),
-        fuzzy_threshold=getattr(settings, "ocr_fuzzy_threshold", 0.78),
+        enabled=bool(getattr(settings, "ocr_enabled", True)),
+        min_confidence=_float_setting(settings, "ocr_min_confidence", 0.6),
+        fuzzy_threshold=_float_setting(settings, "ocr_fuzzy_threshold", 0.78),
+        recognize_timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
     )
 
 

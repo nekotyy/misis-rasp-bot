@@ -200,6 +200,9 @@ async def main() -> None:
     ocr_available, ocr_message = ocr_importer.availability()
     if ocr_available:
         logging.info("Импорт расписания из фото доступен (%s).", ocr_message)
+        # Модели грузятся десятки секунд. Без прогрева эта цена платится внутри
+        # первого запроса, и админ видит только "Распознаю..." и тишину.
+        start_background_task("ocr-warmup", ocr_importer.warm_up())
     else:
         logging.warning("Импорт расписания из фото недоступен: %s", ocr_message)
 

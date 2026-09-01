@@ -29,6 +29,8 @@ ACTIVE_SOURCE = {
 class FakeEngine:
     """Движок-заглушка: отдаёт заранее заданный текст вместо запуска Tesseract."""
 
+    name = "fake"
+
     def __init__(self, text: str = RECOGNIZED_TEXT, available: bool = True) -> None:
         self.text = text
         self._available = available
@@ -37,6 +39,9 @@ class FakeEngine:
         if self._available:
             return True, "fake-tesseract 5.0"
         return False, "Tesseract не найден."
+
+    def warm_up(self) -> None:
+        return None
 
     def recognize(self, image_bytes: bytes) -> str:
         if not image_bytes:
@@ -100,6 +105,47 @@ class AvailabilityTests(unittest.IsolatedAsyncioTestCase):
         importer = make_importer(enabled=False)
         with self.assertRaises(OcrEngineError):
             await importer.build_draft(b"image")
+
+
+class WarmUpTests(unittest.IsolatedAsyncioTestCase):
+    """Модели должны подниматься на старте, а не внутри первого запроса."""
+
+    async def test_warm_up_calls_engine(self) -> None:
+        engine = FakeEngine()
+        engine.warmed = False
+
+        def warm_up() -> None:
+            engine.warmed = True
+
+        engine.warm_up = warm_up
+        importer = make_importer(engine=engine)
+
+        await importer.warm_up()
+
+        self.assertTrue(engine.warmed)
+
+    async def test_warm_up_skipped_when_disabled(self) -> None:
+        engine = FakeEngine()
+        engine.warm_up = MagicMock()
+        importer = make_importer(engine=engine, enabled=False)
+
+        await importer.warm_up()
+
+        engine.warm_up.assert_not_called()
+
+    async def test_warm_up_survives_engine_failure(self) -> None:
+        engine = FakeEngine()
+        engine.warm_up = MagicMock(side_effect=RuntimeError("нет моделей"))
+        importer = make_importer(engine=engine)
+
+        await importer.warm_up()  # не должно бросить
+
+    def test_timeout_has_sane_floor(self) -> None:
+        self.assertEqual(make_importer().recognize_timeout, 180.0)
+        importer = OcrScheduleImporter(
+            make_db(), MagicMock(), None, engine=FakeEngine(), recognize_timeout=1.0
+        )
+        self.assertEqual(importer.recognize_timeout, 30.0)
 
 
 class ResolveSourceTests(unittest.IsolatedAsyncioTestCase):
@@ -323,6 +369,35 @@ class BuildImporterTests(unittest.TestCase):
         self.assertEqual(importer.engine.psm, 4)
         self.assertEqual(importer.parser.fuzzy_threshold, 0.9)
         self.assertEqual(importer.parser.min_confidence, 0.7)
+
+
+class SettingsCoercionTests(unittest.TestCase):
+    """Фабрика не должна падать на нечисловых настройках."""
+
+    def test_mock_settings_do_not_break_factory(self) -> None:
+        importer = build_ocr_importer(MagicMock(), make_db(), MagicMock(), None)
+
+        self.assertIsInstance(importer.recognize_timeout, float)
+        self.assertIsInstance(importer.parser.fuzzy_threshold, float)
+        self.assertIsInstance(importer.parser.min_confidence, float)
+
+    def test_garbage_values_fall_back_to_defaults(self) -> None:
+        settings = MagicMock(
+            ocr_enabled=True,
+            ocr_engine="tesseract",
+            ocr_tesseract_cmd="",
+            ocr_languages="rus",
+            ocr_psm="не число",
+            ocr_timeout_seconds="тоже не число",
+            ocr_min_confidence=None,
+            ocr_fuzzy_threshold=0.9,
+        )
+        importer = build_ocr_importer(settings, make_db(), MagicMock(), None)
+
+        self.assertEqual(importer.recognize_timeout, 180.0)
+        self.assertEqual(importer.parser.min_confidence, 0.6)
+        self.assertEqual(importer.parser.fuzzy_threshold, 0.9)
+        self.assertEqual(importer.engine.psm, 6)
 
 
 class ManualSnapshotPipelineTests(unittest.IsolatedAsyncioTestCase):
