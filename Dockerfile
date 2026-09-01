@@ -32,6 +32,7 @@ RUN uv run --frozen python -c "import easyocr; easyocr.Reader(['ru'], gpu=False,
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY src ./src
+COPY scripts ./scripts
 COPY web_configurator ./web_configurator
 COPY README.md ./
 

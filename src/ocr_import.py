@@ -306,6 +306,14 @@ class OcrScheduleImporter:
                 contents.append(stored.get("content"))
         return OcrVocabulary.from_snapshot_contents(contents)
 
+    async def resolve_source_by_group(self, group_name: str) -> tuple[dict | None, str]:
+        """Публичная обёртка: подбор источника без распознавания.
+
+        Нужна для ручной заливки расписания, когда фото распознавать не надо,
+        а найти группу и провести снимок по общему конвейеру — надо.
+        """
+        return await self._resolve_source(group_name)
+
     async def _resolve_source(self, group_name: str) -> tuple[dict | None, str]:
         """Ищет источник, к которому относится фото.
 
