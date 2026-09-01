@@ -353,6 +353,12 @@ class EngineTuningTests(unittest.TestCase):
         self.assertEqual(EasyOcrEngine(threads=4).threads, 4)
         self.assertEqual(EasyOcrEngine(threads=-5).threads, 0)
 
+    def test_threads_unlimited_by_default(self) -> None:
+        """Потоки — главный фактор скорости: 2 потока вдвое медленнее всех ядер."""
+        from src.ocr_schedule import EasyOcrEngine
+
+        self.assertEqual(EasyOcrEngine().threads, 0)
+
     def test_factory_passes_tuning(self) -> None:
         from src.ocr_schedule import build_ocr_engine
 
