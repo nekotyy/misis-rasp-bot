@@ -471,6 +471,16 @@ def _best_vk_photo_url(photo) -> str:
     return best_url
 
 
+def _has_image_attachment(message: Message) -> bool:
+    for attachment in getattr(message, "attachments", None) or []:
+        if getattr(attachment, "photo", None) is not None:
+            return True
+        doc = getattr(attachment, "doc", None)
+        if doc is not None and (getattr(doc, "ext", "") or "").lower() in {"jpg", "jpeg", "png", "bmp", "webp"}:
+            return True
+    return False
+
+
 async def download_vk_image(message: Message) -> tuple[bytes | None, str]:
     """Достаёт изображение из вложений сообщения VK."""
     url = ""
@@ -1891,6 +1901,22 @@ def build_vk_bot(
             )
             return
 
+        # Админ прислал картинку в личку — значит, хочет импорт расписания.
+        # Кнопка в админке не обязательна: раньше без неё бот просто молчал.
+        if (
+            user_is_admin(user_id)
+            and peer_id < 2000000000
+            and mode not in {"admin_ocr_input", "admin_ocr_preview"}
+            and _has_image_attachment(message)
+        ):
+            available, availability_message = ocr_service.availability()
+            if not available:
+                await show_screen(peer_id, availability_message, keyboard=admin_keyboard())
+                return
+            admin_ocr_drafts.pop(peer_id, None)
+            peer_modes[peer_id] = "admin_ocr_input"
+            mode = "admin_ocr_input"
+
         if user_is_admin(user_id) and mode in {"admin_ocr_input", "admin_ocr_preview"}:
             if text == "Отменить":
                 admin_ocr_drafts.pop(peer_id, None)
@@ -1963,11 +1989,11 @@ def build_vk_bot(
                     keyboard=make_keyboard([["Отменить"]]),
                 )
                 return
-            except Exception:
+            except Exception as exc:
                 logger.exception("Ошибка распознавания расписания с фото (VK).")
                 await show_screen(
                     peer_id,
-                    format_vk_ocr_prompt("Внутренняя ошибка распознавания. Попробуй другое фото."),
+                    format_vk_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
                     keyboard=make_keyboard([["Отменить"]]),
                 )
                 return
