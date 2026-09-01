@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import pathlib
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.ocr_import import (
+    HEARTBEAT_INTERVAL_SECONDS,
     OCR_STAGE_PARSE,
     OCR_STAGE_PREVIEW,
     OCR_STAGE_RECOGNIZE,
@@ -278,3 +282,164 @@ class SystemStatusTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
+    """Распознавание идёт минуты: индикатор обязан показывать, что он жив."""
+
+    async def test_heartbeat_updates_during_long_recognition(self) -> None:
+        import src.ocr_import as ocr_import
+
+        original = ocr_import.HEARTBEAT_INTERVAL_SECONDS
+        ocr_import.HEARTBEAT_INTERVAL_SECONDS = 0.01
+
+        class SlowEngine(FakeEngine):
+            def recognize(self, image_bytes: bytes) -> str:
+                import time as _time
+
+                _time.sleep(0.12)
+                return RECOGNIZED_TEXT
+
+        try:
+            importer = make_importer(engine=SlowEngine())
+            seen: list[str] = []
+
+            async def progress(stage: str, percent: int) -> None:
+                seen.append(stage)
+
+            await importer.build_draft(b"image", progress=progress)
+        finally:
+            ocr_import.HEARTBEAT_INTERVAL_SECONDS = original
+
+        ticks = [stage for stage in seen if "с)" in stage]
+        self.assertTrue(ticks, f"Пульс не сработал, этапы: {seen}")
+        self.assertIn(OCR_STAGE_RECOGNIZE, ticks[0])
+
+    async def test_heartbeat_stops_after_recognition(self) -> None:
+        importer = make_importer()
+        seen: list[str] = []
+
+        async def progress(stage: str, percent: int) -> None:
+            seen.append(stage)
+
+        await importer.build_draft(b"image", progress=progress)
+        before = len(seen)
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(len(seen), before, "Пульс продолжился после завершения")
+
+    def test_heartbeat_interval_is_sane(self) -> None:
+        self.assertGreater(HEARTBEAT_INTERVAL_SECONDS, 0)
+        self.assertLessEqual(HEARTBEAT_INTERVAL_SECONDS, 30)
+
+
+class EngineTuningTests(unittest.TestCase):
+    """Уменьшение кадра теряет пары: на 1600 из четырёх распознаётся три."""
+
+    def test_default_image_side_keeps_accuracy(self) -> None:
+        from src.ocr_schedule import MAX_DETECTION_SIDE, EasyOcrEngine
+
+        self.assertEqual(MAX_DETECTION_SIDE, 2000)
+        self.assertEqual(EasyOcrEngine().max_image_side, 2000)
+
+    def test_image_side_has_lower_bound(self) -> None:
+        from src.ocr_schedule import EasyOcrEngine
+
+        self.assertGreaterEqual(EasyOcrEngine(max_image_side=10).max_image_side, 600)
+
+    def test_threads_are_configurable(self) -> None:
+        from src.ocr_schedule import EasyOcrEngine
+
+        self.assertEqual(EasyOcrEngine(threads=4).threads, 4)
+        self.assertEqual(EasyOcrEngine(threads=-5).threads, 0)
+
+    def test_factory_passes_tuning(self) -> None:
+        from src.ocr_schedule import build_ocr_engine
+
+        engine = build_ocr_engine(engine="easyocr", threads=3, max_image_side=1800)
+        self.assertEqual(engine.threads, 3)
+        self.assertEqual(engine.max_image_side, 1800)
+
+
+class LoggingRestoreTests(unittest.TestCase):
+    """alembic глушит логи: без восстановления бот работает вслепую."""
+
+    def test_restore_logging_reenables_info(self) -> None:
+        import logging as std_logging
+
+        from src.main import restore_logging
+
+        root = std_logging.getLogger()
+        original_level = root.level
+        try:
+            root.setLevel(std_logging.WARNING)
+            std_logging.getLogger("src").disabled = True
+
+            restore_logging()
+
+            self.assertEqual(root.level, std_logging.INFO)
+            self.assertFalse(std_logging.getLogger("src").disabled)
+        finally:
+            root.setLevel(original_level)
+
+    def test_restore_logging_adds_handler_when_missing(self) -> None:
+        import logging as std_logging
+
+        from src.main import restore_logging
+
+        root = std_logging.getLogger()
+        saved = list(root.handlers)
+        try:
+            root.handlers = []
+            restore_logging()
+            self.assertTrue(root.handlers, "Обработчик не добавлен")
+        finally:
+            root.handlers = saved
+
+
+class ReadyNoticeThrottleTests(unittest.TestCase):
+    """При крешлупе уведомление о готовности не должно спамиться."""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.marker = pathlib.Path(self._tmp.name) / "runtime" / ".ocr_ready_notified"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_first_start_notifies(self) -> None:
+        from src.main import should_notify_ocr_ready
+
+        self.assertTrue(should_notify_ocr_ready(self.marker, 12))
+
+    def test_restart_within_window_is_silent(self) -> None:
+        from src.main import should_notify_ocr_ready
+
+        self.assertTrue(should_notify_ocr_ready(self.marker, 12))
+        for _ in range(5):
+            self.assertFalse(should_notify_ocr_ready(self.marker, 12))
+
+    def test_zero_interval_always_notifies(self) -> None:
+        from src.main import should_notify_ocr_ready
+
+        self.assertTrue(should_notify_ocr_ready(self.marker, 0))
+        self.assertTrue(should_notify_ocr_ready(self.marker, 0))
+
+    def test_expired_marker_notifies_again(self) -> None:
+        import os
+
+        from src.main import should_notify_ocr_ready
+
+        self.assertTrue(should_notify_ocr_ready(self.marker, 12))
+        old = time.time() - 13 * 3600
+        os.utime(self.marker, (old, old))
+
+        self.assertTrue(should_notify_ocr_ready(self.marker, 12))
+
+    def test_unwritable_path_does_not_crash(self) -> None:
+        from src.main import should_notify_ocr_ready
+
+        broken = pathlib.Path("/proc/definitely/not/writable/.marker")
+        self.assertIsInstance(should_notify_ocr_ready(broken, 12), bool)
