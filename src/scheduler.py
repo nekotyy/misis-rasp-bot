@@ -22,8 +22,9 @@ from src.message_broker import (
     LessonCounterJob,
     LessonCounterJobBroker,
 )
+from src.models import ChangeSummary, ScheduleSnapshot
 from src.notifier import Broadcaster
-from src.parser import ScheduleParser
+from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_service import ScheduleComparator
 from src.system_status import (
     SystemAlertManager,
@@ -468,6 +469,35 @@ class ScheduleJobs:
 
     async def _sync_source(self, source: SourceRow, **_: Any) -> None:
         snapshot, snapshot_hash = await self._parse_source(source)
+        await self.apply_snapshot(source, snapshot, snapshot_hash)
+
+    async def apply_manual_snapshot(
+        self,
+        source: SourceRow,
+        snapshot: ScheduleSnapshot,
+        *,
+        notify: bool = True,
+    ) -> ChangeSummary | None:
+        """Проводит снимок из ручного источника (например, OCR фото) по общему конвейеру.
+
+        Отличий от синхронизации с сайтом нет: тот же хеш, то же сохранение,
+        то же сравнение с эталоном и та же рассылка.
+        """
+        return await self.apply_snapshot(
+            source,
+            snapshot,
+            compute_snapshot_hash(snapshot),
+            notify=notify,
+        )
+
+    async def apply_snapshot(
+        self,
+        source: SourceRow,
+        snapshot: ScheduleSnapshot,
+        snapshot_hash: str,
+        *,
+        notify: bool = True,
+    ) -> ChangeSummary | None:
         baseline = await self.db.get_latest_snapshot(
             "daily_baseline",
             schedule_id=source["schedule_id"],
@@ -498,11 +528,25 @@ class ScheduleJobs:
                 source_title=source["source_title"],
                 source_url=source["source_url"],
             )
-            return
+            return None
 
         change_summary = ScheduleComparator.compare(baseline, snapshot)
         if change_summary is None:
-            return
+            return None
+
+        if not notify:
+            await self.db.save_snapshot(
+                "daily_baseline",
+                snapshot_hash,
+                snapshot,
+                schedule_id=source["schedule_id"],
+                group_name=source.get("group_name"),
+                source_type=source["source_type"],
+                source_key=source["source_key"],
+                source_title=source["source_title"],
+                source_url=source["source_url"],
+            )
+            return change_summary
 
         change_recorded = await self.db.record_change(
             snapshot_hash=snapshot_hash,
@@ -533,7 +577,7 @@ class ScheduleJobs:
                 source_title=source["source_title"],
                 source_url=source["source_url"],
             )
-            return
+            return change_summary
         await self.broadcaster.broadcast(
             change_summary.message,
             telegram_message=change_summary.telegram_message,
@@ -552,6 +596,7 @@ class ScheduleJobs:
             source_title=source["source_title"],
             source_url=source["source_url"],
         )
+        return change_summary
 
     async def _count_lessons_for_schedule_id(self, schedule_id: int) -> None:
         snapshot, snapshot_hash = await self.parser.parse(schedule_id)

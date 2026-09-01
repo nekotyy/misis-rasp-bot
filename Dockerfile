@@ -8,13 +8,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        tzdata \
+        tesseract-ocr \
+        tesseract-ocr-rus \
+        tesseract-ocr-eng \
+        libglib2.0-0 \
+        libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-install-project --extra ocr
+
+# Прогреваем модели EasyOCR в образ, чтобы бот не качал их при первом фото.
+RUN uv run --frozen python -c "import easyocr; easyocr.Reader(['ru'], gpu=False, verbose=False)"
 
 COPY alembic.ini ./
 COPY migrations ./migrations

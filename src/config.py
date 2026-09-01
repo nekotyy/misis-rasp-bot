@@ -45,6 +45,14 @@ class Settings:
     lesson_counters_path: Path
     web_cookie_secure: bool
     web_session_ttl_seconds: int
+    ocr_enabled: bool
+    ocr_engine: str
+    ocr_tesseract_cmd: str
+    ocr_languages: str
+    ocr_psm: int
+    ocr_timeout_seconds: float
+    ocr_min_confidence: float
+    ocr_fuzzy_threshold: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -77,7 +85,23 @@ class Settings:
             lesson_counters_path=Path(os.getenv("LESSON_COUNTERS_PATH", "storage/lesson_counters.json")).resolve(),
             web_cookie_secure=_env_bool("WEB_COOKIE_SECURE", default=True),
             web_session_ttl_seconds=max(300, int(os.getenv("WEB_SESSION_TTL_SECONDS", str(60 * 60 * 12)).strip())),
+            ocr_enabled=_env_bool("OCR_ENABLED", default=True),
+            ocr_engine=os.getenv("OCR_ENGINE", "easyocr").strip().lower() or "easyocr",
+            ocr_tesseract_cmd=os.getenv("OCR_TESSERACT_CMD", "").strip(),
+            ocr_languages=os.getenv("OCR_LANGUAGES", "rus+eng").strip() or "rus",
+            ocr_psm=int(os.getenv("OCR_PSM", "6").strip()),
+            ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "60").strip()),
+            ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),
+            ocr_fuzzy_threshold=_clamp_float(os.getenv("OCR_FUZZY_THRESHOLD", "0.78"), 0.5, 1.0, 0.78),
         )
+
+
+def _clamp_float(raw: str, minimum: float, maximum: float, default: float) -> float:
+    try:
+        value = float(raw.strip())
+    except (AttributeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
 
 
 def _env_bool(name: str, *, default: bool) -> bool:
