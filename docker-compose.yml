@@ -19,10 +19,6 @@ services:
       LESSON_COUNTERS_QUEUE: ${LESSON_COUNTERS_QUEUE:-misis_lesson_counters}
     volumes:
       - ./runtime:/app/runtime
-    # Прогрев моделей EasyOCR занимает около 750 МБ, но само распознавание на
-    # нескольких потоках даёт заметный пик сверху. Лимит с запасом: при нехватке
-    # памяти контейнер убивается молча, посреди распознавания.
-    mem_limit: ${BOT_MEMORY_LIMIT:-4g}
 
   web:
     build: .

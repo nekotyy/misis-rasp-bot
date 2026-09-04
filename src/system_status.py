@@ -112,38 +112,7 @@ COMPONENT_TITLES = {
     "database": "База данных SQLite",
     "scheduler": "Фоновый планировщик",
     "delivery": "Служба доставки уведомлений",
-    "ocr": "Распознавание расписания с фото",
 }
-
-
-async def check_ocr_status(ocr_importer: Any) -> dict[str, Any]:
-    """Состояние движка распознавания фото.
-
-    Готовым считается только прогретый движок: пока модели не подняты, первое
-    фото будет ждать их загрузки десятки секунд.
-    """
-    now = datetime.now().isoformat()
-    if ocr_importer is None:
-        return {"ok": False, "ready": False, "engine": "", "error": "Импорт с фото не настроен", "checked_at": now}
-
-    try:
-        available, message = ocr_importer.availability()
-    except Exception as exc:
-        return {"ok": False, "ready": False, "engine": "", "error": type(exc).__name__, "checked_at": now}
-
-    engine = getattr(getattr(ocr_importer, "engine", None), "name", "") or ""
-    if not available:
-        return {"ok": False, "ready": False, "engine": engine, "error": message, "checked_at": now}
-
-    ready = bool(getattr(ocr_importer, "is_warm", False))
-    return {
-        "ok": True,
-        "ready": ready,
-        "engine": engine,
-        "error": None if ready else "Модели ещё греются",
-        "details": message,
-        "checked_at": now,
-    }
 
 
 async def check_schedule_site(schedule_url: str, timeout: float = 6.0) -> dict[str, Any]:

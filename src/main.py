@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from html import escape
-from pathlib import Path
-from time import monotonic, time
 
 import aio_pika
 from aiogram import Bot
@@ -23,7 +20,6 @@ from src.message_broker import (
     RabbitMQBroker,
 )
 from src.notifier import Broadcaster
-from src.ocr_import import OcrScheduleImporter, build_ocr_importer
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
@@ -31,39 +27,10 @@ from src.system_status import SystemAlertManager
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
 
-LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-
-
-def restore_logging() -> None:
-    """Возвращает наше логирование после alembic.
-
-    `migrations/env.py` вызывает `fileConfig()`, а тот по умолчанию отключает
-    все уже созданные логгеры и ставит корневому уровень WARN из alembic.ini.
-    В результате бот работал молча: в логах оставались только строки alembic,
-    и понять, что происходит с распознаванием, было невозможно.
-    """
-    for logger_name in ("src", "__main__", ""):
-        logging.getLogger(logger_name).disabled = False
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    if not root.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(LOG_FORMAT))
-        root.addHandler(handler)
-
-
-def log_memory(stage: str) -> None:
-    """Печатает потребление памяти процессом — чтобы видеть подходы к OOM."""
-    try:
-        with open("/proc/self/status", encoding="utf-8") as status:
-            for line in status:
-                if line.startswith("VmRSS:"):
-                    logging.info("Память процесса (%s): %s", stage, line.split(":", 1)[1].strip())
-                    return
-    except OSError:
-        return
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 
 def start_background_task(name: str, coro) -> asyncio.Task:
@@ -103,7 +70,6 @@ def start_telegram_polling(
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
-    ocr_importer: OcrScheduleImporter | None = None,
 ) -> None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
@@ -115,9 +81,7 @@ def start_telegram_polling(
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         broadcaster.telegram_bot = bot
-        dispatcher = build_dispatcher(
-            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
-        )
+        dispatcher = build_dispatcher(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
         try:
             await dispatcher.start_polling(bot)
         finally:
@@ -134,16 +98,13 @@ def start_vk_polling(
     group_catalog: GroupCatalog,
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
-    ocr_importer: OcrScheduleImporter | None = None,
 ) -> None:
     if not settings.vk_bot_token:
         logging.warning("VK_BOT_TOKEN не задан. VK-бот не будет запущен.")
         return
 
     async def _run_once() -> None:
-        vk_bot = build_vk_bot(
-            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
-        )
+        vk_bot = build_vk_bot(settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs)
         if vk_bot is None:
             return
         broadcaster.vk_bot = vk_bot
@@ -155,101 +116,6 @@ def start_vk_polling(
     start_background_task("vk-supervisor", run_forever("VK bot", _run_once))
 
 
-OCR_READY_HTML = (
-    "<b>Распознавание расписания с фото готово</b>"
-    "\n\nДвижок: <b>{engine}</b>"
-    "\nМодели загружены за {elapsed} с."
-    "\n\nМожно присылать фото через админ-панель."
-)
-OCR_READY_TEXT = (
-    "Распознавание расписания с фото готово."
-    "\n\nДвижок: {engine}"
-    "\nМодели загружены за {elapsed} с."
-    "\n\nМожно присылать фото через админ-панель."
-)
-OCR_FAILED_HTML = (
-    "<b>Распознавание расписания с фото не поднялось</b>"
-    "\n\n{reason}"
-    "\n\nИмпорт фото работать не будет, остальные функции — как обычно."
-)
-OCR_FAILED_TEXT = (
-    "Распознавание расписания с фото не поднялось."
-    "\n\n{reason}"
-    "\n\nИмпорт фото работать не будет, остальные функции — как обычно."
-)
-OCR_UNAVAILABLE_HTML = (
-    "<b>Распознавание расписания с фото недоступно</b>"
-    "\n\n{reason}"
-    "\n\nОстальные функции бота работают как обычно."
-)
-OCR_UNAVAILABLE_TEXT = (
-    "Распознавание расписания с фото недоступно."
-    "\n\n{reason}"
-    "\n\nОстальные функции бота работают как обычно."
-)
-
-
-def should_notify_ocr_ready(marker_path: Path, min_interval_hours: float) -> bool:
-    """Не чаще одного сообщения о готовности за указанный срок.
-
-    Контейнер может перезапускаться, и без этой отсечки каждый старт слал бы
-    администраторам одно и то же уведомление — при крешлупе это превращается
-    в непрерывный спам.
-    """
-    if min_interval_hours <= 0:
-        return True
-    now = time()
-    try:
-        last = marker_path.stat().st_mtime
-        if now - last < min_interval_hours * 3600:
-            return False
-    except OSError:
-        pass
-    try:
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(str(now), encoding="utf-8")
-    except OSError as exc:
-        logging.warning("Не удалось записать отметку уведомления OCR: %s", exc)
-    return True
-
-
-async def warm_up_ocr_and_notify(
-    ocr_importer,
-    broadcaster: Broadcaster,
-    engine_message: str,
-    marker_path: Path,
-    notice_interval_hours: float,
-) -> None:
-    """Греет модели распознавания и сообщает администраторам результат.
-
-    Прогрев идёт десятки секунд и потому вынесен в фон. Админу важно знать, что
-    фото уже можно присылать, и тем более важно узнать, если движок не поднялся.
-    """
-    started = monotonic()
-    log_memory("до прогрева OCR")
-    await ocr_importer.warm_up()
-    elapsed = f"{monotonic() - started:.0f}"
-    log_memory("после прогрева OCR")
-
-    if ocr_importer.is_warm:
-        logging.info("Распознавание с фото готово за %s с.", elapsed)
-        if should_notify_ocr_ready(marker_path, notice_interval_hours):
-            await broadcaster.notify_admins(
-                OCR_READY_HTML.format(engine=escape(engine_message), elapsed=elapsed),
-                OCR_READY_TEXT.format(engine=engine_message, elapsed=elapsed),
-            )
-        else:
-            logging.info("Уведомление о готовности OCR пропущено: недавно уже отправляли.")
-        return
-
-    reason = ocr_importer.last_error or "причина неизвестна"
-    logging.error("Распознавание с фото не поднялось: %s", reason)
-    await broadcaster.notify_admins(
-        OCR_FAILED_HTML.format(reason=escape(reason)),
-        OCR_FAILED_TEXT.format(reason=reason),
-    )
-
-
 async def main() -> None:
     settings = Settings.from_env()
     if not settings.rabbitmq_url:
@@ -258,9 +124,6 @@ async def main() -> None:
         logging.error("Neither TELEGRAM_BOT_TOKEN nor VK_BOT_TOKEN is set. Bot polling is disabled, background jobs keep running.")
 
     apply_migrations(settings.database_path)
-    restore_logging()
-    logging.info("Миграции применены, логирование восстановлено.")
-    log_memory("после старта")
     db = Database(settings.database_path)
     await db.initialize()
 
@@ -326,37 +189,8 @@ async def main() -> None:
     )
     jobs.start()
 
-    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog, alert_manager)
-    ocr_available, ocr_message = ocr_importer.availability()
-    if ocr_available:
-        logging.info("Импорт расписания из фото доступен (%s).", ocr_message)
-        # Модели грузятся десятки секунд. Без прогрева эта цена платится внутри
-        # первого запроса, и админ видит только "Распознаю..." и тишину.
-        if settings.ocr_warmup_on_start:
-            start_background_task(
-                "ocr-warmup",
-                warm_up_ocr_and_notify(
-                    ocr_importer,
-                    broadcaster,
-                    ocr_message,
-                    settings.database_path.parent / ".ocr_ready_notified",
-                    settings.ocr_ready_notice_hours,
-                ),
-            )
-        else:
-            logging.warning(
-                "Прогрев моделей OCR отключён (OCR_WARMUP_ON_START=false): "
-                "первое фото будет распознаваться дольше."
-            )
-    else:
-        logging.warning("Импорт расписания из фото недоступен: %s", ocr_message)
-        await broadcaster.notify_admins(
-            OCR_UNAVAILABLE_HTML.format(reason=escape(ocr_message)),
-            OCR_UNAVAILABLE_TEXT.format(reason=ocr_message),
-        )
-
-    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
-    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
+    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
+    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs)
 
     try:
         await broadcaster.start()
