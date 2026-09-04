@@ -58,10 +58,3 @@ Thumbs.db
 site.html
 schedule_data.json
 bot.db (3).zip
-
-# Локальное окружение для проверки OCR-движка
-.venv*/
-.ocr_boxes_cache.json
-
-# Фото для ручной проверки OCR (координаты зафиксированы в tests/test_ocr_real_photo.py)
-photo_*.jpg

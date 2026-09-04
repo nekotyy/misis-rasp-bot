@@ -19,9 +19,6 @@ services:
       LESSON_COUNTERS_QUEUE: ${LESSON_COUNTERS_QUEUE:-misis_lesson_counters}
     volumes:
       - ./runtime:/app/runtime
-    # EasyOCR с моделями занимает около 1.2-1.5 ГБ. Явный лимит нужен, чтобы
-    # нехватка памяти проявлялась понятным OOMKilled, а не молчаливым рестартом.
-    mem_limit: ${BOT_MEMORY_LIMIT:-2g}
 
   web:
     build: .

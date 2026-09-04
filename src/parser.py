@@ -28,30 +28,6 @@ MONTHS = {
 }
 
 
-def compute_snapshot_hash(snapshot: ScheduleSnapshot) -> str:
-    """Каноничный хеш снимка расписания.
-
-    Используется и парсером сайта, и импортом из фото (OCR), чтобы одинаковое
-    расписание из разных источников давало одинаковый хеш.
-    """
-    normalized_parts: list[str] = [snapshot.group_name]
-    for day in snapshot.days:
-        normalized_parts.append(day.date_iso)
-        for lesson in sorted(day.lessons, key=lambda item: item.number):
-            normalized_parts.append(
-                "|".join(
-                    [
-                        str(lesson.number),
-                        lesson.subject,
-                        lesson.teacher,
-                        lesson.classroom,
-                    ]
-                )
-            )
-    payload = "\n".join(normalized_parts).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 class ScheduleParser:
     def __init__(
         self,
@@ -153,7 +129,22 @@ class ScheduleParser:
         return ScheduleSnapshot(group_name=group_name, fetched_at=datetime.now(), days=days)
 
     def compute_hash(self, snapshot: ScheduleSnapshot) -> str:
-        return compute_snapshot_hash(snapshot)
+        normalized_parts: list[str] = [snapshot.group_name]
+        for day in snapshot.days:
+            normalized_parts.append(day.date_iso)
+            for lesson in sorted(day.lessons, key=lambda item: item.number):
+                normalized_parts.append(
+                    "|".join(
+                        [
+                            str(lesson.number),
+                            lesson.subject,
+                            lesson.teacher,
+                            lesson.classroom,
+                        ]
+                    )
+                )
+        payload = "\n".join(normalized_parts).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
 
     def _date_label_to_iso(self, label: str, now: datetime | None = None) -> str:
         parts = label.lower().replace(",", " ").split()

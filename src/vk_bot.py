@@ -24,14 +24,6 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
-from src.ocr_import import (
-    OCR_STAGE_UPLOAD,
-    OcrScheduleImporter,
-    build_ocr_importer,
-    format_ocr_preview,
-    format_progress_bar,
-)
-from src.ocr_schedule import OcrEngineError
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -63,8 +55,6 @@ from web_configurator.lesson_editor import (
 
 PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
-MAX_OCR_IMAGE_BYTES = 20 * 1024 * 1024
-VK_MESSAGE_LIMIT = 4096
 SEARCH_NOT_FOUND_TEXT = (
     "Ничего не найдено.\n\n"
     "Что я пробовал найти:\n"
@@ -76,33 +66,6 @@ SEARCH_NOT_FOUND_TEXT = (
 )
 
 logger = logging.getLogger(__name__)
-
-
-# Лимиты обычной (не inline) клавиатуры VK. Превышение любого из них — ошибка
-# API 911 "Keyboard format is invalid", то есть отвалившийся экран у пользователя.
-VK_KEYBOARD_MAX_ROWS = 10
-VK_KEYBOARD_MAX_BUTTONS_PER_ROW = 5
-VK_KEYBOARD_MAX_BUTTONS = 40
-
-
-def vk_admin_keyboard_rows() -> list[list[str]]:
-    """Раскладка админ-панели VK.
-
-    Вынесена на уровень модуля, чтобы тесты держали её в рамках лимитов VK:
-    лишний ряд роняет весь экран админки ошибкой 911.
-    """
-    return [
-        ["Статус", "Ошибки за день"],
-        ["Перепарсить", "Сохранить эталон"],
-        ["Последнее изменение", "Информация по группам"],
-        ["Скачать БД", "Скачать пары"],
-        ["Добавить пару", "Изменить пару"],
-        ["Импорт пар из JSON", "Расписание с фото"],
-        ["Удалить пару", "Удалить пары"],
-        ["Пользователи", "Разослать"],
-        ["Тестовая рассылка", "Очистить БД"],
-        ["Закрыть админку"],
-    ]
 
 
 def make_vk_keyboard(rows: list[list[str]]) -> str:
@@ -297,11 +260,7 @@ SATURDAY_BELLS_TEXT = "\n".join(
 )
 
 
-async def build_vk_admin_status_text(
-    db: Database,
-    settings: Settings | None = None,
-    ocr_importer=None,
-) -> str:
+async def build_vk_admin_status_text(db: Database, settings: Settings | None = None) -> str:
     users = await db.list_users()
     active_groups = await db.get_active_sources()
     active_group_count = sum(1 for item in active_groups if item.get("source_type") == "group")
@@ -393,7 +352,6 @@ async def build_vk_admin_status_text(
         "• VK Bot API: 🟢 Работает.",
         f"• База данных SQLite: 🟢 OK ({db_size_str}).",
         "• Фоновый планировщик: 🟢 Активен.",
-        "• " + (ocr_importer.status_line(html=False) if ocr_importer is not None else "Распознавание с фото: не настроено") + ".",
         f"• Ошибок за сегодня: {daily_errors_summary['total_errors']} (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
         "👥 Пользователи и источники:",
@@ -438,81 +396,6 @@ async def build_vk_admin_status_text(
     ])
 
 
-def format_vk_ocr_prompt(error: str = "") -> str:
-    lines = ["Импорт расписания с фото", ""]
-    if error:
-        lines.extend([error, ""])
-    lines.extend(
-        [
-            "Пришли фото или картинку-документ со страницей расписания.",
-            "",
-            "Чтобы распознавание сработало хорошо:",
-            "- в кадр должны попасть название группы и даты;",
-            "- снимай ровно, без наклона и бликов;",
-            "- лучше один день или неделя целиком, но крупно и в фокусе.",
-            "",
-            "После распознавания покажу, что получилось, и спрошу подтверждение — "
-            "ничего не сохранится и не разошлётся без него.",
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _best_vk_photo_url(photo) -> str:
-    sizes = getattr(photo, "sizes", None) or []
-    best_url = ""
-    best_area = -1
-    for size in sizes:
-        url = getattr(size, "url", "") or ""
-        area = (getattr(size, "width", 0) or 0) * (getattr(size, "height", 0) or 0)
-        if url and area > best_area:
-            best_area = area
-            best_url = url
-    return best_url
-
-
-def _has_image_attachment(message: Message) -> bool:
-    for attachment in getattr(message, "attachments", None) or []:
-        if getattr(attachment, "photo", None) is not None:
-            return True
-        doc = getattr(attachment, "doc", None)
-        if doc is not None and (getattr(doc, "ext", "") or "").lower() in {"jpg", "jpeg", "png", "bmp", "webp"}:
-            return True
-    return False
-
-
-async def download_vk_image(message: Message) -> tuple[bytes | None, str]:
-    """Достаёт изображение из вложений сообщения VK."""
-    url = ""
-    for attachment in getattr(message, "attachments", None) or []:
-        photo = getattr(attachment, "photo", None)
-        if photo is not None:
-            url = _best_vk_photo_url(photo)
-            if url:
-                break
-        doc = getattr(attachment, "doc", None)
-        if doc is not None and (getattr(doc, "ext", "") or "").lower() in {"jpg", "jpeg", "png", "bmp", "webp"}:
-            url = getattr(doc, "url", "") or ""
-            if url:
-                break
-
-    if not url:
-        return None, "Не вижу изображения. Пришли фото расписания."
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content = response.content
-    except httpx.HTTPError as exc:
-        logger.warning("Не удалось скачать изображение для OCR (VK): %s", exc)
-        return None, f"Не удалось скачать изображение: {exc}"
-
-    if len(content) > MAX_OCR_IMAGE_BYTES:
-        return None, "Файл слишком большой. Пришли фото поменьше (до 20 МБ)."
-    return content, ""
-
-
 def build_vk_bot(
     settings: Settings,
     db: Database,
@@ -521,7 +404,6 @@ def build_vk_bot(
     group_catalog: GroupCatalog | None = None,
     search_catalog: ScheduleSearchCatalog | None = None,
     schedule_jobs: Any | None = None,
-    ocr_importer: OcrScheduleImporter | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
@@ -545,11 +427,9 @@ def build_vk_bot(
     admin_lesson_delete_drafts: dict[int, dict[str, object]] = {}
     admin_lesson_delete_one_drafts: dict[int, dict[str, object]] = {}
     admin_import_lessons_drafts: dict[int, dict] = {}
-    admin_ocr_drafts: dict[int, Any] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
-    ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
 
     def make_keyboard(rows: list[list[str]]) -> str:
         keyboard = Keyboard(one_time=False, inline=False)
@@ -947,7 +827,20 @@ def build_vk_bot(
             last_pers_menu_message_id[peer_id] = msg_id
 
     def admin_keyboard() -> str:
-        return make_keyboard(vk_admin_keyboard_rows())
+        return make_keyboard(
+            [
+                ["Статус", "Ошибки за день"],
+                ["Перепарсить", "Сохранить эталон"],
+                ["Последнее изменение", "Информация по группам"],
+                ["Скачать БД", "Скачать пары"],
+                ["Добавить пару", "Изменить пару"],
+                ["Импорт пар из JSON"],
+                ["Удалить пару", "Удалить пары"],
+                ["Пользователи", "Разослать"],
+                ["Тестовая рассылка", "Очистить БД"],
+                ["Закрыть админку"],
+            ]
+        )
 
     def admin_back_keyboard() -> str:
         return make_keyboard([["Назад в меню"]])
@@ -1267,7 +1160,7 @@ def build_vk_bot(
         return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
     async def admin_status_text() -> str:
-        return await build_vk_admin_status_text(db, settings, ocr_service)
+        return await build_vk_admin_status_text(db, settings)
 
     async def show_main_menu(peer_id: int, user_id: int) -> None:
         peer_modes[peer_id] = "main_menu"
@@ -1898,117 +1791,6 @@ def build_vk_bot(
                 peer_id,
                 admin_broadcast_preview_text(draft.get("text", ""), target_audience=target_aud),
                 keyboard=admin_broadcast_preview_keyboard(target_aud),
-            )
-            return
-
-        # Админ прислал картинку в личку — значит, хочет импорт расписания.
-        # Кнопка в админке не обязательна: раньше без неё бот просто молчал.
-        if (
-            user_is_admin(user_id)
-            and peer_id < 2000000000
-            and mode not in {"admin_ocr_input", "admin_ocr_preview"}
-            and _has_image_attachment(message)
-        ):
-            available, availability_message = ocr_service.availability()
-            if not available:
-                await show_screen(peer_id, availability_message, keyboard=admin_keyboard())
-                return
-            admin_ocr_drafts.pop(peer_id, None)
-            peer_modes[peer_id] = "admin_ocr_input"
-            mode = "admin_ocr_input"
-
-        if user_is_admin(user_id) and mode in {"admin_ocr_input", "admin_ocr_preview"}:
-            if text == "Отменить":
-                admin_ocr_drafts.pop(peer_id, None)
-                peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
-                return
-
-            if mode == "admin_ocr_preview":
-                draft = admin_ocr_drafts.get(peer_id)
-                if text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
-                    if draft is None:
-                        peer_modes[peer_id] = "admin_ocr_input"
-                        await show_screen(
-                            peer_id,
-                            "Данные распознавания устарели. Пришли фото заново.",
-                            keyboard=make_keyboard([["Отменить"]]),
-                        )
-                        return
-                    applied, report = await ocr_service.apply(draft, notify=text == "Подтвердить и разослать")
-                    if applied:
-                        admin_ocr_drafts.pop(peer_id, None)
-                        peer_modes[peer_id] = "admin_menu"
-                        await show_screen(
-                            peer_id,
-                            f"Расписание с фото импортировано.\n\n{report}",
-                            keyboard=admin_keyboard(),
-                        )
-                        return
-                    await show_screen(
-                        peer_id,
-                        f"Импорт не выполнен.\n\n{report}",
-                        keyboard=make_keyboard([["Отменить"]]),
-                    )
-                    return
-
-            image_bytes, download_error = await download_vk_image(message)
-            if image_bytes is None:
-                await show_screen(
-                    peer_id,
-                    format_vk_ocr_prompt(download_error),
-                    keyboard=make_keyboard([["Отменить"]]),
-                )
-                return
-
-            await show_screen(peer_id, format_progress_bar(OCR_STAGE_UPLOAD, 10))
-
-            async def report_progress(stage: str, percent: int) -> None:
-                await show_screen(peer_id, format_progress_bar(stage, percent))
-
-            try:
-                draft = await asyncio.wait_for(
-                    ocr_service.build_draft(image_bytes, progress=report_progress),
-                    timeout=ocr_service.recognize_timeout,
-                )
-            except TimeoutError:
-                logger.warning("Распознавание фото не уложилось в %s с (VK).", ocr_service.recognize_timeout)
-                await show_screen(
-                    peer_id,
-                    format_vk_ocr_prompt(
-                        f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
-                        "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
-                    ),
-                    keyboard=make_keyboard([["Отменить"]]),
-                )
-                return
-            except OcrEngineError as exc:
-                await show_screen(
-                    peer_id,
-                    format_vk_ocr_prompt(f"Не удалось распознать фото: {exc}"),
-                    keyboard=make_keyboard([["Отменить"]]),
-                )
-                return
-            except Exception as exc:
-                logger.exception("Ошибка распознавания расписания с фото (VK).")
-                await show_screen(
-                    peer_id,
-                    format_vk_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
-                    keyboard=make_keyboard([["Отменить"]]),
-                )
-                return
-
-            admin_ocr_drafts[peer_id] = draft
-            peer_modes[peer_id] = "admin_ocr_preview"
-            keyboard = (
-                make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Отменить"]])
-                if draft.can_apply
-                else make_keyboard([["Отменить"]])
-            )
-            await show_screen(
-                peer_id,
-                format_ocr_preview(draft, html=False, max_length=VK_MESSAGE_LIMIT),
-                keyboard=keyboard,
             )
             return
 
@@ -2665,15 +2447,6 @@ def build_vk_bot(
                 return
             if text == "Скачать пары":
                 await send_admin_document(peer_id, settings.lesson_counters_path, "lesson_counters.json")
-                return
-            if text == "Расписание с фото":
-                available, availability_message = ocr_service.availability()
-                if not available:
-                    await show_screen(peer_id, availability_message, keyboard=admin_keyboard())
-                    return
-                admin_ocr_drafts.pop(peer_id, None)
-                peer_modes[peer_id] = "admin_ocr_input"
-                await show_screen(peer_id, format_vk_ocr_prompt(), keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Импорт пар из JSON":
                 admin_import_lessons_drafts.pop(peer_id, None)
