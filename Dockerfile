@@ -23,6 +23,7 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY src ./src
 COPY scripts ./scripts
+COPY storage ./storage
 COPY web_configurator ./web_configurator
 COPY README.md ./
 
