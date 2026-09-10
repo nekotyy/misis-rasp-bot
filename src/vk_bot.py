@@ -31,7 +31,7 @@ from src.ocr_import import (
     format_ocr_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import OcrEngineError
+from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -73,6 +73,11 @@ SEARCH_NOT_FOUND_TEXT = (
     "- кабинет, например: 101.\n\n"
     "Проверь раскладку, дефисы и пробелы.\n"
     "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
+)
+PENDING_GROUP_TEXT = (
+    "Группа «{name}» пока не подтверждена сайтом расписания — сайт сейчас недоступен и ещё не "
+    "показывал эту группу под своим номером. Как только сайт заработает, подписка станет доступна. "
+    "Расписание в это время может обновляться через фото, если админ его пришлёт."
 )
 
 logger = logging.getLogger(__name__)
@@ -481,29 +486,29 @@ def _has_image_attachment(message: Message) -> bool:
     return False
 
 
-async def download_vk_image(message: Message) -> tuple[bytes | None, str]:
-    """Достаёт изображение из вложений сообщения VK."""
-    url = ""
+def _collect_vk_image_urls(message: Message) -> list[str]:
+    """Все картинки во вложениях сообщения — в VK, в отличие от Telegram, альбом это одно сообщение с несколькими attachments."""
+    urls: list[str] = []
     for attachment in getattr(message, "attachments", None) or []:
         photo = getattr(attachment, "photo", None)
         if photo is not None:
             url = _best_vk_photo_url(photo)
             if url:
-                break
+                urls.append(url)
+                continue
         doc = getattr(attachment, "doc", None)
         if doc is not None and (getattr(doc, "ext", "") or "").lower() in {"jpg", "jpeg", "png", "bmp", "webp"}:
             url = getattr(doc, "url", "") or ""
             if url:
-                break
+                urls.append(url)
+    return urls
 
-    if not url:
-        return None, "Не вижу изображения. Пришли фото расписания."
 
+async def _download_vk_url(client: httpx.AsyncClient, url: str) -> tuple[bytes | None, str]:
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content = response.content
+        response = await client.get(url)
+        response.raise_for_status()
+        content = response.content
     except httpx.HTTPError as exc:
         logger.warning("Не удалось скачать изображение для OCR (VK): %s", exc)
         return None, f"Не удалось скачать изображение: {exc}"
@@ -511,6 +516,29 @@ async def download_vk_image(message: Message) -> tuple[bytes | None, str]:
     if len(content) > MAX_OCR_IMAGE_BYTES:
         return None, "Файл слишком большой. Пришли фото поменьше (до 20 МБ)."
     return content, ""
+
+
+async def download_vk_images(message: Message) -> tuple[list[bytes] | None, str]:
+    """Достаёт все изображения из вложений сообщения VK — там альбом это одно сообщение.
+
+    Если хоть одно вложение не скачалось — прерывает всё целиком: частичный
+    импорт хуже честной ошибки, админ должен понимать, что именно распозналось.
+    """
+    urls = _collect_vk_image_urls(message)
+    if not urls:
+        return None, "Не вижу изображения. Пришли фото расписания."
+    if len(urls) > MAX_OCR_IMAGES:
+        return None, f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."
+
+    images: list[bytes] = []
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for index, url in enumerate(urls, start=1):
+            image_bytes, error = await _download_vk_url(client, url)
+            if image_bytes is None:
+                prefix = f"Фото {index}/{len(urls)}: " if len(urls) > 1 else ""
+                return None, f"{prefix}{error}"
+            images.append(image_bytes)
+    return images, ""
 
 
 def build_vk_bot(
@@ -1158,10 +1186,7 @@ def build_vk_bot(
 
     async def sync_lesson_counters_from_file() -> None:
         try:
-            active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
             await active_catalog.ensure_loaded()
             counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
             await lesson_counter_service.sync_config(counters)
@@ -1356,15 +1381,19 @@ def build_vk_bot(
                 group = await group_catalog.find_group(text)
             except Exception as exc:
                 logger.warning("VK error finding group in GroupCatalog: %s", exc)
-                await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут.")
+                await prompt_group_selection(peer_id, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут.")
                 return False
 
-        if group is not None:
+        if group is not None and group.schedule_id is not None:
             await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
             await db.clear_user_audience_subscription("vk", user_id)
         else:
+            if group is not None:
+                await prompt_group_selection(peer_id, PENDING_GROUP_TEXT.format(name=group.group_name))
+                return False
+
             if group_catalog is not None and getattr(group_catalog, "last_error", None) is not None and not getattr(group_catalog, "_groups_by_name", {}):
-                await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут.")
+                await prompt_group_selection(peer_id, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает.")
                 return False
 
             if search_catalog is None:
@@ -1955,8 +1984,8 @@ def build_vk_bot(
                     )
                     return
 
-            image_bytes, download_error = await download_vk_image(message)
-            if image_bytes is None:
+            images, download_error = await download_vk_images(message)
+            if images is None:
                 await show_screen(
                     peer_id,
                     format_vk_ocr_prompt(download_error),
@@ -1964,14 +1993,15 @@ def build_vk_bot(
                 )
                 return
 
-            await show_screen(peer_id, format_progress_bar(OCR_STAGE_UPLOAD, 10))
+            upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
+            await show_screen(peer_id, format_progress_bar(upload_label, 10))
 
             async def report_progress(stage: str, percent: int) -> None:
                 await show_screen(peer_id, format_progress_bar(stage, percent))
 
             try:
                 draft = await asyncio.wait_for(
-                    ocr_service.build_draft(image_bytes, progress=report_progress),
+                    ocr_service.build_draft(images, progress=report_progress),
                     timeout=ocr_service.recognize_timeout,
                 )
             except TimeoutError:
@@ -2090,10 +2120,7 @@ def build_vk_bot(
             draft = admin_lesson_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -2174,10 +2201,7 @@ def build_vk_bot(
                     total=total,
                 )
 
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 normalized, problems = await validate_lesson_config(
                     payload,
@@ -2207,10 +2231,7 @@ def build_vk_bot(
             draft = admin_lesson_delete_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -2283,10 +2304,7 @@ def build_vk_bot(
             draft = admin_lesson_delete_one_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)

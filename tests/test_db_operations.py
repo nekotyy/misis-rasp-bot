@@ -108,6 +108,107 @@ class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):
         users = await self.db.list_users()
         self.assertEqual(users[0].subscription_key, "600")
 
+    async def test_get_all_groups_empty_before_first_sync(self) -> None:
+        self.assertEqual(await self.db.get_all_groups(), [])
+
+    async def test_save_and_read_groups(self) -> None:
+        await self.db.save_groups(
+            [
+                {
+                    "schedule_id": 600,
+                    "group_name": "ИСП-25-1",
+                    "department_id": 1,
+                    "department_code": "IT",
+                    "department_name": "ИТ",
+                    "url": "http://asu.sf-misis.ru/rasp/600",
+                }
+            ]
+        )
+
+        groups = await self.db.get_all_groups()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["group_name"], "ИСП-25-1")
+        self.assertEqual(groups[0]["schedule_id"], 600)
+
+    async def test_save_groups_replaces_previous_snapshot(self) -> None:
+        """Сайт отдаёт список целиком, поэтому старые группы, которых больше нет, должны исчезать."""
+        await self.db.save_groups(
+            [
+                {
+                    "schedule_id": 600,
+                    "group_name": "ИСП-25-1",
+                    "department_id": 1,
+                    "department_code": "IT",
+                    "department_name": "ИТ",
+                    "url": "http://asu.sf-misis.ru/rasp/600",
+                }
+            ]
+        )
+        await self.db.save_groups(
+            [
+                {
+                    "schedule_id": 601,
+                    "group_name": "ИСП-25-2",
+                    "department_id": 1,
+                    "department_code": "IT",
+                    "department_name": "ИТ",
+                    "url": "http://asu.sf-misis.ru/rasp/601",
+                }
+            ]
+        )
+
+        groups = await self.db.get_all_groups()
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["schedule_id"], 601)
+
+    async def test_add_pending_groups_have_no_schedule_id(self) -> None:
+        await self.db.add_pending_groups(["МТО-26", "МЧМ-26"])
+
+        groups = {g["group_name"]: g["schedule_id"] for g in await self.db.get_all_groups()}
+
+        self.assertEqual(groups, {"МТО-26": None, "МЧМ-26": None})
+
+    async def test_add_pending_groups_is_idempotent(self) -> None:
+        await self.db.add_pending_groups(["МТО-26"])
+        await self.db.add_pending_groups(["МТО-26", "МЧМ-26"])
+
+        groups = await self.db.get_all_groups()
+
+        self.assertEqual(len(groups), 2)
+
+    async def test_add_pending_groups_does_not_override_resolved_group(self) -> None:
+        """Если группа уже пришла с сайта с реальным ID, повторное добавление как pending её не портит."""
+        await self.db.save_groups(
+            [
+                {
+                    "schedule_id": 600,
+                    "group_name": "ИСП-25-1",
+                    "department_id": 1,
+                    "department_code": "IT",
+                    "department_name": "ИТ",
+                    "url": "http://asu.sf-misis.ru/rasp/600",
+                }
+            ]
+        )
+
+        await self.db.add_pending_groups(["ИСП-25-1"])
+
+        groups = await self.db.get_all_groups()
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["schedule_id"], 600)
+
+    async def test_add_pending_groups_ignores_blank_names(self) -> None:
+        await self.db.add_pending_groups(["", "   ", "МТО-26"])
+
+        groups = await self.db.get_all_groups()
+        self.assertEqual(len(groups), 1)
+
+    async def test_add_pending_groups_empty_list_is_noop(self) -> None:
+        await self.db.add_pending_groups([])
+        self.assertEqual(await self.db.get_all_groups(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

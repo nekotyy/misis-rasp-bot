@@ -264,10 +264,7 @@ async def main() -> None:
     db = Database(settings.database_path)
     await db.initialize()
 
-    group_catalog = GroupCatalog(
-        settings.schedule_url,
-        cache_path=settings.database_path.parent / "group_catalog_cache.json",
-    )
+    group_catalog = GroupCatalog(settings.schedule_url, db=db)
     await group_catalog.ensure_loaded()
     search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog)
     parser = ScheduleParser(settings.schedule_url)
@@ -326,6 +323,7 @@ async def main() -> None:
         database_path=settings.database_path,
         alert_manager=alert_manager,
         rabbitmq_url=settings.rabbitmq_url,
+        group_catalog=group_catalog,
     )
     jobs.start()
 

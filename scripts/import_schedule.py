@@ -116,10 +116,7 @@ async def run(payload: dict, *, notify: bool, dry_run: bool) -> int:
     db = Database(settings.database_path)
     await db.initialize()
 
-    group_catalog = GroupCatalog(
-        settings.schedule_url,
-        cache_path=settings.database_path.parent / "group_catalog_cache.json",
-    )
+    group_catalog = GroupCatalog(settings.schedule_url, db=db)
     parser = ScheduleParser(settings.schedule_url)
     broadcaster = Broadcaster(
         db=db,

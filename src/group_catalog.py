@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
+
+from src.db import Database
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class GroupInfo:
     department_code: str
     department_name: str
     group_name: str
-    schedule_id: int
+    schedule_id: int | None
     url: str
 
 
@@ -31,14 +31,14 @@ class GroupCatalog:
         timeout: float = 30.0,
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
-        cache_path: Path | str | None = None,
+        db: Database | None = None,
     ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
         self.timeout = timeout
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
-        self.cache_path = Path(cache_path) if cache_path else None
+        self.db = db
         self._lock = asyncio.Lock()
         self._loaded = False
         self.last_error: Exception | None = None
@@ -46,14 +46,23 @@ class GroupCatalog:
         self._groups_by_compact_name: dict[str, GroupInfo] = {}
         self._groups_by_schedule_id: dict[int, GroupInfo] = {}
 
+    def __len__(self) -> int:
+        return len(self._groups_by_name)
+
     async def ensure_loaded(self) -> None:
         if self._loaded and self._groups_by_name:
             return
         await self.refresh()
 
-    async def refresh(self) -> None:
+    async def refresh(self, *, force: bool = False) -> None:
+        """Обновляет каталог с сайта.
+
+        `force=True` заставляет заново сходить на сайт, даже если каталог уже
+        загружен — нужно для периодического обновления по расписанию, а не
+        только по факту первого обращения.
+        """
         async with self._lock:
-            if self._loaded and self._groups_by_name:
+            if not force and self._loaded and self._groups_by_name:
                 return
 
             try:
@@ -61,11 +70,17 @@ class GroupCatalog:
             except Exception as exc:
                 logger.exception("Не удалось загрузить список отделений с %s: %s", self.base_origin, exc)
                 self.last_error = exc
-                if self._load_from_disk_cache():
+                if await self._load_from_db():
                     logger.warning(
-                        "Сайт расписания недоступен, использую сохранённый на диске каталог групп (%s)."
+                        "Сайт расписания недоступен, использую сохранённый в БД каталог групп."
                         " Он может немного отставать от реального сайта.",
-                        self.cache_path,
+                    )
+                    self._loaded = True
+                    return
+                if await self._bootstrap_from_subscriptions():
+                    logger.warning(
+                        "Каталог групп в БД пуст, а сайт недоступен — восстановил его из уже существующих"
+                        " подписок пользователей. Неполно (нет групп без подписчиков), но лучше пустоты.",
                     )
                     self._loaded = True
                     return
@@ -81,8 +96,9 @@ class GroupCatalog:
                 self._compact_name_key(group.group_name): group for group in groups_by_schedule_id.values()
             }
             self._groups_by_schedule_id = groups_by_schedule_id
+            self.last_error = None
             self._loaded = True
-            self._save_to_disk_cache()
+            await self._save_to_db()
 
     async def _fetch_from_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo]]:
         """Загружает список групп с сайта. Бросает исключение, если недоступна даже стартовая страница."""
@@ -128,33 +144,70 @@ class GroupCatalog:
                     groups_by_schedule_id[group.schedule_id] = group
             return groups_by_name, groups_by_schedule_id
 
-    def _save_to_disk_cache(self) -> None:
-        """Сохраняет каталог на диск, чтобы пережить перезапуск бота при недоступном сайте."""
-        if self.cache_path is None:
+    async def _save_to_db(self) -> None:
+        """Сохраняет каталог в БД, чтобы пережить перезапуск бота при недоступном сайте."""
+        if self.db is None:
             return
         try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             payload = [asdict(group) for group in self._groups_by_schedule_id.values()]
-            self.cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        except OSError:
-            logger.warning("Не удалось сохранить каталог групп в %s.", self.cache_path, exc_info=True)
+            await self.db.save_groups(payload)
+        except Exception:
+            logger.warning("Не удалось сохранить каталог групп в БД.", exc_info=True)
 
-    def _load_from_disk_cache(self) -> bool:
-        """Восстанавливает каталог из последнего сохранённого на диске снимка."""
-        if self.cache_path is None or not self.cache_path.is_file():
+    async def _load_from_db(self) -> bool:
+        """Восстанавливает каталог из последнего сохранённого в БД снимка."""
+        if self.db is None:
             return False
         try:
-            payload = json.loads(self.cache_path.read_text(encoding="utf-8"))
-            groups = [GroupInfo(**item) for item in payload]
-        except (OSError, ValueError, TypeError):
-            logger.warning("Не удалось прочитать каталог групп из %s.", self.cache_path, exc_info=True)
+            rows = await self.db.get_all_groups()
+            groups = [GroupInfo(**row) for row in rows]
+        except Exception:
+            logger.warning("Не удалось прочитать каталог групп из БД.", exc_info=True)
             return False
+        if not groups:
+            return False
+
+        self._groups_by_schedule_id = {group.schedule_id: group for group in groups if group.schedule_id is not None}
+        self._groups_by_name = {self.normalize(group.group_name): group for group in groups}
+        self._groups_by_compact_name = {self._compact_name_key(group.group_name): group for group in groups}
+        return True
+
+    async def _bootstrap_from_subscriptions(self) -> bool:
+        """Крайний резерв: сайт недоступен, а в БД ещё ни разу не было настоящего снимка каталога.
+
+        Бывает при самом первом запуске после обновления. Вместо пустого
+        каталога достаём то, что уже знаем из подписок пользователей — их
+        schedule_id получен с того же сайта раньше, просто не через общий
+        каталог. Не покрывает группы без единого подписчика, зато не требует
+        сайта и переживёт следующий такой же простой (сохраняется в БД).
+        """
+        if self.db is None:
+            return False
+        try:
+            sources = await self.db.get_active_sources()
+        except Exception:
+            logger.warning("Не удалось прочитать подписки для восстановления каталога групп.", exc_info=True)
+            return False
+
+        groups = [
+            GroupInfo(
+                department_id=0,
+                department_code="",
+                department_name="",
+                group_name=str(source["group_name"]),
+                schedule_id=int(source["schedule_id"]),
+                url=f"{self.base_origin}/rasp/{source['schedule_id']}",
+            )
+            for source in sources
+            if source.get("source_type") == "group" and source.get("schedule_id") and source.get("group_name")
+        ]
         if not groups:
             return False
 
         self._groups_by_schedule_id = {group.schedule_id: group for group in groups}
         self._groups_by_name = {self.normalize(group.group_name): group for group in groups}
         self._groups_by_compact_name = {self._compact_name_key(group.group_name): group for group in groups}
+        await self._save_to_db()
         return True
 
     async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:

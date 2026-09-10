@@ -153,6 +153,20 @@ class Database:
                     details TEXT,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schedule_id INTEGER,
+                    group_name TEXT NOT NULL,
+                    department_id INTEGER NOT NULL DEFAULT 0,
+                    department_code TEXT NOT NULL DEFAULT '',
+                    department_name TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_group_name ON groups(group_name);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_schedule_id ON groups(schedule_id) WHERE schedule_id IS NOT NULL;
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -832,6 +846,82 @@ class Database:
             for row in rows
             if row[1] is not None and row[2]
         ]
+
+    async def save_groups(self, groups: list[dict]) -> None:
+        """Полностью заменяет каталог групп сайта.
+
+        Сайт отдаёт список целиком при каждой загрузке, поэтому проще снести
+        старый набор и вставить новый, чем разбираться с добавлением,
+        переименованием и исчезновением отдельных групп.
+        """
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM groups")
+            await db.executemany(
+                """
+                INSERT INTO groups
+                    (schedule_id, group_name, department_id, department_code, department_name, url, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        group["schedule_id"],
+                        group["group_name"],
+                        group["department_id"],
+                        group["department_code"],
+                        group["department_name"],
+                        group["url"],
+                        now,
+                    )
+                    for group in groups
+                ],
+            )
+            await db.commit()
+
+    async def get_all_groups(self) -> list[dict]:
+        """Список групп, сохранённый при последней успешной загрузке с сайта."""
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                cursor = await db.execute(
+                    "SELECT schedule_id, group_name, department_id, department_code, department_name, url FROM groups"
+                )
+            except aiosqlite.OperationalError:
+                return []
+            rows = await cursor.fetchall()
+        return [
+            {
+                "schedule_id": row[0],
+                "group_name": row[1],
+                "department_id": row[2],
+                "department_code": row[3],
+                "department_name": row[4],
+                "url": row[5],
+            }
+            for row in rows
+        ]
+
+    async def add_pending_groups(self, group_names: list[str]) -> None:
+        """Добавляет группы без schedule_id — например, увиденные на фото, а не на сайте.
+
+        В отличие от `save_groups`, ничего не удаляет: существующую запись
+        (с ID или без) не трогает, добавляет только новые имена. Как только
+        `save_groups` в следующий раз получит полный список с сайта, эти
+        временные записи заменятся настоящими — с реальным ID.
+        """
+        names = [name.strip() for name in group_names if name.strip()]
+        if not names:
+            return
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.executemany(
+                """
+                INSERT OR IGNORE INTO groups
+                    (schedule_id, group_name, department_id, department_code, department_name, url, updated_at)
+                VALUES (NULL, ?, 0, '', '', '', ?)
+                """,
+                [(name, now) for name in names],
+            )
+            await db.commit()
 
     async def save_snapshot(
         self,

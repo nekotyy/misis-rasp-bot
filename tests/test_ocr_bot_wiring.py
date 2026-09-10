@@ -9,7 +9,7 @@ from src.telegram_bot import (
     ADMIN_OCR_PREVIEW_KEYBOARD,
     format_admin_ocr_prompt,
 )
-from src.vk_bot import _best_vk_photo_url, format_vk_ocr_prompt
+from src.vk_bot import _best_vk_photo_url, _collect_vk_image_urls, format_vk_ocr_prompt
 
 
 class TelegramOcrKeyboardTests(unittest.TestCase):
@@ -54,6 +54,35 @@ class VkOcrHelpersTests(unittest.TestCase):
 
     def test_best_photo_url_without_sizes(self) -> None:
         self.assertEqual(_best_vk_photo_url(MagicMock(sizes=[])), "")
+
+    def test_collect_urls_from_several_photo_attachments(self) -> None:
+        """В VK альбом — это одно сообщение с несколькими attachments, а не несколько сообщений, как в Telegram."""
+        message = MagicMock()
+        message.attachments = [
+            MagicMock(photo=MagicMock(sizes=[MagicMock(url="a.jpg", width=100, height=100)]), doc=None),
+            MagicMock(photo=MagicMock(sizes=[MagicMock(url="b.jpg", width=200, height=200)]), doc=None),
+        ]
+        self.assertEqual(_collect_vk_image_urls(message), ["a.jpg", "b.jpg"])
+
+    def test_collect_urls_mixes_photos_and_image_documents(self) -> None:
+        message = MagicMock()
+        message.attachments = [
+            MagicMock(photo=MagicMock(sizes=[MagicMock(url="a.jpg", width=100, height=100)]), doc=None),
+            MagicMock(photo=None, doc=MagicMock(ext="png", url="b.png")),
+        ]
+        self.assertEqual(_collect_vk_image_urls(message), ["a.jpg", "b.png"])
+
+    def test_collect_urls_skips_non_image_documents(self) -> None:
+        message = MagicMock()
+        message.attachments = [
+            MagicMock(photo=None, doc=MagicMock(ext="pdf", url="c.pdf")),
+        ]
+        self.assertEqual(_collect_vk_image_urls(message), [])
+
+    def test_collect_urls_empty_without_attachments(self) -> None:
+        message = MagicMock()
+        message.attachments = []
+        self.assertEqual(_collect_vk_image_urls(message), [])
 
 
 if __name__ == "__main__":

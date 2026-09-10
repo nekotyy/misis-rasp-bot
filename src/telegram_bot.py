@@ -41,7 +41,7 @@ from src.ocr_import import (
     format_ocr_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import OcrEngineError
+from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -216,6 +216,10 @@ STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 TELEGRAM_MESSAGE_LIMIT = 4096
 MAX_OCR_IMAGE_BYTES = 20 * 1024 * 1024
+# Сколько ждать после первого фото альбома, прежде чем начать распознавание:
+# Telegram присылает части альбома отдельными сообщениями, обычно в течение
+# полусекунды одно за другим.
+ADMIN_OCR_ALBUM_WAIT_SECONDS = 1.5
 SEARCH_NOT_FOUND_TEXT = (
     "Ничего не найдено.\n\n"
     "Что я пробовал найти:\n"
@@ -224,6 +228,11 @@ SEARCH_NOT_FOUND_TEXT = (
     "- кабинет, например: 101.\n\n"
     "Проверь раскладку, дефисы и пробелы.\n"
     "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
+)
+PENDING_GROUP_TEXT = (
+    "Группа «{name}» пока не подтверждена сайтом расписания — сайт сейчас недоступен и ещё не "
+    "показывал эту группу под своим номером. Как только сайт заработает, подписка станет доступна. "
+    "Расписание в это время может обновляться через фото, если админ его пришлёт."
 )
 
 
@@ -531,13 +540,16 @@ async def resolve_subscription_input(
             group = await g_cat.find_group(raw_text)
         except Exception as exc:
             logger.warning("Error finding group in GroupCatalog: %s", exc)
-            return None, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут."
+            return None, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут."
 
-    if group is not None:
+    if group is not None and group.schedule_id is not None:
         return make_group_subscription(group.group_name, group.schedule_id), None
 
+    if group is not None:
+        return None, PENDING_GROUP_TEXT.format(name=group.group_name)
+
     if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
-        return None, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут."
+        return None, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает."
 
     if s_cat is not None:
         try:
@@ -870,6 +882,7 @@ def build_dispatcher(
     admin_import_lessons_drafts: dict[int, dict] = {}
     awaiting_admin_ocr_photo: set[int] = set()
     admin_ocr_drafts: dict[int, Any] = {}
+    admin_ocr_album_buffers: dict[str, list[Message]] = {}
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
     message_rate_limit: dict[int, float] = {}
@@ -983,13 +996,16 @@ def build_dispatcher(
                 group = await g_cat.find_group(raw_text)
             except Exception as exc:
                 logger.warning("Error finding group in GroupCatalog: %s", exc)
-                return None, "Сайт расписания колледжа сейчас недоступен (ошибка подключения к серверу). Попробуйте еще раз через несколько минут."
+                return None, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут."
 
-        if group is not None:
+        if group is not None and group.schedule_id is not None:
             return make_group_subscription(group.group_name, group.schedule_id), None
 
+        if group is not None:
+            return None, PENDING_GROUP_TEXT.format(name=group.group_name)
+
         if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
-            return None, "Сайт расписания колледжа сейчас недоступен. Не удалось загрузить данные с официального сайта. Попробуйте еще раз через несколько минут."
+            return None, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает."
 
         if s_cat is not None:
             try:
@@ -1369,10 +1385,7 @@ def build_dispatcher(
 
     async def sync_lesson_counters_from_file() -> None:
         try:
-            active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
             await active_catalog.ensure_loaded()
             counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
             await lesson_counter_service.sync_config(counters)
@@ -3509,10 +3522,7 @@ def build_dispatcher(
                 total=total,
             )
 
-            active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
             await active_catalog.ensure_loaded()
             normalized, problems = await validate_lesson_config(
                 payload,
@@ -3792,54 +3802,92 @@ def build_dispatcher(
         # Кнопка в админке не обязательна: админ прислал фото в личку — значит,
         # хочет импортировать расписание. Раньше без кнопки бот молчал.
         awaiting_admin_ocr_photo.add(message.from_user.id)
+
+        media_group_id = message.media_group_id
+        if media_group_id is None:
+            await run_admin_ocr_import_safely([message])
+            return
+
+        # Альбом Telegram приходит несколькими отдельными сообщениями с общим
+        # media_group_id. Копим их и запускаем распознавание один раз, спустя
+        # небольшую паузу после первого сообщения — остальные части долетают
+        # за доли секунды.
+        buffer = admin_ocr_album_buffers.setdefault(media_group_id, [])
+        buffer.append(message)
+        if len(buffer) == 1:
+            asyncio.create_task(finalize_admin_ocr_album(media_group_id))
+
+    async def finalize_admin_ocr_album(media_group_id: str) -> None:
+        await asyncio.sleep(ADMIN_OCR_ALBUM_WAIT_SECONDS)
+        messages = admin_ocr_album_buffers.pop(media_group_id, [])
+        if not messages:
+            return
+        await run_admin_ocr_import_safely(messages)
+
+    async def run_admin_ocr_import_safely(messages: list[Message]) -> None:
+        first = messages[0]
         try:
-            await run_admin_ocr_import(message)
+            await run_admin_ocr_import(messages)
         except Exception as exc:
             logger.exception("Импорт расписания с фото упал.")
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
 
-    async def run_admin_ocr_import(message: Message) -> None:
-        await wait_message_rate_limit(message.from_user.id)
+    async def run_admin_ocr_import(messages: list[Message]) -> None:
+        first = messages[0]
+        if first.from_user is None:
+            return
+        await wait_message_rate_limit(first.from_user.id)
 
         available, availability_message = ocr_service.availability()
         if not available:
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(availability_message),
             )
             return
 
-        image_bytes, download_error = await download_admin_image(message)
-        if image_bytes is None:
+        if len(messages) > MAX_OCR_IMAGES:
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_prompt(f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."),
+                reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
+            )
+            return
+
+        images, download_error = await download_admin_images(messages)
+        if images is None:
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(download_error),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
             return
 
+        upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
         progress_message = await safe_send_message(
-            message.bot,
-            message.chat.id,
-            format_progress_bar(OCR_STAGE_UPLOAD, 10),
+            first.bot,
+            first.chat.id,
+            format_progress_bar(upload_label, 10),
         )
 
         async def report_progress(stage: str, percent: int) -> None:
             if progress_message is None:
                 return
             try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
+                await first.bot.edit_message_text(
+                    chat_id=first.chat.id,
                     message_id=progress_message.message_id,
                     text=format_progress_bar(stage, percent),
                 )
@@ -3849,26 +3897,26 @@ def build_dispatcher(
 
         try:
             draft = await asyncio.wait_for(
-                ocr_service.build_draft(image_bytes, progress=report_progress),
+                ocr_service.build_draft(images, progress=report_progress),
                 timeout=ocr_service.recognize_timeout,
             )
         except TimeoutError:
             logger.warning("Распознавание фото не уложилось в %s с.", ocr_service.recognize_timeout)
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(
                     f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
-                    "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
+                    "Пришли фото поменьше/по одному или увеличь OCR_TIMEOUT_SECONDS."
                 ),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
             )
             return
         except OcrEngineError as exc:
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(f"Не удалось распознать фото: {exc}"),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
@@ -3877,8 +3925,8 @@ def build_dispatcher(
         except Exception as exc:
             logger.exception("Ошибка распознавания расписания с фото.")
             await send_new_context_message(
-                message.bot,
-                message.chat.id,
+                first.bot,
+                first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
                 reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
@@ -3886,13 +3934,13 @@ def build_dispatcher(
             return
 
         if progress_message is not None:
-            await safe_delete_message(message.bot, message.chat.id, progress_message.message_id)
+            await safe_delete_message(first.bot, first.chat.id, progress_message.message_id)
 
-        admin_ocr_drafts[message.from_user.id] = draft
+        admin_ocr_drafts[first.from_user.id] = draft
         preview = format_ocr_preview(draft, html=True, max_length=TELEGRAM_MESSAGE_LIMIT)
         await send_new_context_message(
-            message.bot,
-            message.chat.id,
+            first.bot,
+            first.chat.id,
             "admin_ocr",
             preview,
             reply_markup=ADMIN_OCR_PREVIEW_KEYBOARD if draft.can_apply else ADMIN_OCR_INPUT_KEYBOARD,
@@ -3919,6 +3967,21 @@ def build_dispatcher(
         except (TelegramBadRequest, TelegramNetworkError, OSError) as exc:
             logger.warning("Не удалось скачать изображение для OCR: %s", exc)
             return None, f"Не удалось скачать изображение: {exc}"
+
+    async def download_admin_images(messages: list[Message]) -> tuple[list[bytes] | None, str]:
+        """Скачивает все фото альбома. Если хоть одно не скачалось — прерывает всё целиком.
+
+        Частичный импорт хуже честной ошибки: админ должен понимать, что именно
+        распозналось, а не гадать, какого фото не хватает в результате.
+        """
+        images: list[bytes] = []
+        for index, message in enumerate(messages, start=1):
+            image_bytes, error = await download_admin_image(message)
+            if image_bytes is None:
+                prefix = f"Фото {index}/{len(messages)}: " if len(messages) > 1 else ""
+                return None, f"{prefix}{error}"
+            images.append(image_bytes)
+        return images, ""
 
     @dispatcher.message(F.text)
     async def handle_text_message(message: Message) -> None:
@@ -4010,10 +4073,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4132,10 +4192,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4181,10 +4238,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(
-                settings.schedule_url,
-                cache_path=settings.database_path.parent / "group_catalog_cache.json",
-            )
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)

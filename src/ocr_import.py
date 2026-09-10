@@ -176,13 +176,19 @@ class OcrScheduleImporter:
             return f"{mark} <b>{title}</b>: {escape(state)}"
         return f"{mark} {title}: {state}"
 
-    async def build_draft(self, image_bytes: bytes, progress=None) -> OcrImportDraft:
-        """Распознаёт фото и готовит черновик к подтверждению.
+    async def build_draft(self, images: list[bytes], progress=None) -> OcrImportDraft:
+        """Распознаёт одно или несколько фото сразу и готовит черновик к подтверждению.
+
+        Несколько фото — например, части одной таблицы или разные недели —
+        уходят в Gemini одним запросом, чтобы модель сама свела их в общий снимок
+        расписания, а не мы потом склеивали куски руками.
 
         `progress` — необязательная корутина `(stage, percent)`. Вызывается между
         этапами, чтобы админ видел ход работы: распознавание идёт десятки секунд,
         и без индикатора непонятно, живо оно или зависло.
         """
+        if not images:
+            raise OcrEngineError("Нет ни одного изображения для распознавания.")
         available, message = self.availability()
         if not available:
             raise OcrEngineError(message)
@@ -212,7 +218,7 @@ class OcrScheduleImporter:
 
         ticker = asyncio.create_task(heartbeat())
         try:
-            raw_text = await self.parser.recognize_image(image_bytes)
+            raw_text = await self.parser.recognize_image(images)
         except Exception as exc:
             self.last_error = str(exc)
             await self._report(False, str(exc), "Ошибка распознавания фото")
@@ -341,10 +347,18 @@ class OcrScheduleImporter:
                 logger.warning("Каталог групп недоступен при импорте из фото: %s", exc)
                 group = None
             if group is not None:
+                # Пока сайт не подтвердил номер группы, schedule_id может быть None:
+                # ключ строим по названию, иначе все такие группы схлопнутся в один
+                # источник и будут затирать снимки друг друга.
+                source_key = (
+                    f"group:{group.schedule_id}"
+                    if group.schedule_id is not None
+                    else f"group-pending:{GroupCatalog.normalize(group.group_name)}"
+                )
                 return (
                     {
                         "source_type": "group",
-                        "source_key": f"group:{group.schedule_id}",
+                        "source_key": source_key,
                         "source_title": group.group_name,
                         "source_url": group.url,
                         "schedule_id": group.schedule_id,

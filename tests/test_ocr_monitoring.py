@@ -68,7 +68,7 @@ class FakeEngine:
         if self._warm_error:
             raise RuntimeError(self._warm_error)
 
-    async def recognize(self, image_bytes: bytes) -> str:
+    async def recognize(self, images: list[bytes]) -> str:
         if self._recognize_error:
             raise OcrEngineError(self._recognize_error)
         return RECOGNIZED_TEXT
@@ -204,7 +204,7 @@ class ProgressReportingTests(unittest.IsolatedAsyncioTestCase):
         async def progress(stage: str, percent: int) -> None:
             seen.append((stage, percent))
 
-        await importer.build_draft(b"image", progress=progress)
+        await importer.build_draft([b"image"], progress=progress)
 
         stages = [stage for stage, _ in seen]
         self.assertIn(OCR_STAGE_RECOGNIZE, stages)
@@ -219,12 +219,12 @@ class ProgressReportingTests(unittest.IsolatedAsyncioTestCase):
         async def progress(stage: str, percent: int) -> None:
             raise RuntimeError("телеграм отвалился")
 
-        draft = await importer.build_draft(b"image", progress=progress)
+        draft = await importer.build_draft([b"image"], progress=progress)
 
         self.assertTrue(draft.can_apply)
 
     async def test_build_draft_without_progress_callback(self) -> None:
-        draft = await make_importer().build_draft(b"image")
+        draft = await make_importer().build_draft([b"image"])
         self.assertTrue(draft.can_apply)
 
 
@@ -234,7 +234,7 @@ class FailureReportingTests(unittest.IsolatedAsyncioTestCase):
         importer = make_importer(engine=FakeEngine(recognize_error="движок умер"), alerts=alerts)
 
         with self.assertRaises(OcrEngineError):
-            await importer.build_draft(b"image")
+            await importer.build_draft([b"image"])
 
         self.assertIn("движок умер", importer.last_error)
         self.assertFalse(alerts.report_component_status.await_args.args[1])
@@ -244,7 +244,7 @@ class FailureReportingTests(unittest.IsolatedAsyncioTestCase):
         importer = make_importer(alerts=alerts)
         importer.last_error = "старая ошибка"
 
-        await importer.build_draft(b"image")
+        await importer.build_draft([b"image"])
 
         self.assertEqual(importer.last_error, "")
         self.assertTrue(importer.last_success_at)
@@ -304,7 +304,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         ocr_import.HEARTBEAT_INTERVAL_SECONDS = 0.01
 
         class SlowEngine(FakeEngine):
-            async def recognize(self, image_bytes: bytes) -> str:
+            async def recognize(self, images: list[bytes]) -> str:
                 await asyncio.sleep(0.12)
                 return RECOGNIZED_TEXT
 
@@ -315,7 +315,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
             async def progress(stage: str, percent: int) -> None:
                 seen.append(stage)
 
-            await importer.build_draft(b"image", progress=progress)
+            await importer.build_draft([b"image"], progress=progress)
         finally:
             ocr_import.HEARTBEAT_INTERVAL_SECONDS = original
 
@@ -330,7 +330,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         async def progress(stage: str, percent: int) -> None:
             seen.append(stage)
 
-        await importer.build_draft(b"image", progress=progress)
+        await importer.build_draft([b"image"], progress=progress)
         before = len(seen)
         await asyncio.sleep(0.05)
 
@@ -389,12 +389,61 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
             engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
-            await engine.recognize(b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+            await engine.recognize([b"\xff\xd8\xff\xe0fake-jpeg-bytes"])
 
         self.assertIsInstance(captured["path"], str)
         self.assertTrue(str(captured["path"]).endswith(".jpg"))
         self.assertEqual(captured["content"], b"\xff\xd8\xff\xe0fake-jpeg-bytes")
         self.assertFalse(os.path.exists(str(captured["path"])), "Временный файл должен удаляться после запроса")
+
+    async def test_recognize_uploads_several_photos_in_one_request(self) -> None:
+        """Несколько фото (например, части одной таблицы) уходят в Gemini одним запросом."""
+        import os
+        from unittest.mock import patch
+
+        from src.ocr_schedule import GeminiOcrEngine
+
+        captured: dict[str, object] = {}
+
+        class FakeGeminiClient:
+            async def init(self, **kwargs) -> None:
+                return None
+
+            async def generate_content(self, prompt, files=None, model=None):
+                captured["paths"] = list(files)
+                contents = []
+                for path in files:
+                    with open(path, "rb") as opened:
+                        contents.append(opened.read())
+                captured["contents"] = contents
+                return MagicMock(text='{"group_name": "", "days": []}')
+
+        images = [b"\xff\xd8\xff\xe0first", b"\x89PNG\r\n\x1a\nsecond"]
+        with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            await engine.recognize(images)
+
+        paths = captured["paths"]
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(paths[0].endswith(".jpg"))
+        self.assertTrue(paths[1].endswith(".png"))
+        self.assertEqual(captured["contents"], images)
+        for path in paths:
+            self.assertFalse(os.path.exists(path), "Временные файлы должны удаляться после запроса")
+
+    async def test_recognize_rejects_empty_image_list(self) -> None:
+        from src.ocr_schedule import GeminiOcrEngine
+
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+        with self.assertRaises(OcrEngineError):
+            await engine.recognize([])
+
+    async def test_recognize_rejects_too_many_images(self) -> None:
+        from src.ocr_schedule import MAX_OCR_IMAGES, GeminiOcrEngine
+
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+        with self.assertRaises(OcrEngineError):
+            await engine.recognize([b"x"] * (MAX_OCR_IMAGES + 1))
 
 
 class EngineFactoryTests(unittest.TestCase):

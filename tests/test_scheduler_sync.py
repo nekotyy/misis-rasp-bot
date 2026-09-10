@@ -128,6 +128,7 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         jobs.count_today_lessons = AsyncMock()
         jobs.enqueue_or_run_auto_daily_lesson_counter = AsyncMock()
         jobs.enqueue_or_run_db_cleanup = AsyncMock()
+        jobs.group_catalog = None
 
         jobs.configure()
 
