@@ -110,6 +110,42 @@ RECOGNITION_PROMPT = """\
 
 MAX_OCR_IMAGES = 10
 
+SUMMARY_RECOGNITION_PROMPT = """\
+На одной или нескольких приложенных фотографиях — сводное расписание занятий \
+на ОДИН день сразу для НЕСКОЛЬКИХ учебных групп (таблица со столбцами \
+Группа, № пары, Дисциплина, Преподаватель, Аудитория; часто разбита на \
+разделы по курсам). Это не расписание одной группы на несколько дней — \
+все строки относятся к одной и той же дате. Извлеки данные со всех фото \
+сразу и верни ТОЛЬКО JSON без markdown-разметки и без пояснений, строго \
+такой структуры:
+
+{
+  "date_iso": "2026-09-07",
+  "groups": [
+    {
+      "group_name": "МТО-26",
+      "lessons": [
+        {"number": 1, "subject": "название дисциплины", "teacher": "ФИО преподавателя", "classroom": "номер аудитории"}
+      ]
+    }
+  ]
+}
+
+Правила:
+- Дату бери из заголовка листа, переводи в формат ISO YYYY-MM-DD. Дата одна на весь документ.
+- Название группы в таблице печатается один раз и относится ко всем строкам \
+пар под ним, до следующего названия группы — не путай пары соседних групп.
+- Включай в "groups" каждую группу, у которой в таблице есть свой блок, даже \
+если строк с парами под ней нет (пустой список lessons).
+- Каждая группа должна встретиться в ответе только один раз — со всеми её \
+парами за этот день.
+- Номер пары бери из колонки "№": у разных групп день может начинаться не с \
+первой пары, не нумеруй по порядку строки, если номер написан явно.
+- Не придумывай данные, которых нет на фото. Если поле не читается или его \
+нет, оставляй пустую строку у этого поля, но не пропускай всю пару.
+- Верни только JSON, без ```json и без комментариев до или после него.
+"""
+
 
 class OcrEngineError(RuntimeError):
     """Движок распознавания недоступен или вернул ошибку."""
@@ -162,6 +198,42 @@ class OcrParseResult:
 
     def snapshot_hash(self) -> str:
         return compute_snapshot_hash(self.snapshot)
+
+
+@dataclass(slots=True)
+class OcrGroupLessons:
+    """Одна группа со сводного листа: её пары за один общий для всех групп день."""
+
+    group_name: str
+    lessons: list[Lesson] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class OcrSummaryParseResult:
+    """Результат разбора сводного расписания — один день сразу на много групп."""
+
+    date_iso: str
+    date_label: str
+    groups: list[OcrGroupLessons] = field(default_factory=list)
+    issues: list[OcrIssue] = field(default_factory=list)
+    skipped_lines: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+
+    @property
+    def errors(self) -> list[OcrIssue]:
+        return [issue for issue in self.issues if issue.level == "error"]
+
+    @property
+    def warnings(self) -> list[OcrIssue]:
+        return [issue for issue in self.issues if issue.level == "warning"]
+
+    @property
+    def lessons_count(self) -> int:
+        return sum(len(group.lessons) for group in self.groups)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.errors and bool(self.groups)
 
 
 @dataclass(slots=True)
@@ -410,7 +482,7 @@ class GeminiOcrEngine:
         """Заранее устанавливает сессию, чтобы первое фото не ждало авторизации."""
         await self._ensure_client()
 
-    async def recognize(self, images: list[bytes]) -> str:
+    async def recognize(self, images: list[bytes], *, prompt: str | None = None) -> str:
         if not images:
             raise OcrEngineError("Пустое изображение.")
         if any(not image for image in images):
@@ -432,7 +504,7 @@ class GeminiOcrEngine:
                 tmp_paths.append(tmp_path)
             try:
                 response = await client.generate_content(
-                    RECOGNITION_PROMPT,
+                    prompt or RECOGNITION_PROMPT,
                     files=list(tmp_paths),
                     model=self.model or None,
                 )
@@ -594,6 +666,146 @@ class OcrScheduleParser:
             group_name_raw=group_name,
             issues=issues,
             corrections=corrections,
+            skipped_lines=skipped_lines,
+            confidence=confidence,
+        )
+
+    async def recognize_summary_image(self, images: list[bytes]) -> str:
+        if self.engine is None:
+            raise OcrEngineError("Движок распознавания не настроен.")
+        return await self.engine.recognize(images, prompt=SUMMARY_RECOGNITION_PROMPT)
+
+    async def parse_summary_image(
+        self,
+        images: list[bytes],
+        *,
+        now: datetime | None = None,
+    ) -> OcrSummaryParseResult:
+        text = await self.recognize_summary_image(images)
+        return self.parse_summary_text(text, now=now)
+
+    def parse_summary_text(
+        self,
+        text: str,
+        *,
+        now: datetime | None = None,
+    ) -> OcrSummaryParseResult:
+        """Разбор сводного расписания: один общий день, много групп.
+
+        В отличие от `parse_text`, здесь нет сверки со словарём известных
+        значений — она потребовала бы отдельного запроса в БД на каждую из
+        десятков групп на листе. Проверяются только структурные вещи:
+        непустая дисциплина, уникальность номеров пар внутри группы, дата.
+        """
+        reference_now = now or datetime.now()
+        issues: list[OcrIssue] = []
+        skipped_lines: list[str] = []
+        lesson_scores: list[float] = []
+
+        try:
+            data = json.loads(_extract_json_payload(text or ""))
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            issues.append(OcrIssue("error", "Не удалось разобрать ответ распознавания — это не похоже на JSON."))
+            preview = (text or "").strip()
+            if preview:
+                skipped_lines.append(preview[:RAW_PREVIEW_LENGTH])
+            return OcrSummaryParseResult(date_iso="", date_label="", issues=issues, skipped_lines=skipped_lines)
+
+        normalized_date = _normalize_date_iso(data.get("date_iso"), reference_now)
+        if normalized_date is None:
+            issues.append(OcrIssue("error", f"Не удалось разобрать дату «{data.get('date_iso')}»."))
+            date_iso, date_label = "", ""
+        else:
+            date_iso, date_label = normalized_date
+
+        raw_groups = data.get("groups")
+        groups: list[OcrGroupLessons] = []
+        seen_names: set[str] = set()
+
+        for raw_group in raw_groups if isinstance(raw_groups, list) else []:
+            if not isinstance(raw_group, dict):
+                skipped_lines.append(str(raw_group))
+                continue
+            group_name = str(raw_group.get("group_name") or "").strip()
+            if not group_name:
+                skipped_lines.append("группа без названия")
+                continue
+            dedup_key = group_name.casefold()
+            if dedup_key in seen_names:
+                issues.append(
+                    OcrIssue("warning", f"Группа «{group_name}» встречается в ответе несколько раз — оставлен первый блок.")
+                )
+                continue
+            seen_names.add(dedup_key)
+
+            lessons: list[Lesson] = []
+            seen_numbers: set[int] = set()
+            raw_lessons = raw_group.get("lessons")
+            for position, raw_lesson in enumerate(raw_lessons if isinstance(raw_lessons, list) else [], start=1):
+                if not isinstance(raw_lesson, dict):
+                    skipped_lines.append(f"{group_name}: {raw_lesson!r}")
+                    continue
+                number = _coerce_lesson_number(raw_lesson.get("number"), position)
+                subject = str(raw_lesson.get("subject") or "").strip()
+                teacher = str(raw_lesson.get("teacher") or "").strip()
+                classroom = str(raw_lesson.get("classroom") or "").strip()
+
+                if not subject:
+                    issues.append(
+                        OcrIssue("warning", f"{group_name}, пара {number}: пустая дисциплина — строка пропущена.")
+                    )
+                    skipped_lines.append(f"{group_name} пара {number}: без дисциплины")
+                    continue
+                if number in seen_numbers:
+                    issues.append(
+                        OcrIssue("warning", f"{group_name}: пара {number} встретилась дважды — оставлен первый вариант.")
+                    )
+                    continue
+                seen_numbers.add(number)
+
+                score_parts = [1.0]
+                if len(subject) < MIN_SUBJECT_LENGTH:
+                    issues.append(
+                        OcrIssue("warning", f"{group_name}, пара {number}: слишком короткое название дисциплины «{subject}».")
+                    )
+                    score_parts.append(0.3)
+                if not teacher:
+                    score_parts.append(0.5)
+                if not classroom:
+                    score_parts.append(0.6)
+                elif not _looks_like_classroom(classroom):
+                    score_parts.append(0.5)
+
+                lessons.append(Lesson(number=number, subject=subject, teacher=teacher, classroom=classroom))
+                lesson_scores.append(sum(score_parts) / len(score_parts))
+
+            lessons.sort(key=lambda lesson: lesson.number)
+            groups.append(OcrGroupLessons(group_name=group_name, lessons=lessons))
+
+        confidence = self._overall_confidence(lesson_scores, skipped_lines, issues)
+
+        if not groups:
+            issues.append(OcrIssue("error", "На фото не найдено ни одной группы. Проверь, что таблица видна целиком."))
+        elif not any(group.lessons for group in groups):
+            issues.append(OcrIssue("error", "Группы распознаны, но ни одной пары прочитать не удалось."))
+        if not date_iso and groups:
+            issues.append(OcrIssue("error", "Не удалось прочитать дату сводного расписания."))
+
+        if confidence < self.min_confidence and any(group.lessons for group in groups):
+            issues.append(
+                OcrIssue(
+                    "warning",
+                    f"Низкая уверенность распознавания ({confidence:.0%}). Внимательно проверь текст перед подтверждением.",
+                )
+            )
+
+        return OcrSummaryParseResult(
+            date_iso=date_iso,
+            date_label=date_label,
+            groups=sorted(groups, key=lambda group: group.group_name),
+            issues=issues,
             skipped_lines=skipped_lines,
             confidence=confidence,
         )

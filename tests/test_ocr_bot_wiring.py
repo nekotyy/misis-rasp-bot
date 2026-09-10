@@ -7,9 +7,17 @@ from src.telegram_bot import (
     ADMIN_KEYBOARD,
     ADMIN_OCR_INPUT_KEYBOARD,
     ADMIN_OCR_PREVIEW_KEYBOARD,
+    ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+    ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD,
     format_admin_ocr_prompt,
+    format_admin_ocr_summary_prompt,
 )
-from src.vk_bot import _best_vk_photo_url, _collect_vk_image_urls, format_vk_ocr_prompt
+from src.vk_bot import (
+    _best_vk_photo_url,
+    _collect_vk_image_urls,
+    format_vk_ocr_prompt,
+    format_vk_ocr_summary_prompt,
+)
 
 
 class TelegramOcrKeyboardTests(unittest.TestCase):
@@ -36,11 +44,47 @@ class TelegramOcrKeyboardTests(unittest.TestCase):
         self.assertIn("Файл слишком большой", format_admin_ocr_prompt("Файл слишком большой"))
 
 
+class TelegramOcrSummaryKeyboardTests(unittest.TestCase):
+    """Сводный режим (один день, много групп) — отдельная ветка от обычного OCR-импорта."""
+
+    def test_admin_keyboard_has_summary_ocr_button(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        self.assertIn("admin:ocr_summary_import", callbacks)
+
+    def test_input_keyboard_can_cancel(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_OCR_SUMMARY_INPUT_KEYBOARD.inline_keyboard for button in row]
+        self.assertEqual(callbacks, ["admin:ocr_summary_cancel"])
+
+    def test_preview_keyboard_offers_both_apply_modes(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD.inline_keyboard for button in row]
+        self.assertEqual(
+            callbacks, ["admin:ocr_summary_confirm", "admin:ocr_summary_confirm_silent", "admin:ocr_summary_cancel"]
+        )
+
+    def test_summary_callbacks_are_distinct_from_single_group_ones(self) -> None:
+        single = {button.callback_data for row in ADMIN_OCR_PREVIEW_KEYBOARD.inline_keyboard for button in row}
+        summary = {button.callback_data for row in ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD.inline_keyboard for button in row}
+        self.assertEqual(single & summary, set())
+
+    def test_prompt_explains_the_difference_from_single_group_mode(self) -> None:
+        prompt = format_admin_ocr_summary_prompt()
+        self.assertIn("нескольких групп", prompt)
+        self.assertIn("Расписание с фото", prompt)
+
+    def test_prompt_shows_error(self) -> None:
+        self.assertIn("Файл слишком большой", format_admin_ocr_summary_prompt("Файл слишком большой"))
+
+
 class VkOcrHelpersTests(unittest.TestCase):
     def test_prompt_is_plain_text(self) -> None:
         prompt = format_vk_ocr_prompt()
         self.assertNotIn("<b>", prompt)
         self.assertIn("фото", prompt)
+
+    def test_summary_prompt_is_plain_text_and_mentions_difference(self) -> None:
+        prompt = format_vk_ocr_summary_prompt()
+        self.assertNotIn("<b>", prompt)
+        self.assertIn("нескольких групп", prompt)
 
     def test_best_photo_url_picks_largest(self) -> None:
         photo = MagicMock(
