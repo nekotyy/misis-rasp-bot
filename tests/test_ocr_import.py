@@ -53,8 +53,8 @@ class FakeEngine:
     async def warm_up(self) -> None:
         return None
 
-    async def recognize(self, image_bytes: bytes) -> str:
-        if not image_bytes:
+    async def recognize(self, images: list[bytes]) -> str:
+        if not images:
             raise OcrEngineError("Пустое изображение.")
         return self.text
 
@@ -114,7 +114,7 @@ class AvailabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_draft_refuses_when_unavailable(self) -> None:
         importer = make_importer(enabled=False)
         with self.assertRaises(OcrEngineError):
-            await importer.build_draft(b"image")
+            await importer.build_draft([b"image"])
 
 
 class WarmUpTests(unittest.IsolatedAsyncioTestCase):
@@ -186,6 +186,35 @@ class ResolveSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source["schedule_id"], 701)
         self.assertEqual(source["source_key"], "group:701")
 
+    async def test_falls_back_to_pending_group_without_id(self) -> None:
+        """Группа без ID (увидена на фото, сайт её ещё не подтвердил) всё равно даёт источник для OCR."""
+        catalog = MagicMock()
+        catalog.find_group = AsyncMock(
+            return_value=MagicMock(schedule_id=None, group_name="МТО-26", url="")
+        )
+        importer = make_importer(db=make_db(sources=[]), catalog=catalog)
+
+        source, error = await importer._resolve_source("МТО-26")
+
+        self.assertEqual(error, "")
+        self.assertIsNone(source["schedule_id"])
+        self.assertNotEqual(source["source_key"], "group:None")
+
+    async def test_pending_groups_get_distinct_source_keys(self) -> None:
+        """Два разных pending-источника не должны схлопываться в один и затирать снимки друг друга."""
+        catalog = MagicMock()
+
+        async def find_group(name: str):
+            return MagicMock(schedule_id=None, group_name=name, url="")
+
+        catalog.find_group = AsyncMock(side_effect=find_group)
+        importer = make_importer(db=make_db(sources=[]), catalog=catalog)
+
+        source_a, _ = await importer._resolve_source("МТО-26")
+        source_b, _ = await importer._resolve_source("МЧМ-26")
+
+        self.assertNotEqual(source_a["source_key"], source_b["source_key"])
+
     async def test_survives_broken_catalog(self) -> None:
         catalog = MagicMock()
         catalog.find_group = AsyncMock(side_effect=RuntimeError("сайт лежит"))
@@ -214,7 +243,7 @@ class ResolveSourceTests(unittest.IsolatedAsyncioTestCase):
 class BuildDraftTests(unittest.IsolatedAsyncioTestCase):
     async def test_builds_applicable_draft(self) -> None:
         importer = make_importer()
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         self.assertTrue(draft.can_apply)
         self.assertEqual(draft.source["schedule_id"], 600)
@@ -237,7 +266,7 @@ class BuildDraftTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         importer = make_importer(db=make_db(latest_snapshot=stored))
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         dates = [day.date_iso for day in draft.snapshot.days]
         self.assertIn("2026-08-31", dates)
@@ -246,7 +275,7 @@ class BuildDraftTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_draft_without_known_group_cannot_apply(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         self.assertFalse(draft.can_apply)
         self.assertIn("не найдена", draft.source_error)
@@ -257,7 +286,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         jobs = MagicMock()
         jobs.apply_manual_snapshot = AsyncMock(return_value=None)
         importer = make_importer(jobs=jobs)
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         applied, report = await importer.apply(draft)
 
@@ -273,7 +302,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         jobs = MagicMock()
         jobs.apply_manual_snapshot = AsyncMock(return_value=None)
         importer = make_importer(jobs=jobs)
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         await importer.apply(draft, notify=False)
 
@@ -284,7 +313,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         jobs = MagicMock()
         jobs.apply_manual_snapshot = AsyncMock(return_value=change)
         importer = make_importer(jobs=jobs)
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         applied, report = await importer.apply(draft)
 
@@ -293,7 +322,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_refuses_without_source(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         applied, report = await importer.apply(draft)
 
@@ -304,7 +333,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         jobs = MagicMock()
         jobs.apply_manual_snapshot = AsyncMock(side_effect=RuntimeError("БД недоступна"))
         importer = make_importer(jobs=jobs)
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         applied, report = await importer.apply(draft)
 
@@ -315,7 +344,7 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
 class PreviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_contains_key_sections(self) -> None:
         importer = make_importer()
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         preview = format_ocr_preview(draft, html=True)
 
@@ -327,7 +356,7 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plain_preview_has_no_html(self) -> None:
         importer = make_importer()
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         preview = format_ocr_preview(draft, html=False)
 
@@ -336,7 +365,7 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preview_respects_max_length(self) -> None:
         importer = make_importer()
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         preview = format_ocr_preview(draft, html=False, max_length=120)
 
@@ -345,14 +374,14 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preview_not_truncated_when_short_enough(self) -> None:
         importer = make_importer()
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         full = format_ocr_preview(draft, html=False)
         self.assertEqual(format_ocr_preview(draft, html=False, max_length=10_000), full)
 
     async def test_preview_explains_blocked_import(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
-        draft = await importer.build_draft(b"image-bytes")
+        draft = await importer.build_draft([b"image-bytes"])
 
         preview = format_ocr_preview(draft, html=False)
 

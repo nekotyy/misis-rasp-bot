@@ -369,10 +369,8 @@ async def save_lessons_json(
 ) -> str:
     try:
         raw_payload = parse_json_payload(payload)
-        group_catalog = GroupCatalog(
-        Settings.from_env().schedule_url,
-        cache_path=Settings.from_env().database_path.parent / "group_catalog_cache.json",
-    )
+        fresh_settings = Settings.from_env()
+        group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
         await group_catalog.ensure_loaded()
         parser = ScheduleParser(Settings.from_env().schedule_url)
         normalized, problems = await validate_lesson_config(raw_payload, group_catalog=group_catalog, parser=parser)
@@ -405,11 +403,9 @@ async def add_lesson_group(
     group_name: Annotated[str, Form()] = "",
     schedule_id: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
-    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
-    group_catalog = GroupCatalog(
-        Settings.from_env().schedule_url,
-        cache_path=Settings.from_env().database_path.parent / "group_catalog_cache.json",
-    )
+    fresh_settings = Settings.from_env()
+    payload = load_lesson_config(fresh_settings.lesson_counters_path)
+    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
     await group_catalog.ensure_loaded()
     resolved_id, resolved_name = await resolve_group_input(group_catalog, group_name, schedule_id)
     if resolved_id is None:
@@ -800,12 +796,10 @@ def safe_int(value: object, default: int = -1) -> int:
 
 
 async def validate_payload_for_save(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    group_catalog = GroupCatalog(
-        Settings.from_env().schedule_url,
-        cache_path=Settings.from_env().database_path.parent / "group_catalog_cache.json",
-    )
+    fresh_settings = Settings.from_env()
+    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
     await group_catalog.ensure_loaded()
-    parser = ScheduleParser(Settings.from_env().schedule_url)
+    parser = ScheduleParser(fresh_settings.schedule_url)
     return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser)
 
 

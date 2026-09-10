@@ -139,7 +139,33 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
             target_group_catalog=mock_catalog,
         )
         self.assertIsNone(sub_data)
-        self.assertIn("Сайт расписания колледжа сейчас недоступен", error_text)
+        self.assertIn("временная ошибка связи с сайтом расписания", error_text)
+
+    async def test_resolve_subscription_input_pending_group_refuses_without_id(self):
+        """Группа без ID (увидена на фото, а не на сайте) не должна давать сломанную подписку."""
+        mock_catalog = MagicMock()
+        mock_catalog.find_group = AsyncMock(
+            return_value=MagicMock(group_name="МТО-26", schedule_id=None)
+        )
+        sub_data, error_text = await resolve_subscription_input(
+            "МТО-26",
+            target_group_catalog=mock_catalog,
+        )
+        self.assertIsNone(sub_data)
+        self.assertIn("МТО-26", error_text)
+        self.assertIn("не подтверждена сайтом", error_text)
+
+    async def test_resolve_subscription_input_resolved_group_subscribes_normally(self):
+        mock_catalog = MagicMock()
+        mock_catalog.find_group = AsyncMock(
+            return_value=MagicMock(group_name="ИСП-25-1", schedule_id=600)
+        )
+        sub_data, error_text = await resolve_subscription_input(
+            "ИСП-25-1",
+            target_group_catalog=mock_catalog,
+        )
+        self.assertIsNone(error_text)
+        self.assertEqual(sub_data["schedule_id"], 600)
 
 
 if __name__ == "__main__":

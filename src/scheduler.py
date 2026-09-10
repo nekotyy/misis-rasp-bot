@@ -13,6 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
+from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
 from src.message_broker import (
     AutoDailyLessonCounterJob,
@@ -130,6 +131,8 @@ class ScheduleJobs:
         alert_manager: SystemAlertManager | None = None,
         rabbitmq_url: str = "",
         web_port: int = 8080,
+        group_catalog: GroupCatalog | None = None,
+        group_catalog_refresh_days: int = 90,
     ) -> None:
         self.db = db
         self.parser = parser
@@ -150,6 +153,8 @@ class ScheduleJobs:
         self.alert_manager = alert_manager
         self.rabbitmq_url = rabbitmq_url
         self.web_port = web_port
+        self.group_catalog = group_catalog
+        self.group_catalog_refresh_days = max(1, group_catalog_refresh_days)
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
         self._lesson_counter_lock = asyncio.Lock()
@@ -221,6 +226,35 @@ class ScheduleJobs:
             max_instances=1,
             coalesce=True,
         )
+        if self.group_catalog is not None:
+            self.scheduler.add_job(
+                self.refresh_group_catalog,
+                IntervalTrigger(days=self.group_catalog_refresh_days),
+                max_instances=1,
+                coalesce=True,
+            )
+
+    async def refresh_group_catalog(self) -> None:
+        """Раз в несколько месяцев подтягивает список групп и их ID с сайта заново.
+
+        Список специальностей и групп меняется редко (новый набор, переименования),
+        поэтому чаще не нужно. Между обновлениями сайт может ложиться сколько угодно
+        раз — актуальный на момент последней успешной загрузки список остаётся
+        рабочим за счёт сохранения в БД (`GroupCatalog._save_to_db`).
+        """
+        if self.group_catalog is None:
+            return
+        before = len(self.group_catalog)
+        await self.group_catalog.refresh(force=True)
+        after = len(self.group_catalog)
+        if self.group_catalog.last_error is not None:
+            logger.warning(
+                "Плановое обновление каталога групп не удалось (%s), продолжаю работать с прошлым снимком (%s групп).",
+                self.group_catalog.last_error,
+                after,
+            )
+            return
+        logger.info("Каталог групп обновлён с сайта: было %s, стало %s групп.", before, after)
 
     async def run_system_health_check(self) -> dict[str, Any]:
         """Runs periodic diagnostic checks and notifies admins on status changes."""

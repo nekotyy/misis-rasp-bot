@@ -74,9 +74,12 @@ _CLASSROOM_RE = re.compile(r"^[\w][\w\-/\\. ]*$", re.UNICODE)
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 RECOGNITION_PROMPT = """\
-На фото — расписание занятий учебной группы в виде таблицы (может быть \
-несколько дней/дат на одном фото). Извлеки данные и верни ТОЛЬКО JSON без \
-markdown-разметки и без пояснений, строго такой структуры:
+На одной или нескольких приложенных фотографиях — расписание занятий учебной \
+группы в виде таблицы (может быть несколько дней/дат на каждом фото, а сами \
+фото могут быть частями одного и того же расписания — например, разные \
+недели или страницы одной таблицы). Извлеки данные со всех фото сразу и \
+верни ТОЛЬКО JSON без markdown-разметки и без пояснений, строго такой \
+структуры:
 
 {
   "group_name": "название группы, например ИСП-25-1",
@@ -92,16 +95,20 @@ markdown-разметки и без пояснений, строго такой 
 
 Правила:
 - Дату переводи в формат ISO YYYY-MM-DD.
-- Включай в "days" каждый день, у которого на фото есть хотя бы шапка таблицы \
-с датой, даже если строк с парами под ней нет (пустой список lessons).
+- Включай в "days" каждый день, у которого хотя бы на одном фото есть шапка \
+таблицы с датой, даже если строк с парами под ней нет (пустой список lessons).
+- Если один и тот же день встречается на нескольких фото, не дублируй его —
+включи одну запись, объединив или выбрав более читаемый вариант данных.
 - Если номер пары в ячейке не указан явно, определяй его по порядку строки \
 в таблице этого дня, начиная с 1.
 - Не придумывай данные, которых нет на фото. Если поле не читается или его \
 нет, оставляй пустую строку у этого поля, но не пропускай всю пару.
-- Если на фото не видно ни одной даты или названия группы, верни то, что \
-удалось прочитать, а пустые поля оставь пустыми строками.
+- Если ни на одном фото не видно ни одной даты или названия группы, верни то, \
+что удалось прочитать, а пустые поля оставь пустыми строками.
 - Верни только JSON, без ```json и без комментариев до или после него.
 """
+
+MAX_OCR_IMAGES = 10
 
 
 class OcrEngineError(RuntimeError):
@@ -403,23 +410,30 @@ class GeminiOcrEngine:
         """Заранее устанавливает сессию, чтобы первое фото не ждало авторизации."""
         await self._ensure_client()
 
-    async def recognize(self, image_bytes: bytes) -> str:
-        if not image_bytes:
+    async def recognize(self, images: list[bytes]) -> str:
+        if not images:
             raise OcrEngineError("Пустое изображение.")
+        if any(not image for image in images):
+            raise OcrEngineError("Пустое изображение.")
+        if len(images) > MAX_OCR_IMAGES:
+            raise OcrEngineError(f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}).")
         client = await self._ensure_client()
 
         # `BytesIO` без имени файла загружается как `.txt` и Gemini не видит в
         # нём картинку — нужен настоящий файл с расширением, определённым по
         # содержимому (типы вложений из Telegram/VK бывают разными).
-        suffix = _guess_image_extension(image_bytes)
-        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        tmp_paths: list[str] = []
         try:
-            with os.fdopen(fd, "wb") as tmp_file:
-                tmp_file.write(image_bytes)
+            for image_bytes in images:
+                suffix = _guess_image_extension(image_bytes)
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                with os.fdopen(fd, "wb") as tmp_file:
+                    tmp_file.write(image_bytes)
+                tmp_paths.append(tmp_path)
             try:
                 response = await client.generate_content(
                     RECOGNITION_PROMPT,
-                    files=[tmp_path],
+                    files=list(tmp_paths),
                     model=self.model or None,
                 )
             except AuthError as exc:
@@ -434,10 +448,11 @@ class GeminiOcrEngine:
             except GeminiError as exc:
                 raise OcrEngineError(f"Ошибка распознавания через Gemini: {exc}") from exc
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                logger.debug("Не удалось удалить временный файл %s.", tmp_path, exc_info=True)
+            for tmp_path in tmp_paths:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    logger.debug("Не удалось удалить временный файл %s.", tmp_path, exc_info=True)
         return response.text
 
 
@@ -455,19 +470,19 @@ class OcrScheduleParser:
         self.fuzzy_threshold = fuzzy_threshold
         self.min_confidence = min_confidence
 
-    async def recognize_image(self, image_bytes: bytes) -> str:
+    async def recognize_image(self, images: list[bytes]) -> str:
         if self.engine is None:
             raise OcrEngineError("Движок распознавания не настроен.")
-        return await self.engine.recognize(image_bytes)
+        return await self.engine.recognize(images)
 
     async def parse_image(
         self,
-        image_bytes: bytes,
+        images: list[bytes],
         *,
         vocabulary: OcrVocabulary | None = None,
         now: datetime | None = None,
     ) -> OcrParseResult:
-        text = await self.recognize_image(image_bytes)
+        text = await self.recognize_image(images)
         return self.parse_text(text, vocabulary=vocabulary, now=now)
 
     def parse_text(
