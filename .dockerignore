@@ -1,6 +1,6 @@
 .git
 .gitignore
-.venv
+.venv*
 venv
 env
 __pycache__
@@ -24,3 +24,9 @@ htmlcov
 .pytest_cache
 .mypy_cache
 .ruff_cache
+photo_*.jpg
+tests
+docs
+deploy
+*.md
+!README.md
