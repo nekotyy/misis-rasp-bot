@@ -5,8 +5,12 @@ import unittest
 from types import SimpleNamespace
 
 from src.vk_bot import (
+    VK_KEYBOARD_MAX_BUTTONS,
+    VK_KEYBOARD_MAX_BUTTONS_PER_ROW,
+    VK_KEYBOARD_MAX_ROWS,
     build_vk_subscription_settings_keyboard,
     make_vk_keyboard,
+    vk_admin_keyboard_rows,
     vk_help_main_keyboard,
 )
 
@@ -102,6 +106,25 @@ class TestVkSettingsKeyboard(unittest.TestCase):
         self.assertEqual(parsed["buttons"][0][0]["action"]["label"], "Кнопка 1")
         self.assertEqual(parsed["buttons"][0][1]["action"]["label"], "Кнопка 2")
         self.assertEqual(parsed["buttons"][1][0]["action"]["label"], "Кнопка 3")
+
+
+class TestVkAdminKeyboardLimits(unittest.TestCase):
+    """Регрессия: лишний ряд/кнопка в клавиатуре роняет всю админку ошибкой VK 911."""
+
+    def test_admin_keyboard_within_vk_limits(self) -> None:
+        rows = vk_admin_keyboard_rows()
+
+        self.assertLessEqual(len(rows), VK_KEYBOARD_MAX_ROWS)
+        total_buttons = 0
+        for row in rows:
+            self.assertLessEqual(len(row), VK_KEYBOARD_MAX_BUTTONS_PER_ROW)
+            total_buttons += len(row)
+        self.assertLessEqual(total_buttons, VK_KEYBOARD_MAX_BUTTONS)
+
+    def test_admin_keyboard_has_summary_ocr_button(self) -> None:
+        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        self.assertIn("Расписание с фото", labels)
+        self.assertIn("Сводное расписание", labels)
 
 
 if __name__ == "__main__":

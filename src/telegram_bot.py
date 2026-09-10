@@ -39,6 +39,7 @@ from src.ocr_import import (
     OcrScheduleImporter,
     build_ocr_importer,
     format_ocr_preview,
+    format_ocr_summary_preview,
     format_progress_bar,
 )
 from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
@@ -356,6 +357,9 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="📷 Расписание с фото (OCR)", callback_data="admin:ocr_import"),
         ],
         [
+            InlineKeyboardButton(text="📋 Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
+        ],
+        [
             InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
             InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
         ],
@@ -629,6 +633,20 @@ ADMIN_OCR_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_OCR_SUMMARY_INPUT_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:ocr_summary_cancel")],
+    ]
+)
+
+ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить и разослать", callback_data="admin:ocr_summary_confirm")],
+        [InlineKeyboardButton(text="Сохранить без рассылки", callback_data="admin:ocr_summary_confirm_silent")],
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:ocr_summary_cancel")],
+    ]
+)
+
 def is_ocr_photo_candidate(chat_type: str, is_admin: bool) -> bool:
     """Нужно ли распознавать присланную картинку.
 
@@ -656,6 +674,25 @@ def format_admin_ocr_prompt(error: str = "") -> str:
             "",
             "После распознавания покажу, что получилось, и спрошу подтверждение — "
             "ничего не сохранится и не разошлётся без него.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_admin_ocr_summary_prompt(error: str = "") -> str:
+    lines = ["<b>Импорт сводного расписания</b>", ""]
+    if error:
+        lines.extend([escape(error), ""])
+    lines.extend(
+        [
+            "Этот режим — для листа с расписанием на один день сразу для нескольких групп "
+            "(таблица со столбцами Группа, №, Дисциплина, Преподаватель, Аудитория).",
+            "Для расписания одной группы на несколько дней используй обычный «Расписание с фото».",
+            "",
+            "Пришли <b>фото</b> или несколько фото листа (можно одним альбомом).",
+            "",
+            "После распознавания покажу, для скольких групп нашёлся источник, и спрошу "
+            "подтверждение — ничего не сохранится и не разошлётся без него.",
         ]
     )
     return "\n".join(lines)
@@ -882,6 +919,8 @@ def build_dispatcher(
     admin_import_lessons_drafts: dict[int, dict] = {}
     awaiting_admin_ocr_photo: set[int] = set()
     admin_ocr_drafts: dict[int, Any] = {}
+    awaiting_admin_ocr_summary_photo: set[int] = set()
+    admin_ocr_summary_drafts: dict[int, Any] = {}
     admin_ocr_album_buffers: dict[str, list[Message]] = {}
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
@@ -3055,6 +3094,7 @@ def build_dispatcher(
             "lesson_confirm", "lesson_confirm_force",
             "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
             "ocr_import", "ocr_confirm", "ocr_confirm_silent", "ocr_cancel",
+            "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
@@ -3316,6 +3356,57 @@ def build_dispatcher(
                 admin_ocr_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
             prefix = "<b>Расписание с фото импортировано</b>" if applied else "<b>Импорт не выполнен</b>"
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                f"{prefix}\n\n{escape(report)}",
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            return
+        if action == "ocr_summary_import":
+            available, availability_message = ocr_service.availability()
+            if not available:
+                await safe_callback_answer(callback, availability_message, show_alert=True)
+                return
+            awaiting_admin_ocr_summary_photo.add(callback.from_user.id)
+            awaiting_admin_ocr_photo.discard(callback.from_user.id)
+            admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "ocr_summary_cancel":
+            awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
+            admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin",
+                format_admin_panel(),
+                reply_markup=ADMIN_KEYBOARD,
+            )
+            await safe_callback_answer(callback, "Импорт сводного расписания отменён")
+            return
+        if action in {"ocr_summary_confirm", "ocr_summary_confirm_silent"}:
+            draft = admin_ocr_summary_drafts.get(callback.from_user.id)
+            if draft is None:
+                await safe_callback_answer(callback, "Данные распознавания устарели. Пришли фото заново.", show_alert=True)
+                return
+            notify = action == "ocr_summary_confirm"
+            await safe_callback_answer(callback, "Сохраняю расписание...")
+            applied, report = await ocr_service.apply_summary(draft, notify=notify)
+            if applied:
+                awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
+                admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
+            prefix = "<b>Сводное расписание импортировано</b>" if applied else "<b>Импорт не выполнен</b>"
             await send_new_context_message(
                 callback.bot,
                 callback.message.chat.id,
@@ -3799,13 +3890,18 @@ def build_dispatcher(
         if not is_ocr_photo_candidate(message.chat.type, user_is_admin(message.from_user.id)):
             return
 
-        # Кнопка в админке не обязательна: админ прислал фото в личку — значит,
-        # хочет импортировать расписание. Раньше без кнопки бот молчал.
-        awaiting_admin_ocr_photo.add(message.from_user.id)
+        # Сводный режим требует явного нажатия кнопки: это более заметное по
+        # последствиям действие (сразу много групп разом), в отличие от обычного
+        # режима оно не должно включаться само по первому присланному фото.
+        summary = message.from_user.id in awaiting_admin_ocr_summary_photo
+        if not summary:
+            # Кнопка в админке не обязательна: админ прислал фото в личку — значит,
+            # хочет импортировать расписание. Раньше без кнопки бот молчал.
+            awaiting_admin_ocr_photo.add(message.from_user.id)
 
         media_group_id = message.media_group_id
         if media_group_id is None:
-            await run_admin_ocr_import_safely([message])
+            await run_admin_ocr_import_safely([message], summary=summary)
             return
 
         # Альбом Telegram приходит несколькими отдельными сообщениями с общим
@@ -3815,27 +3911,35 @@ def build_dispatcher(
         buffer = admin_ocr_album_buffers.setdefault(media_group_id, [])
         buffer.append(message)
         if len(buffer) == 1:
-            asyncio.create_task(finalize_admin_ocr_album(media_group_id))
+            asyncio.create_task(finalize_admin_ocr_album(media_group_id, summary))
 
-    async def finalize_admin_ocr_album(media_group_id: str) -> None:
+    async def finalize_admin_ocr_album(media_group_id: str, summary: bool) -> None:
         await asyncio.sleep(ADMIN_OCR_ALBUM_WAIT_SECONDS)
         messages = admin_ocr_album_buffers.pop(media_group_id, [])
         if not messages:
             return
-        await run_admin_ocr_import_safely(messages)
+        await run_admin_ocr_import_safely(messages, summary=summary)
 
-    async def run_admin_ocr_import_safely(messages: list[Message]) -> None:
+    async def run_admin_ocr_import_safely(messages: list[Message], *, summary: bool) -> None:
         first = messages[0]
         try:
-            await run_admin_ocr_import(messages)
+            if summary:
+                await run_admin_ocr_summary_import(messages)
+            else:
+                await run_admin_ocr_import(messages)
         except Exception as exc:
             logger.exception("Импорт расписания с фото упал.")
+            prompt_text = (
+                format_admin_ocr_summary_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}")
+                if summary
+                else format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}")
+            )
             await send_new_context_message(
                 first.bot,
                 first.chat.id,
                 "admin_ocr",
-                format_admin_ocr_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
-                reply_markup=ADMIN_OCR_INPUT_KEYBOARD,
+                prompt_text,
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD if summary else ADMIN_OCR_INPUT_KEYBOARD,
             )
 
     async def run_admin_ocr_import(messages: list[Message]) -> None:
@@ -3944,6 +4048,113 @@ def build_dispatcher(
             "admin_ocr",
             preview,
             reply_markup=ADMIN_OCR_PREVIEW_KEYBOARD if draft.can_apply else ADMIN_OCR_INPUT_KEYBOARD,
+        )
+
+    async def run_admin_ocr_summary_import(messages: list[Message]) -> None:
+        first = messages[0]
+        if first.from_user is None:
+            return
+        await wait_message_rate_limit(first.from_user.id)
+
+        available, availability_message = ocr_service.availability()
+        if not available:
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(availability_message),
+            )
+            return
+
+        if len(messages) > MAX_OCR_IMAGES:
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            return
+
+        images, download_error = await download_admin_images(messages)
+        if images is None:
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(download_error),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            return
+
+        upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
+        progress_message = await safe_send_message(
+            first.bot,
+            first.chat.id,
+            format_progress_bar(upload_label, 10),
+        )
+
+        async def report_progress(stage: str, percent: int) -> None:
+            if progress_message is None:
+                return
+            try:
+                await first.bot.edit_message_text(
+                    chat_id=first.chat.id,
+                    message_id=progress_message.message_id,
+                    text=format_progress_bar(stage, percent),
+                )
+            except (TelegramBadRequest, TelegramNetworkError):
+                logger.debug("Не удалось обновить индикатор прогресса OCR.", exc_info=True)
+
+        try:
+            draft = await asyncio.wait_for(
+                ocr_service.build_summary_draft(images, progress=report_progress),
+                timeout=ocr_service.recognize_timeout,
+            )
+        except TimeoutError:
+            logger.warning("Распознавание сводного фото не уложилось в %s с.", ocr_service.recognize_timeout)
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(
+                    f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
+                    "Пришли фото поменьше/по одному или увеличь OCR_TIMEOUT_SECONDS."
+                ),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            return
+        except OcrEngineError as exc:
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(f"Не удалось распознать фото: {exc}"),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            return
+        except Exception as exc:
+            logger.exception("Ошибка распознавания сводного расписания с фото.")
+            await send_new_context_message(
+                first.bot,
+                first.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            return
+
+        if progress_message is not None:
+            await safe_delete_message(first.bot, first.chat.id, progress_message.message_id)
+
+        admin_ocr_summary_drafts[first.from_user.id] = draft
+        preview = format_ocr_summary_preview(draft, html=True, max_length=TELEGRAM_MESSAGE_LIMIT)
+        await send_new_context_message(
+            first.bot,
+            first.chat.id,
+            "admin_ocr",
+            preview,
+            reply_markup=ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD if draft.can_apply else ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
         )
 
     async def download_admin_image(message: Message) -> tuple[bytes | None, str]:

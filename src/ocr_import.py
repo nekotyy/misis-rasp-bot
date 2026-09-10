@@ -11,18 +11,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.models import ScheduleSnapshot
+from src.models import DaySchedule, ScheduleSnapshot
 from src.ocr_schedule import (
     GeminiOcrEngine,
     OcrEngineError,
+    OcrGroupLessons,
     OcrParseResult,
     OcrScheduleParser,
+    OcrSummaryParseResult,
     OcrVocabulary,
     SnapshotMergeResult,
     build_ocr_engine,
@@ -37,6 +39,7 @@ MAX_PREVIEW_LESSONS = 40
 MAX_PREVIEW_ISSUES = 12
 MAX_PREVIEW_CORRECTIONS = 10
 MAX_PREVIEW_SKIPPED = 5
+MAX_PREVIEW_GROUPS = 30
 # Как часто обновлять индикатор во время долгого распознавания.
 HEARTBEAT_INTERVAL_SECONDS = 10
 
@@ -84,6 +87,41 @@ class OcrImportDraft:
     @property
     def can_apply(self) -> bool:
         return self.result.is_valid and self.source is not None
+
+
+@dataclass(slots=True)
+class OcrGroupResolution:
+    """Одна группа сводного расписания: источник для неё и снимок на этот день, слитый с прошлым."""
+
+    group_lessons: OcrGroupLessons
+    source: dict | None
+    source_error: str = ""
+    merge: SnapshotMergeResult | None = None
+
+    @property
+    def can_apply(self) -> bool:
+        return self.source is not None and self.merge is not None
+
+
+@dataclass(slots=True)
+class OcrSummaryImportDraft:
+    """Готовый к подтверждению сводный лист — один день сразу на много групп."""
+
+    result: OcrSummaryParseResult
+    resolutions: list[OcrGroupResolution] = field(default_factory=list)
+    raw_text: str = ""
+
+    @property
+    def resolved(self) -> list[OcrGroupResolution]:
+        return [item for item in self.resolutions if item.can_apply]
+
+    @property
+    def unresolved(self) -> list[OcrGroupResolution]:
+        return [item for item in self.resolutions if not item.can_apply]
+
+    @property
+    def can_apply(self) -> bool:
+        return self.result.is_valid and bool(self.resolved)
 
 
 class OcrScheduleImporter:
@@ -293,6 +331,124 @@ class OcrScheduleImporter:
             lines.append("Снимок сохранён без рассылки.")
         return True, "\n".join(lines)
 
+    async def build_summary_draft(self, images: list[bytes], progress=None) -> OcrSummaryImportDraft:
+        """Распознаёт сводное расписание (один день сразу на много групп) и готовит черновик.
+
+        В отличие от `build_draft`, здесь не одна группа, а список: каждая
+        находит свой источник и сливается со своим прошлым снимком независимо
+        от остальных — так что часть групп может не резолвиться (например,
+        сайт лежит и такой группы ещё не было ни в одной подписке), а
+        остальные всё равно применятся.
+        """
+        if not images:
+            raise OcrEngineError("Нет ни одного изображения для распознавания.")
+        available, message = self.availability()
+        if not available:
+            raise OcrEngineError(message)
+
+        async def notify_stage(stage: str, percent: int) -> None:
+            if progress is None:
+                return
+            try:
+                await progress(stage, percent)
+            except Exception:
+                logger.debug("Не удалось обновить индикатор прогресса.", exc_info=True)
+
+        await notify_stage(OCR_STAGE_RECOGNIZE, 35)
+        started = time.monotonic()
+
+        async def heartbeat() -> None:
+            while True:
+                await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+                elapsed = int(time.monotonic() - started)
+                await notify_stage(f"{OCR_STAGE_RECOGNIZE} ({elapsed} с)", 35)
+
+        ticker = asyncio.create_task(heartbeat())
+        try:
+            raw_text = await self.parser.recognize_summary_image(images)
+        except Exception as exc:
+            self.last_error = str(exc)
+            await self._report(False, str(exc), "Ошибка распознавания сводного фото")
+            raise
+        finally:
+            ticker.cancel()
+        logger.info("Распознавание сводного листа заняло %.1f с.", time.monotonic() - started)
+
+        await notify_stage(OCR_STAGE_PARSE, 70)
+        result = self.parser.parse_summary_text(raw_text)
+
+        await notify_stage(OCR_STAGE_MATCH, 85)
+        # Один запрос активных источников на весь лист, а не на каждую из
+        # десятков групп — иначе это десятки одинаковых SQL-запросов подряд.
+        sources = await self.db.get_active_sources()
+        resolutions: list[OcrGroupResolution] = []
+        for group_lessons in result.groups:
+            source, source_error = await self._resolve_source(group_lessons.group_name, sources)
+            merge = None
+            if source is not None:
+                base_content = None
+                latest = await self.db.get_latest_snapshot(
+                    "current",
+                    schedule_id=source.get("schedule_id"),
+                    source_key=source.get("source_key"),
+                )
+                base_content = latest.get("content") if latest else None
+                day_snapshot = ScheduleSnapshot(
+                    group_name=group_lessons.group_name,
+                    fetched_at=datetime.now(),
+                    days=[DaySchedule(date_label=result.date_label, date_iso=result.date_iso, lessons=group_lessons.lessons)],
+                )
+                merge = merge_ocr_days(base_content, day_snapshot)
+            resolutions.append(
+                OcrGroupResolution(group_lessons=group_lessons, source=source, source_error=source_error, merge=merge)
+            )
+
+        await notify_stage(OCR_STAGE_PREVIEW, 95)
+        self.last_error = ""
+        self.last_success_at = datetime.now().strftime("%d.%m %H:%M")
+        await self._report(True)
+        return OcrSummaryImportDraft(result=result, resolutions=resolutions, raw_text=raw_text)
+
+    async def apply_summary(self, draft: OcrSummaryImportDraft, *, notify: bool = True) -> tuple[bool, str]:
+        """Проводит каждую резолвнутую группу через тот же конвейер, что и сайт."""
+        if self.schedule_jobs is None:
+            return False, "Планировщик расписания недоступен, импорт невозможен."
+        if not draft.can_apply:
+            return False, "Не нашлось ни одной группы, которую можно сохранить."
+
+        applied = 0
+        broadcasted = 0
+        failed: list[str] = []
+        for resolution in draft.resolved:
+            try:
+                change_summary = await self.schedule_jobs.apply_manual_snapshot(
+                    resolution.source,
+                    resolution.merge.snapshot,
+                    notify=notify,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Не удалось применить расписание группы %s из сводного фото.", resolution.group_lessons.group_name
+                )
+                failed.append(f"{resolution.group_lessons.group_name}: {exc}")
+                continue
+            applied += 1
+            if change_summary is not None:
+                broadcasted += 1
+
+        lines = [f"Обновлено групп: {applied} из {len(draft.resolved)}."]
+        if applied:
+            if notify:
+                lines.append(f"Рассылка ушла по {broadcasted} из них (у остальных расписание не изменилось).")
+            else:
+                lines.append("Сохранено без рассылки.")
+        if draft.unresolved:
+            lines.append(f"Группы без источника (не сохранены): {len(draft.unresolved)}.")
+        if failed:
+            lines.append(f"Ошибка при сохранении: {len(failed)}.")
+            lines.extend(f"  {item}" for item in failed[:10])
+        return applied > 0, "\n".join(lines)
+
     async def _build_vocabulary(self, source: dict | None) -> OcrVocabulary:
         """Собирает эталонные значения из ранее сохранённых снимков."""
         contents: list[dict | None] = []
@@ -319,17 +475,21 @@ class OcrScheduleImporter:
         """
         return await self._resolve_source(group_name)
 
-    async def _resolve_source(self, group_name: str) -> tuple[dict | None, str]:
+    async def _resolve_source(self, group_name: str, sources: list[dict] | None = None) -> tuple[dict | None, str]:
         """Ищет источник, к которому относится фото.
 
         Сначала по подписанным источникам в БД — это работает даже когда сайт
         расписания лежит. Затем, если сайт доступен, по каталогу групп.
+
+        `sources` можно передать заранее — на сводном листе с десятками групп
+        незачем запрашивать список активных источников заново на каждую.
         """
         normalized = GroupCatalog.normalize(group_name or "")
         if not normalized or normalized == GroupCatalog.normalize("Неизвестная группа"):
             return None, "На фото не удалось прочитать название группы. Проверь, что оно попало в кадр."
 
-        sources = await self.db.get_active_sources()
+        if sources is None:
+            sources = await self.db.get_active_sources()
         for source in sources:
             if source.get("source_type") != "group":
                 continue
@@ -511,6 +671,70 @@ def format_ocr_preview(draft: OcrImportDraft, *, html: bool = True, max_length: 
             "  Внимание: станут пустыми дни "
             f"{esc(', '.join(format_human_date(d) for d in merge.emptied_dates))}"
         )
+
+    lines.append("")
+    if draft.can_apply:
+        lines.append("Проверь данные и подтверди импорт.")
+    else:
+        lines.append("Импорт недоступен: сначала исправь ошибки выше и пришли фото заново.")
+    return _truncate_preview("\n".join(lines), max_length)
+
+
+def format_ocr_summary_preview(draft: OcrSummaryImportDraft, *, html: bool = True, max_length: int = 0) -> str:
+    """Текст предпросмотра сводного листа — один день сразу на много групп."""
+
+    def esc(value: str) -> str:
+        return escape(str(value)) if html else str(value)
+
+    def bold(value: str) -> str:
+        return f"<b>{value}</b>" if html else value
+
+    result = draft.result
+    resolved = draft.resolved
+    unresolved = draft.unresolved
+    lines: list[str] = [bold("Распознавание сводного расписания")]
+
+    lines.append(f"Дата: {bold(esc(format_human_date(result.date_label) or '—'))}")
+    lines.append(f"Уверенность: {bold(f'{result.confidence:.0%}')}")
+    lines.append(f"Распознано групп: {len(result.groups)}, пар: {result.lessons_count}.")
+    lines.append(f"Найден источник: {bold(str(len(resolved)))} из {len(result.groups)}.")
+
+    if resolved:
+        lines.append("")
+        lines.append(bold("Будут обновлены"))
+        for resolution in resolved[:MAX_PREVIEW_GROUPS]:
+            title = str(resolution.source.get("source_title") or resolution.group_lessons.group_name)
+            lines.append(f"  {esc(title)}: {len(resolution.group_lessons.lessons)} пар.")
+        if len(resolved) > MAX_PREVIEW_GROUPS:
+            lines.append(f"  …ещё {len(resolved) - MAX_PREVIEW_GROUPS}")
+
+    if unresolved:
+        lines.append("")
+        lines.append(bold("Источник не найден (не будут сохранены)"))
+        for resolution in unresolved[:MAX_PREVIEW_GROUPS]:
+            lines.append(f"  {esc(resolution.group_lessons.group_name)}: {esc(resolution.source_error)}")
+        if len(unresolved) > MAX_PREVIEW_GROUPS:
+            lines.append(f"  …ещё {len(unresolved) - MAX_PREVIEW_GROUPS}")
+
+    errors = result.errors
+    warnings = result.warnings
+    if errors:
+        lines.append("")
+        lines.append(bold("Ошибки"))
+        lines.extend(f"  {esc(issue.message)}" for issue in errors[:MAX_PREVIEW_ISSUES])
+    if warnings:
+        lines.append("")
+        lines.append(bold("Предупреждения"))
+        lines.extend(f"  {esc(issue.message)}" for issue in warnings[:MAX_PREVIEW_ISSUES])
+        if len(warnings) > MAX_PREVIEW_ISSUES:
+            lines.append(f"  …ещё {len(warnings) - MAX_PREVIEW_ISSUES}")
+
+    if result.skipped_lines:
+        lines.append("")
+        lines.append(bold("Строки, которые не удалось разобрать"))
+        lines.extend(f"  {esc(line)}" for line in result.skipped_lines[:MAX_PREVIEW_SKIPPED])
+        if len(result.skipped_lines) > MAX_PREVIEW_SKIPPED:
+            lines.append(f"  …ещё {len(result.skipped_lines) - MAX_PREVIEW_SKIPPED}")
 
     lines.append("")
     if draft.can_apply:
