@@ -45,6 +45,16 @@ class Settings:
     lesson_counters_path: Path
     web_cookie_secure: bool
     web_session_ttl_seconds: int
+    ocr_enabled: bool
+    gemini_secure_1psid: str
+    gemini_secure_1psidts: str
+    gemini_proxy: str
+    ocr_gemini_model: str
+    ocr_timeout_seconds: float
+    ocr_min_confidence: float
+    ocr_fuzzy_threshold: float
+    ocr_warmup_on_start: bool
+    ocr_ready_notice_hours: float
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -77,7 +87,25 @@ class Settings:
             lesson_counters_path=Path(os.getenv("LESSON_COUNTERS_PATH", "storage/lesson_counters.json")).resolve(),
             web_cookie_secure=_env_bool("WEB_COOKIE_SECURE", default=True),
             web_session_ttl_seconds=max(300, int(os.getenv("WEB_SESSION_TTL_SECONDS", str(60 * 60 * 12)).strip())),
+            ocr_enabled=_env_bool("OCR_ENABLED", default=True),
+            gemini_secure_1psid=os.getenv("GEMINI_SECURE_1PSID", "").strip(),
+            gemini_secure_1psidts=os.getenv("GEMINI_SECURE_1PSIDTS", "").strip(),
+            gemini_proxy=os.getenv("GEMINI_PROXY", "").strip(),
+            ocr_gemini_model=os.getenv("OCR_GEMINI_MODEL", "").strip(),
+            ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "180").strip()),
+            ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),
+            ocr_fuzzy_threshold=_clamp_float(os.getenv("OCR_FUZZY_THRESHOLD", "0.78"), 0.5, 1.0, 0.78),
+            ocr_warmup_on_start=_env_bool("OCR_WARMUP_ON_START", default=True),
+            ocr_ready_notice_hours=_clamp_float(os.getenv("OCR_READY_NOTICE_HOURS", "12"), 0, 720, 12),
         )
+
+
+def _clamp_float(raw: str, minimum: float, maximum: float, default: float) -> float:
+    try:
+        value = float(raw.strip())
+    except (AttributeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
 
 
 def _env_bool(name: str, *, default: bool) -> bool:

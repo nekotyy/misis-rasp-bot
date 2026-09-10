@@ -1,5 +1,7 @@
+import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.group_catalog import GroupCatalog, GroupInfo
 from src.parser import ScheduleParser
@@ -103,6 +105,81 @@ class ParserAndCatalogTests(unittest.IsolatedAsyncioTestCase):
     def test_group_catalog_transliteration_uppercase_y(self):
         self.assertEqual(GroupCatalog.normalize("Y-24-1"), "у-24-1")
         self.assertEqual(GroupCatalog.normalize("y-24-1"), "у-24-1")
+
+
+SAMPLE_GROUP = GroupInfo(
+    department_id=1,
+    department_code="IT",
+    department_name="ИТ",
+    group_name="ИСП-25-1",
+    schedule_id=600,
+    url="http://test/600",
+)
+
+
+class GroupCatalogDiskCacheTests(unittest.IsolatedAsyncioTestCase):
+    """Каталог групп должен переживать недоступность сайта и перезапуск бота."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cache_path = Path(self._tmp.name) / "group_catalog_cache.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_successful_fetch_writes_cache_to_disk(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", cache_path=self.cache_path)
+        with patch.object(
+            catalog, "_fetch_from_site", AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+        ):
+            await catalog.refresh()
+
+        self.assertTrue(self.cache_path.is_file())
+        group = await catalog.find_group("ИСП-25-1")
+        self.assertIsNotNone(group)
+        self.assertEqual(group.schedule_id, 600)
+
+    async def test_failed_fetch_falls_back_to_disk_cache(self) -> None:
+        # Первый каталог успешно грузится с сайта и сохраняет снимок на диск.
+        warm_catalog = GroupCatalog(schedule_url="http://test-schedule.local", cache_path=self.cache_path)
+        with patch.object(
+            warm_catalog, "_fetch_from_site", AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+        ):
+            await warm_catalog.refresh()
+
+        # Новый процесс (например, после перезапуска бота) не может достучаться до сайта.
+        cold_catalog = GroupCatalog(schedule_url="http://test-schedule.local", cache_path=self.cache_path)
+        with patch.object(cold_catalog, "_fetch_from_site", AsyncMock(side_effect=RuntimeError("сайт лежит"))):
+            await cold_catalog.refresh()
+
+        group = await cold_catalog.find_group("ИСП-25-1")
+        self.assertIsNotNone(group, "Группа из кэша на диске должна находиться даже при недоступном сайте")
+        self.assertEqual(group.schedule_id, 600)
+        self.assertIsInstance(cold_catalog.last_error, RuntimeError)
+
+    async def test_failed_fetch_without_cache_leaves_catalog_empty(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", cache_path=self.cache_path)
+        with patch.object(catalog, "_fetch_from_site", AsyncMock(side_effect=RuntimeError("сайт лежит"))):
+            await catalog.refresh()
+            group = await catalog.find_group("ИСП-25-1")
+
+        self.assertIsNone(group)
+
+    def test_no_cache_path_disables_persistence(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local")
+        catalog._groups_by_schedule_id = {600: SAMPLE_GROUP}
+
+        catalog._save_to_disk_cache()  # не должно бросать и не должно ничего создавать
+
+        self.assertIsNone(catalog.cache_path)
+
+    def test_corrupted_cache_file_is_ignored(self) -> None:
+        self.cache_path.write_text("не json", encoding="utf-8")
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", cache_path=self.cache_path)
+
+        loaded = catalog._load_from_disk_cache()
+
+        self.assertFalse(loaded)
 
 
 if __name__ == "__main__":

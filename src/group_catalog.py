@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -29,12 +31,14 @@ class GroupCatalog:
         timeout: float = 30.0,
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
+        cache_path: Path | str | None = None,
     ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
         self.timeout = timeout
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self.cache_path = Path(cache_path) if cache_path else None
         self._lock = asyncio.Lock()
         self._loaded = False
         self.last_error: Exception | None = None
@@ -52,64 +56,106 @@ class GroupCatalog:
             if self._loaded and self._groups_by_name:
                 return
 
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                try:
-                    root_response = await self._get_with_retry(client, f"{self.base_origin}/")
-                    root_soup = BeautifulSoup(root_response.content, "html.parser")
-                except Exception as exc:
-                    logger.exception("Не удалось загрузить список отделений с %s: %s", self.base_origin, exc)
-                    self.last_error = exc
-                    if not self._loaded:
-                        self._groups_by_name = {}
-                        self._groups_by_schedule_id = {}
-                        self._loaded = True
+            try:
+                groups_by_name, groups_by_schedule_id = await self._fetch_from_site()
+            except Exception as exc:
+                logger.exception("Не удалось загрузить список отделений с %s: %s", self.base_origin, exc)
+                self.last_error = exc
+                if self._load_from_disk_cache():
+                    logger.warning(
+                        "Сайт расписания недоступен, использую сохранённый на диске каталог групп (%s)."
+                        " Он может немного отставать от реального сайта.",
+                        self.cache_path,
+                    )
+                    self._loaded = True
                     return
+                if not self._loaded:
+                    self._groups_by_name = {}
+                    self._groups_by_schedule_id = {}
+                    self._groups_by_compact_name = {}
+                    self._loaded = True
+                return
 
-                departments: list[tuple[int, str]] = []
-                for link in root_soup.select("a[href^='/group/']"):
+            self._groups_by_name = groups_by_name
+            self._groups_by_compact_name = {
+                self._compact_name_key(group.group_name): group for group in groups_by_schedule_id.values()
+            }
+            self._groups_by_schedule_id = groups_by_schedule_id
+            self._loaded = True
+            self._save_to_disk_cache()
+
+    async def _fetch_from_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo]]:
+        """Загружает список групп с сайта. Бросает исключение, если недоступна даже стартовая страница."""
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            root_response = await self._get_with_retry(client, f"{self.base_origin}/")
+            root_soup = BeautifulSoup(root_response.content, "html.parser")
+
+            departments: list[tuple[int, str]] = []
+            for link in root_soup.select("a[href^='/group/']"):
+                href = link.get("href", "")
+                department_id = href.rsplit("/", 1)[-1]
+                if not department_id.isdigit():
+                    continue
+                departments.append((int(department_id), link.get_text(" ", strip=True)))
+
+            groups_by_name: dict[str, GroupInfo] = {}
+            groups_by_schedule_id: dict[int, GroupInfo] = {}
+            for department_id, department_code in sorted(set(departments)):
+                try:
+                    response = await self._get_with_retry(client, f"{self.base_origin}/group/{department_id}")
+                except httpx.HTTPError:
+                    logger.warning("Пропускаю отделение id=%s из-за ошибки сети", department_id)
+                    continue
+                soup = BeautifulSoup(response.content, "html.parser")
+                department_name_node = soup.find(id="titleS")
+                department_name = department_name_node.get_text(" ", strip=True) if department_name_node else ""
+                for link in soup.select("a[href^='/rasp/']"):
                     href = link.get("href", "")
-                    department_id = href.rsplit("/", 1)[-1]
-                    if not department_id.isdigit():
+                    schedule_id = href.rsplit("/", 1)[-1]
+                    group_name = link.get_text(" ", strip=True)
+                    if not schedule_id.isdigit() or not group_name:
                         continue
-                    departments.append((int(department_id), link.get_text(" ", strip=True)))
+                    group = GroupInfo(
+                        department_id=department_id,
+                        department_code=department_code,
+                        department_name=department_name,
+                        group_name=group_name,
+                        schedule_id=int(schedule_id),
+                        url=f"{self.base_origin}/rasp/{schedule_id}",
+                    )
+                    normalized_name = self.normalize(group_name)
+                    groups_by_name[normalized_name] = group
+                    groups_by_schedule_id[group.schedule_id] = group
+            return groups_by_name, groups_by_schedule_id
 
-                groups_by_name: dict[str, GroupInfo] = {}
-                groups_by_schedule_id: dict[int, GroupInfo] = {}
-                for department_id, department_code in sorted(set(departments)):
-                    try:
-                        response = await self._get_with_retry(client, f"{self.base_origin}/group/{department_id}")
-                    except httpx.HTTPError:
-                        logger.warning("Пропускаю отделение id=%s из-за ошибки сети", department_id)
-                        continue
-                    soup = BeautifulSoup(response.content, "html.parser")
-                    department_name_node = soup.find(id="titleS")
-                    department_name = department_name_node.get_text(" ", strip=True) if department_name_node else ""
-                    for link in soup.select("a[href^='/rasp/']"):
-                        href = link.get("href", "")
-                        schedule_id = href.rsplit("/", 1)[-1]
-                        group_name = link.get_text(" ", strip=True)
-                        if not schedule_id.isdigit() or not group_name:
-                            continue
-                        group = GroupInfo(
-                            department_id=department_id,
-                            department_code=department_code,
-                            department_name=department_name,
-                            group_name=group_name,
-                            schedule_id=int(schedule_id),
-                            url=f"{self.base_origin}/rasp/{schedule_id}",
-                        )
-                        normalized_name = self.normalize(group_name)
-                        groups_by_name[normalized_name] = group
-                        groups_by_schedule_id[group.schedule_id] = group
-                groups_by_compact_name = {
-                    self._compact_name_key(group.group_name): group
-                    for group in groups_by_schedule_id.values()
-                }
+    def _save_to_disk_cache(self) -> None:
+        """Сохраняет каталог на диск, чтобы пережить перезапуск бота при недоступном сайте."""
+        if self.cache_path is None:
+            return
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = [asdict(group) for group in self._groups_by_schedule_id.values()]
+            self.cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            logger.warning("Не удалось сохранить каталог групп в %s.", self.cache_path, exc_info=True)
 
-                self._groups_by_name = groups_by_name
-                self._groups_by_compact_name = groups_by_compact_name
-                self._groups_by_schedule_id = groups_by_schedule_id
-                self._loaded = True
+    def _load_from_disk_cache(self) -> bool:
+        """Восстанавливает каталог из последнего сохранённого на диске снимка."""
+        if self.cache_path is None or not self.cache_path.is_file():
+            return False
+        try:
+            payload = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            groups = [GroupInfo(**item) for item in payload]
+        except (OSError, ValueError, TypeError):
+            logger.warning("Не удалось прочитать каталог групп из %s.", self.cache_path, exc_info=True)
+            return False
+        if not groups:
+            return False
+
+        self._groups_by_schedule_id = {group.schedule_id: group for group in groups}
+        self._groups_by_name = {self.normalize(group.group_name): group for group in groups}
+        self._groups_by_compact_name = {self._compact_name_key(group.group_name): group for group in groups}
+        return True
 
     async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         last_exc: httpx.HTTPError | None = None
