@@ -14,7 +14,10 @@ __pycache__
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-storage
+storage/attachments
+storage/tmp
+storage/web_users.json
+storage/lesson_counters.json
 runtime
 logs
 site.html
