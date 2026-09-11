@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from curl_cffi.requests.exceptions import CurlError
 from gemini_webapi.exceptions import TemporarilyBlockedError, UsageLimitExceededError
 
 from src.ocr_import import (
@@ -640,6 +641,33 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.generate_content.await_count, 2)
         self.assertIs(client.generate_content.await_args_list[0].kwargs["model"], flash)
         self.assertIs(client.generate_content.await_args_list[1].kwargs["model"], pro)
+
+    async def test_transient_connection_reset_is_retried(self) -> None:
+        client = MagicMock()
+        client.generate_content = AsyncMock(
+            side_effect=[
+                CurlError("Recv failure: Connection reset by peer", 35),
+                MagicMock(text='{"group_name": "ИСП-25-1", "days": []}'),
+            ]
+        )
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+
+        with patch("src.ocr_schedule.asyncio.sleep", new=AsyncMock()) as sleep:
+            response = await engine._generate_with_retry(client, "prompt", ["photo.jpg"], "flash")
+
+        self.assertIn("ИСП-25-1", response.text)
+        self.assertEqual(client.generate_content.await_count, 2)
+        sleep.assert_awaited_once_with(2.0)
+
+    async def test_ip_block_is_not_retried(self) -> None:
+        client = MagicMock()
+        client.generate_content = AsyncMock(side_effect=TemporarilyBlockedError("HTTP 429"))
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+
+        with self.assertRaises(TemporarilyBlockedError):
+            await engine._generate_with_retry(client, "prompt", ["photo.jpg"], "flash")
+
+        client.generate_content.assert_awaited_once()
 
     async def test_recognize_rejects_empty_image_list(self) -> None:
         from src.ocr_schedule import GeminiOcrEngine

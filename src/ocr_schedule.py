@@ -38,6 +38,7 @@ from datetime import datetime
 from pathlib import Path
 
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
+from curl_cffi.requests.exceptions import CurlError
 from gemini_webapi import GeminiClient
 from gemini_webapi.constants import AccountStatus
 from gemini_webapi.exceptions import (
@@ -133,6 +134,7 @@ OCR_GEM_SYSTEM_PROMPT = """\
 COOKIE_SYNC_INTERVAL_SECONDS = 30.0
 DEFAULT_GEMINI_DOH_URL = "https://xbox-dns.ru/dns-query"
 GEMINI_ROUTE_PROBE_URL = "https://gemini.google.com/app"
+GEMINI_TRANSIENT_RETRY_DELAYS = (2.0, 5.0)
 
 SUMMARY_RECOGNITION_PROMPT = """\
 На одной или нескольких приложенных фотографиях — сводное расписание занятий \
@@ -239,7 +241,18 @@ def classify_gemini_failure(error: BaseException | str) -> GeminiFailureInfo:
             True,
             "проверить доступность xbox-dns.ru и разрешение gemini.google.com",
         )
-    if any(marker in message for marker in ("proxy", "connect call failed", "connection refused")):
+    if any(
+        marker in message
+        for marker in (
+            "proxy",
+            "connect call failed",
+            "connection refused",
+            "connection reset",
+            "recv failure",
+            "curl: (35)",
+            "сетевой сбой",
+        )
+    ):
         return GeminiFailureInfo(
             "network",
             "ошибка сетевого подключения",
@@ -759,21 +772,19 @@ class GeminiOcrEngine:
                     tmp_file.write(image_bytes)
                 tmp_paths.append(tmp_path)
             try:
-                response = await client.generate_content(
+                response = await self._generate_with_retry(
+                    client,
                     prompt or RECOGNITION_PROMPT,
-                    files=list(tmp_paths),
-                    model=self._resolved_model,
-                    gem=self.gem_id,
-                    temporary=True,
+                    tmp_paths,
+                    self._resolved_model,
                 )
                 if self._fallback_model is not None and not _is_json_response(response.text):
                     logger.warning("Flash вернул не-JSON для OCR, повторяю один раз через Gemini Pro.")
-                    response = await client.generate_content(
+                    response = await self._generate_with_retry(
+                        client,
                         prompt or RECOGNITION_PROMPT,
-                        files=list(tmp_paths),
-                        model=self._fallback_model,
-                        gem=self.gem_id,
-                        temporary=True,
+                        tmp_paths,
+                        self._fallback_model,
                     )
             except AuthError as exc:
                 if self._cookie_sync_task is not None:
@@ -789,6 +800,8 @@ class GeminiOcrEngine:
                 raise OcrEngineError(f"Gemini не ответил вовремя: {exc}") from exc
             except GeminiError as exc:
                 raise OcrEngineError(f"Ошибка распознавания через Gemini: {exc}") from exc
+            except (CurlError, OSError) as exc:
+                raise OcrEngineError(f"Сетевой сбой при обращении к Gemini: {exc}") from exc
         finally:
             for tmp_path in tmp_paths:
                 try:
@@ -796,6 +809,35 @@ class GeminiOcrEngine:
                 except OSError:
                     logger.debug("Не удалось удалить временный файл %s.", tmp_path, exc_info=True)
         return response.text
+
+    async def _generate_with_retry(self, client: GeminiClient, prompt: str, files: list[str], model):
+        """Повторяет только кратковременные сетевые сбои, не расходуя квоту при 429/гео."""
+        attempts = len(GEMINI_TRANSIENT_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                return await client.generate_content(
+                    prompt,
+                    files=list(files),
+                    model=model,
+                    gem=self.gem_id,
+                    temporary=True,
+                )
+            except (CurlError, OSError, GeminiTimeoutError) as exc:
+                failure = classify_gemini_failure(exc)
+                can_retry = failure.code in {"network", "timeout", "dns"}
+                if not can_retry or attempt >= len(GEMINI_TRANSIENT_RETRY_DELAYS):
+                    raise
+                delay = GEMINI_TRANSIENT_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "gemini_retry reason=%s attempt=%s/%s delay=%.0fs error=%s",
+                    failure.code,
+                    attempt + 2,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("Недостижимый конец цикла повторов Gemini")
 
 
 def _is_json_response(text: str) -> bool:
