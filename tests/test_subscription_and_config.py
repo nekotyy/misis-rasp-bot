@@ -36,6 +36,9 @@ class SubscriptionAndConfigTests(unittest.TestCase):
         group_sub = make_group_subscription("ИСП-25-1", schedule_id=600)
         self.assertEqual(group_sub["subscription_type"], "group")
         self.assertEqual(group_sub["subscription_title"], "ИСП-25-1")
+        pending_sub = make_group_subscription("МТО-26", schedule_id=None)
+        self.assertEqual(pending_sub["subscription_key"], "group-pending:мто-26")
+        self.assertEqual(pending_sub["subscription_url"], "")
 
         teacher_target = SearchTarget(
             kind="teacher",

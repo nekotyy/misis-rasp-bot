@@ -441,9 +441,18 @@ class ScheduleJobs:
             return
 
         any_failed = False
-        for index, source in enumerate(sources):
-            if index:
+        attempted = 0
+        for source in sources:
+            if source.get("source_type") == "group" and source.get("schedule_id") is None:
+                logger.info(
+                    "Task %s skips offline OCR source %s until the site assigns schedule_id.",
+                    job_name,
+                    source["source_title"],
+                )
+                continue
+            if attempted:
                 await self._sleep_between_sources(job_name, str(source["source_title"]))
+            attempted += 1
             try:
                 await worker(source, **kwargs)
             except Exception as exc:
@@ -457,7 +466,7 @@ class ScheduleJobs:
                         details=f"Ошибка в задаче {job_name} для {source.get('source_title')}",
                     )
 
-        if not any_failed and self.alert_manager is not None:
+        if attempted and not any_failed and self.alert_manager is not None:
             await self.alert_manager.report_component_status("schedule_site", True)
 
     async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:

@@ -50,6 +50,9 @@ class Settings:
     gemini_secure_1psid: str
     gemini_secure_1psidts: str
     gemini_proxy: str
+    gemini_env_path: Path | None
+    gemini_refresh_interval_seconds: float
+    gemini_ocr_gem_id: str
     ocr_gemini_model: str
     ocr_timeout_seconds: float
     ocr_min_confidence: float
@@ -93,6 +96,16 @@ class Settings:
             gemini_secure_1psid=os.getenv("GEMINI_SECURE_1PSID", "").strip(),
             gemini_secure_1psidts=os.getenv("GEMINI_SECURE_1PSIDTS", "").strip(),
             gemini_proxy=os.getenv("GEMINI_PROXY", "").strip(),
+            gemini_env_path=(
+                Path(raw_env_path).resolve()
+                if (raw_env_path := os.getenv("GEMINI_ENV_PATH", "").strip())
+                else None
+            ),
+            gemini_refresh_interval_seconds=max(
+                60.0,
+                float(os.getenv("GEMINI_REFRESH_INTERVAL_SECONDS", "600").strip()),
+            ),
+            gemini_ocr_gem_id=os.getenv("GEMINI_OCR_GEM_ID", "").strip(),
             ocr_gemini_model=os.getenv("OCR_GEMINI_MODEL", "").strip(),
             ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "180").strip()),
             ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),

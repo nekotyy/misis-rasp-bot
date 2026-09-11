@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,6 +43,7 @@ MAX_PREVIEW_SKIPPED = 5
 MAX_PREVIEW_GROUPS = 30
 # Как часто обновлять индикатор во время долгого распознавания.
 HEARTBEAT_INTERVAL_SECONDS = 10
+_OFFLINE_GROUP_RE = re.compile(r"^[а-яёa-z0-9]+(?:-[а-яёa-z0-9]+)+$", re.IGNORECASE)
 
 # Этапы распознавания для индикатора прогресса. Проценты приблизительные:
 # движок не сообщает реальный ход, но админу важно видеть, что процесс жив
@@ -256,7 +258,15 @@ class OcrScheduleImporter:
 
         ticker = asyncio.create_task(heartbeat())
         try:
-            raw_text = await self.parser.recognize_image(images)
+            raw_text = await asyncio.wait_for(
+                self.parser.recognize_image(images),
+                timeout=self.recognize_timeout,
+            )
+        except TimeoutError as exc:
+            error = OcrEngineError(f"Gemini не завершил распознавание за {int(self.recognize_timeout)} с.")
+            self.last_error = str(error)
+            await self._report(False, str(error), "Таймаут распознавания фото")
+            raise error from exc
         except Exception as exc:
             self.last_error = str(exc)
             await self._report(False, str(exc), "Ошибка распознавания фото")
@@ -319,6 +329,8 @@ class OcrScheduleImporter:
             logger.exception("Не удалось применить расписание из фото.")
             return False, f"Ошибка при сохранении расписания: {exc}"
 
+        await self.register_pending_source(draft.source)
+
         title = str(draft.source.get("source_title") or draft.source.get("group_name") or "источник")
         lessons = draft.result.lessons_count
         dates = len(draft.result.snapshot.days)
@@ -365,7 +377,15 @@ class OcrScheduleImporter:
 
         ticker = asyncio.create_task(heartbeat())
         try:
-            raw_text = await self.parser.recognize_summary_image(images)
+            raw_text = await asyncio.wait_for(
+                self.parser.recognize_summary_image(images),
+                timeout=self.recognize_timeout,
+            )
+        except TimeoutError as exc:
+            error = OcrEngineError(f"Gemini не завершил распознавание за {int(self.recognize_timeout)} с.")
+            self.last_error = str(error)
+            await self._report(False, str(error), "Таймаут распознавания сводного фото")
+            raise error from exc
         except Exception as exc:
             self.last_error = str(exc)
             await self._report(False, str(exc), "Ошибка распознавания сводного фото")
@@ -432,6 +452,7 @@ class OcrScheduleImporter:
                 )
                 failed.append(f"{resolution.group_lessons.group_name}: {exc}")
                 continue
+            await self.register_pending_source(resolution.source)
             applied += 1
             if change_summary is not None:
                 broadcasted += 1
@@ -474,6 +495,21 @@ class OcrScheduleImporter:
         а найти группу и провести снимок по общему конвейеру — надо.
         """
         return await self._resolve_source(group_name)
+
+    async def register_pending_source(self, source: dict) -> None:
+        """После успешного импорта делает OCR-группу доступной обоим ботам."""
+        if source.get("source_type") != "group" or source.get("schedule_id") is not None:
+            return
+        group_name = str(source.get("group_name") or source.get("source_title") or "").strip()
+        if not group_name:
+            return
+        try:
+            if self.group_catalog is not None:
+                await self.group_catalog.add_pending_groups([group_name])
+            else:
+                await self.db.add_pending_groups([group_name])
+        except Exception:
+            logger.warning("Не удалось добавить OCR-группу %s в офлайн-каталог.", group_name, exc_info=True)
 
     async def _resolve_source(self, group_name: str, sources: list[dict] | None = None) -> tuple[dict | None, str]:
         """Ищет источник, к которому относится фото.
@@ -527,6 +563,20 @@ class OcrScheduleImporter:
                     "",
                 )
 
+        if _is_plausible_group_name(normalized):
+            canonical_name = normalized.upper()
+            return (
+                {
+                    "source_type": "group",
+                    "source_key": f"group-pending:{normalized}",
+                    "source_title": canonical_name,
+                    "source_url": "",
+                    "schedule_id": None,
+                    "group_name": canonical_name,
+                },
+                "",
+            )
+
         known = sorted(
             {
                 str(source.get("group_name") or source.get("source_title") or "")
@@ -537,6 +587,12 @@ class OcrScheduleImporter:
         )
         hint = f" Известные группы: {', '.join(known[:10])}." if known else ""
         return None, f"Группа «{group_name}» не найдена среди подписанных источников.{hint}"
+
+
+def _is_plausible_group_name(normalized: str) -> bool:
+    return len(normalized) <= 32 and any(char.isdigit() for char in normalized) and bool(
+        _OFFLINE_GROUP_RE.fullmatch(normalized)
+    )
 
 
 def _float_setting(settings, name: str, default: float) -> float:
@@ -561,6 +617,9 @@ def build_ocr_importer(
         model=str(getattr(settings, "ocr_gemini_model", "") or ""),
         proxy=str(getattr(settings, "gemini_proxy", "") or ""),
         timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
+        env_path=getattr(settings, "gemini_env_path", None),
+        refresh_interval=_float_setting(settings, "gemini_refresh_interval_seconds", 600.0),
+        gem_id=str(getattr(settings, "gemini_ocr_gem_id", "") or ""),
     )
     return OcrScheduleImporter(
         db,

@@ -372,17 +372,42 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest.mock import patch
 
-        from src.ocr_schedule import GeminiOcrEngine
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
 
         captured: dict[str, object] = {}
 
         class FakeGeminiClient:
             async def init(self, **kwargs) -> None:
+                captured["init"] = kwargs
                 return None
 
-            async def generate_content(self, prompt, files=None, model=None):
+            def resolve_model(self, name):
+                captured.setdefault("resolved_names", []).append(name)
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem",
+                        prompt=OCR_GEM_SYSTEM_PROMPT,
+                        description=OCR_GEM_DESCRIPTION,
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
                 path = files[0]
                 captured["path"] = path
+                captured["model"] = model
+                captured["gem"] = gem
+                captured["temporary"] = temporary
                 with open(path, "rb") as opened:
                     captured["content"] = opened.read()
                 return MagicMock(text='{"group_name": "", "days": []}')
@@ -394,6 +419,11 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(captured["path"], str)
         self.assertTrue(str(captured["path"]).endswith(".jpg"))
         self.assertEqual(captured["content"], b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+        self.assertTrue(captured["init"]["auto_refresh"])
+        self.assertEqual(captured["resolved_names"], ["flash", "pro"])
+        self.assertEqual(captured["model"], "resolved-flash")
+        self.assertEqual(captured["gem"], "ocr-gem")
+        self.assertTrue(captured["temporary"])
         self.assertFalse(os.path.exists(str(captured["path"])), "Временный файл должен удаляться после запроса")
 
     async def test_recognize_uploads_several_photos_in_one_request(self) -> None:
@@ -401,7 +431,11 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest.mock import patch
 
-        from src.ocr_schedule import GeminiOcrEngine
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
 
         captured: dict[str, object] = {}
 
@@ -409,7 +443,23 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
             async def init(self, **kwargs) -> None:
                 return None
 
-            async def generate_content(self, prompt, files=None, model=None):
+            def resolve_model(self, name):
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem",
+                        prompt=OCR_GEM_SYSTEM_PROMPT,
+                        description=OCR_GEM_DESCRIPTION,
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
                 captured["paths"] = list(files)
                 contents = []
                 for path in files:
@@ -430,6 +480,70 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["contents"], images)
         for path in paths:
             self.assertFalse(os.path.exists(path), "Временные файлы должны удаляться после запроса")
+
+    def test_update_env_file_replaces_secrets_and_preserves_other_settings(self) -> None:
+        import tempfile
+
+        from src.ocr_schedule import update_env_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = pathlib.Path(directory) / ".env"
+            env_path.write_text("OCR_ENABLED=true\nGEMINI_SECURE_1PSIDTS=old\n", encoding="utf-8")
+
+            update_env_file(
+                env_path,
+                {
+                    "GEMINI_SECURE_1PSIDTS": "new",
+                    "GEMINI_OCR_GEM_ID": "gem-123",
+                },
+            )
+
+            content = env_path.read_text(encoding="utf-8")
+            self.assertIn("OCR_ENABLED=true", content)
+            self.assertIn("GEMINI_SECURE_1PSIDTS=new", content)
+            self.assertIn("GEMINI_OCR_GEM_ID=gem-123", content)
+            self.assertNotIn("=old", content)
+
+    async def test_non_json_flash_response_retries_once_with_pro(self) -> None:
+        from unittest.mock import patch
+
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
+
+        flash = MagicMock(model_id="flash-id")
+        pro = MagicMock(model_id="pro-id")
+        client = MagicMock()
+        client.init = AsyncMock()
+        client.resolve_model = MagicMock(side_effect=lambda name: pro if name == "pro" else flash)
+        jar = MagicMock()
+        jar.get = MagicMock(
+            side_effect=lambda **kwargs: MagicMock(
+                id="ocr-gem",
+                prompt=OCR_GEM_SYSTEM_PROMPT,
+                description=OCR_GEM_DESCRIPTION,
+            )
+            if kwargs.get("name")
+            else None
+        )
+        client.fetch_gems = AsyncMock(return_value=jar)
+        client.generate_content = AsyncMock(
+            side_effect=[
+                MagicMock(text="Я не могу обработать изображение."),
+                MagicMock(text='{"group_name": "ИСП-25-1", "days": []}'),
+            ]
+        )
+
+        with patch("src.ocr_schedule.GeminiClient", return_value=client):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            result = await engine.recognize([b"\xff\xd8\xffimage"])
+
+        self.assertIn("ИСП-25-1", result)
+        self.assertEqual(client.generate_content.await_count, 2)
+        self.assertIs(client.generate_content.await_args_list[0].kwargs["model"], flash)
+        self.assertIs(client.generate_content.await_args_list[1].kwargs["model"], pro)
 
     async def test_recognize_rejects_empty_image_list(self) -> None:
         from src.ocr_schedule import GeminiOcrEngine

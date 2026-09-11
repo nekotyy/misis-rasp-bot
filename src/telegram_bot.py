@@ -230,13 +230,6 @@ SEARCH_NOT_FOUND_TEXT = (
     "Проверь раскладку, дефисы и пробелы.\n"
     "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
 )
-PENDING_GROUP_TEXT = (
-    "Группа «{name}» пока не подтверждена сайтом расписания — сайт сейчас недоступен и ещё не "
-    "показывал эту группу под своим номером. Как только сайт заработает, подписка станет доступна. "
-    "Расписание в это время может обновляться через фото, если админ его пришлёт."
-)
-
-
 SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Расписание на сегодня", callback_data="schedule:today")],
@@ -546,11 +539,8 @@ async def resolve_subscription_input(
             logger.warning("Error finding group in GroupCatalog: %s", exc)
             return None, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут."
 
-    if group is not None and group.schedule_id is not None:
-        return make_group_subscription(group.group_name, group.schedule_id), None
-
     if group is not None:
-        return None, PENDING_GROUP_TEXT.format(name=group.group_name)
+        return make_group_subscription(group.group_name, group.schedule_id), None
 
     if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
         return None, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает."
@@ -1037,11 +1027,8 @@ def build_dispatcher(
                 logger.warning("Error finding group in GroupCatalog: %s", exc)
                 return None, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут."
 
-        if group is not None and group.schedule_id is not None:
-            return make_group_subscription(group.group_name, group.schedule_id), None
-
         if group is not None:
-            return None, PENDING_GROUP_TEXT.format(name=group.group_name)
+            return make_group_subscription(group.group_name, group.schedule_id), None
 
         if g_cat is not None and getattr(g_cat, "last_error", None) is not None and not getattr(g_cat, "_groups_by_name", {}):
             return None, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает."

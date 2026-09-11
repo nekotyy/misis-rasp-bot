@@ -4,6 +4,8 @@ services:
     container_name: misis-rasp-bot
     restart: unless-stopped
     depends_on:
+      doh:
+        condition: service_started
       rabbitmq:
         condition: service_healthy
     env_file:
@@ -17,8 +19,31 @@ services:
       RABBITMQ_PREFETCH_COUNT: ${RABBITMQ_PREFETCH_COUNT:-20}
       LESSON_COUNTERS_PATH: /app/runtime/lesson_counters.json
       LESSON_COUNTERS_QUEUE: ${LESSON_COUNTERS_QUEUE:-misis_lesson_counters}
+      GEMINI_COOKIE_PATH: /app/runtime/gemini_cookies
+      GEMINI_ENV_PATH: /app/config/.env
+    dns:
+      - 172.29.0.53
+    extra_hosts:
+      - "rabbitmq:172.29.0.10"
     volumes:
       - ./runtime:/app/runtime
+      - ./.env:/app/config/.env
+
+  doh:
+    image: cloudflare/cloudflared:2026.1.2
+    container_name: misis-gemini-doh
+    restart: unless-stopped
+    command:
+      - proxy-dns
+      - --address
+      - 0.0.0.0
+      - --port
+      - "53"
+      - --upstream
+      - https://xbox-dns.ru/dns-query
+    networks:
+      default:
+        ipv4_address: 172.29.0.53
 
   web:
     build: .
@@ -78,6 +103,15 @@ services:
       - "${RABBITMQ_BIND_IP:-127.0.0.1}:15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      default:
+        ipv4_address: 172.29.0.10
 
 volumes:
   rabbitmq-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

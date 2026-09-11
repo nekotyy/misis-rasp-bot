@@ -75,12 +75,6 @@ SEARCH_NOT_FOUND_TEXT = (
     "Проверь раскладку, дефисы и пробелы.\n"
     "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
 )
-PENDING_GROUP_TEXT = (
-    "Группа «{name}» пока не подтверждена сайтом расписания — сайт сейчас недоступен и ещё не "
-    "показывал эту группу под своим номером. Как только сайт заработает, подписка станет доступна. "
-    "Расписание в это время может обновляться через фото, если админ его пришлёт."
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -1405,14 +1399,10 @@ def build_vk_bot(
                 await prompt_group_selection(peer_id, "Не получилось проверить группу — временная ошибка связи с сайтом расписания. Попробуйте еще раз через несколько минут.")
                 return False
 
-        if group is not None and group.schedule_id is not None:
+        if group is not None:
             await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
             await db.clear_user_audience_subscription("vk", user_id)
         else:
-            if group is not None:
-                await prompt_group_selection(peer_id, PENDING_GROUP_TEXT.format(name=group.group_name))
-                return False
-
             if group_catalog is not None and getattr(group_catalog, "last_error", None) is not None and not getattr(group_catalog, "_groups_by_name", {}):
                 await prompt_group_selection(peer_id, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает.")
                 return False
