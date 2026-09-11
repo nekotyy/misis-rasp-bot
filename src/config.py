@@ -29,6 +29,7 @@ class Settings:
     schedule_request_delay_seconds: float
     schedule_request_jitter_seconds: float
     telegram_bot_token: str
+    telegram_proxy: str
     vk_bot_token: str
     vk_disable_ssl_verify: bool
     admin_telegram_id: int | None
@@ -71,6 +72,7 @@ class Settings:
             schedule_request_delay_seconds=float(os.getenv("SCHEDULE_REQUEST_DELAY_SECONDS", "8").strip()),
             schedule_request_jitter_seconds=float(os.getenv("SCHEDULE_REQUEST_JITTER_SECONDS", "4").strip()),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_proxy=os.getenv("TELEGRAM_PROXY", "").strip(),
             vk_bot_token=os.getenv("VK_BOT_TOKEN", "").strip(),
             vk_disable_ssl_verify=os.getenv("VK_DISABLE_SSL_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"},
             admin_telegram_id=admin_telegram_ids[0] if admin_telegram_ids else None,
