@@ -22,6 +22,7 @@ from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, ScheduleSnapshot
 from src.ocr_schedule import (
     DEFAULT_GEMINI_DOH_URL,
+    GeminiFailureInfo,
     GeminiOcrEngine,
     OcrEngineError,
     OcrGroupLessons,
@@ -31,6 +32,7 @@ from src.ocr_schedule import (
     OcrVocabulary,
     SnapshotMergeResult,
     build_ocr_engine,
+    classify_gemini_failure,
     merge_ocr_days,
 )
 from src.schedule_service import format_human_date
@@ -151,6 +153,13 @@ class OcrScheduleImporter:
         self.is_warm = False
         self.last_error: str = ""
         self.last_success_at: str = ""
+        self.last_available_at: str = ""
+        self.last_failure_at: str = ""
+        self.last_failure_code: str = ""
+        self.last_failure_title: str = ""
+        self.last_failure_action: str = ""
+        self.last_failure_retryable = False
+        self.consecutive_failures = 0
         self.parser = OcrScheduleParser(
             engine,
             fuzzy_threshold=fuzzy_threshold,
@@ -181,14 +190,98 @@ class OcrScheduleImporter:
         try:
             await self.engine.warm_up()
         except Exception as exc:
-            self.last_error = str(exc)
-            logger.warning("Не удалось прогреть OCR-движок: %s", exc)
-            await self._report(False, str(exc), "Прогрев моделей распознавания не удался")
+            await self._record_failure(exc, "прогрев OCR")
             return
+        await self._record_success("прогрев OCR")
+
+    async def _record_failure(self, error: BaseException | str, context: str) -> GeminiFailureInfo:
+        info = classify_gemini_failure(error)
+        raw_error = str(error).strip() or type(error).__name__
+        if len(raw_error) > 600:
+            raw_error = raw_error[:597] + "..."
+        self.is_warm = False
+        self.last_error = f"{info.title} [{info.code}]: {raw_error}"
+        self.last_failure_at = datetime.now().isoformat(timespec="seconds")
+        self.last_failure_code = info.code
+        self.last_failure_title = info.title
+        self.last_failure_action = info.action
+        self.last_failure_retryable = info.retryable
+        self.consecutive_failures += 1
+        engine_diagnostics = self._engine_diagnostics()
+        logger.error(
+            "gemini_health status=unavailable reason=%s retryable=%s consecutive=%s "
+            "context=%s remote_ip=%s route_http=%s account_status=%s error=%s action=%s",
+            info.code,
+            info.retryable,
+            self.consecutive_failures,
+            context,
+            engine_diagnostics.get("remote_ip") or "unknown",
+            engine_diagnostics.get("route_http_status") or "unknown",
+            engine_diagnostics.get("account_status") or "unknown",
+            raw_error,
+            info.action,
+        )
+        details = (
+            f"Категория: {info.title} ({info.code}); этап: {context}; "
+            f"повторяемая: {'да' if info.retryable else 'нет'}; "
+            f"Gemini IP: {engine_diagnostics.get('remote_ip') or 'не определён'}; "
+            f"HTTP маршрута: {engine_diagnostics.get('route_http_status') or '—'}; "
+            f"статус аккаунта: {engine_diagnostics.get('account_status') or '—'}; "
+            f"действие: {info.action}"
+        )
+        await self._report(False, self.last_error, details)
+        return info
+
+    async def _record_success(self, context: str, *, photo: bool = False) -> None:
+        recovered_from = self.last_failure_code
         self.is_warm = True
         self.last_error = ""
-        logger.info("OCR-движок %s готов к работе.", self.engine.name)
+        self.last_available_at = datetime.now().isoformat(timespec="seconds")
+        if photo:
+            self.last_success_at = datetime.now().strftime("%d.%m %H:%M")
+        self.last_failure_code = ""
+        self.last_failure_title = ""
+        self.last_failure_action = ""
+        self.last_failure_retryable = False
+        self.consecutive_failures = 0
+        diagnostics = self._engine_diagnostics()
+        logger.info(
+            "gemini_health status=available context=%s recovered_from=%s remote_ip=%s "
+            "route_http=%s account_status=%s",
+            context,
+            recovered_from or "none",
+            diagnostics.get("remote_ip") or "unknown",
+            diagnostics.get("route_http_status") or "unknown",
+            diagnostics.get("account_status") or "unknown",
+        )
         await self._report(True)
+
+    def _engine_diagnostics(self) -> dict[str, str | int | bool]:
+        diagnostics = getattr(self.engine, "diagnostics", None)
+        if not callable(diagnostics):
+            return {}
+        try:
+            result = diagnostics()
+        except Exception:
+            logger.debug("Не удалось получить диагностику Gemini.", exc_info=True)
+            return {}
+        return result if isinstance(result, dict) else {}
+
+    def diagnostics(self) -> dict[str, str | int | bool]:
+        """Состояние OCR для админки и автоматического мониторинга."""
+        result: dict[str, str | int | bool] = {
+            "ready": self.is_warm and not self.last_error,
+            "last_available_at": self.last_available_at,
+            "last_success_at": self.last_success_at,
+            "last_failure_at": self.last_failure_at,
+            "failure_code": self.last_failure_code,
+            "failure_title": self.last_failure_title,
+            "failure_action": self.last_failure_action,
+            "failure_retryable": self.last_failure_retryable,
+            "consecutive_failures": self.consecutive_failures,
+        }
+        result.update(self._engine_diagnostics())
+        return result
 
     async def _report(self, ok: bool, error: str | None = None, details: str | None = None) -> None:
         if self.alert_manager is None:
@@ -203,10 +296,20 @@ class OcrScheduleImporter:
         available, message = self.availability()
         if not available:
             mark, state = "🔴", message
+        elif self.last_error:
+            mark = "🟡" if not self.last_failure_code or self.last_failure_retryable else "🔴"
+            state = f"недоступен — {self.last_failure_title or self.last_error}"
+            if self.last_failure_code:
+                state += f" [{self.last_failure_code}]"
+            if self.consecutive_failures:
+                state += f", подряд: {self.consecutive_failures}"
+            diagnostics = self._engine_diagnostics()
+            if diagnostics.get("remote_ip"):
+                state += f", IP: {diagnostics['remote_ip']}"
+            if diagnostics.get("account_status") not in {None, "", "NOT_CHECKED"}:
+                state += f", аккаунт: {diagnostics['account_status']}"
         elif not self.is_warm:
             mark, state = "🟡", "модели греются"
-        elif self.last_error:
-            mark, state = "🟡", f"последняя ошибка: {self.last_error}"
         else:
             engine = getattr(self.engine, "name", "?")
             state = f"готов ({engine})"
@@ -266,12 +369,10 @@ class OcrScheduleImporter:
             )
         except TimeoutError as exc:
             error = OcrEngineError(f"Gemini не завершил распознавание за {int(self.recognize_timeout)} с.")
-            self.last_error = str(error)
-            await self._report(False, str(error), "Таймаут распознавания фото")
+            await self._record_failure(error, "распознавание фото")
             raise error from exc
         except Exception as exc:
-            self.last_error = str(exc)
-            await self._report(False, str(exc), "Ошибка распознавания фото")
+            await self._record_failure(exc, "распознавание фото")
             raise
         finally:
             ticker.cancel()
@@ -301,9 +402,7 @@ class OcrScheduleImporter:
         if source is not None and not merge.snapshot.group_name.strip():
             merge.snapshot.group_name = str(source.get("group_name") or source.get("source_title") or "")
 
-        self.last_error = ""
-        self.last_success_at = datetime.now().strftime("%d.%m %H:%M")
-        await self._report(True)
+        await self._record_success("распознавание фото", photo=True)
         return OcrImportDraft(
             result=result,
             merge=merge,
@@ -385,12 +484,10 @@ class OcrScheduleImporter:
             )
         except TimeoutError as exc:
             error = OcrEngineError(f"Gemini не завершил распознавание за {int(self.recognize_timeout)} с.")
-            self.last_error = str(error)
-            await self._report(False, str(error), "Таймаут распознавания сводного фото")
+            await self._record_failure(error, "распознавание сводного фото")
             raise error from exc
         except Exception as exc:
-            self.last_error = str(exc)
-            await self._report(False, str(exc), "Ошибка распознавания сводного фото")
+            await self._record_failure(exc, "распознавание сводного фото")
             raise
         finally:
             ticker.cancel()
@@ -426,9 +523,7 @@ class OcrScheduleImporter:
             )
 
         await notify_stage(OCR_STAGE_PREVIEW, 95)
-        self.last_error = ""
-        self.last_success_at = datetime.now().strftime("%d.%m %H:%M")
-        await self._report(True)
+        await self._record_success("распознавание сводного фото", photo=True)
         return OcrSummaryImportDraft(result=result, resolutions=resolutions, raw_text=raw_text)
 
     async def apply_summary(self, draft: OcrSummaryImportDraft, *, notify: bool = True) -> tuple[bool, str]:

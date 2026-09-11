@@ -39,6 +39,7 @@ from pathlib import Path
 
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from gemini_webapi import GeminiClient
+from gemini_webapi.constants import AccountStatus
 from gemini_webapi.exceptions import (
     AuthError,
     GeminiError,
@@ -131,6 +132,7 @@ OCR_GEM_SYSTEM_PROMPT = """\
 """
 COOKIE_SYNC_INTERVAL_SECONDS = 30.0
 DEFAULT_GEMINI_DOH_URL = "https://xbox-dns.ru/dns-query"
+GEMINI_ROUTE_PROBE_URL = "https://gemini.google.com/app"
 
 SUMMARY_RECOGNITION_PROMPT = """\
 На одной или нескольких приложенных фотографиях — сводное расписание занятий \
@@ -171,6 +173,106 @@ SUMMARY_RECOGNITION_PROMPT = """\
 
 class OcrEngineError(RuntimeError):
     """Движок распознавания недоступен или вернул ошибку."""
+
+
+@dataclass(frozen=True, slots=True)
+class GeminiFailureInfo:
+    """Безопасная для логов классификация сбоя Gemini."""
+
+    code: str
+    title: str
+    retryable: bool
+    action: str
+
+
+def classify_gemini_failure(error: BaseException | str) -> GeminiFailureInfo:
+    """Определяет причину сбоя без привязки только к тексту одной версии API."""
+    message = str(error).casefold()
+
+    if "location_rejected" in message or "country/region" in message or "регион" in message:
+        return GeminiFailureInfo(
+            "geo",
+            "географическое ограничение",
+            False,
+            "проверить фактический Gemini IP через DoH и регион Google-аккаунта",
+        )
+    if isinstance(error, UsageLimitExceededError) or any(
+        marker in message for marker in ("usage limit", "quota exceeded", "исчерпан лимит", "credits remaining: 0")
+    ):
+        return GeminiFailureInfo(
+            "quota",
+            "исчерпан лимит Gemini",
+            True,
+            "дождаться сброса лимита или выбрать модель с доступной квотой",
+        )
+    if isinstance(error, TemporarilyBlockedError) or any(
+        marker in message for marker in ("http 429", "temporarily flagged", "too many requests", "ip address")
+    ):
+        return GeminiFailureInfo(
+            "ip_block",
+            "временная блокировка IP (429)",
+            True,
+            "не перезапускать клиент часто и дождаться снятия временного ограничения",
+        )
+    if isinstance(error, AuthError) or any(
+        marker in message for marker in ("unauthenticated", "cookie", "куки", "credentials", "сессия протухла")
+    ):
+        return GeminiFailureInfo(
+            "auth",
+            "ошибка авторизации cookies",
+            False,
+            "обновить __Secure-1PSID и __Secure-1PSIDTS в .env",
+        )
+    if isinstance(error, (GeminiTimeoutError, TimeoutError)) or any(
+        marker in message for marker in ("timeout", "таймаут", "не завершил распознавание")
+    ):
+        return GeminiFailureInfo(
+            "timeout",
+            "таймаут Gemini",
+            True,
+            "повторить позже и проверить задержку сети/DoH",
+        )
+    if any(marker in message for marker in ("resolve host", "could not resolve", "dns", "doh")):
+        return GeminiFailureInfo(
+            "dns",
+            "ошибка DNS/DoH",
+            True,
+            "проверить доступность xbox-dns.ru и разрешение gemini.google.com",
+        )
+    if any(marker in message for marker in ("proxy", "connect call failed", "connection refused")):
+        return GeminiFailureInfo(
+            "network",
+            "ошибка сетевого подключения",
+            True,
+            "проверить маршрут, прокси и доступ контейнера к сети",
+        )
+    if any(marker in message for marker in ("permission denied", "account_rejected", "guardian", "terms of service")):
+        return GeminiFailureInfo(
+            "account",
+            "ограничение Google-аккаунта",
+            False,
+            "открыть Gemini в браузере и проверить аккаунт, правила и возрастные ограничения",
+        )
+    if any(marker in message for marker in ("model", "модель")):
+        return GeminiFailureInfo(
+            "model",
+            "модель недоступна",
+            True,
+            "использовать доступную аккаунту Flash/Pro модель",
+        )
+    if any(marker in message for marker in ("json", "ответ распознавания", "response")):
+        return GeminiFailureInfo(
+            "response",
+            "некорректный ответ модели",
+            True,
+            "повторить распознавание или прислать более чёткое фото",
+        )
+    return GeminiFailureInfo(
+        "unknown",
+        "неизвестная ошибка Gemini",
+        True,
+        "проверить полный журнал и повторить диагностический запрос",
+    )
 
 
 @dataclass(slots=True)
@@ -480,6 +582,9 @@ class GeminiOcrEngine:
         self._fallback_model = None
         self._cookie_sync_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self.last_remote_ip = ""
+        self.last_route_status = 0
+        self.last_account_status = "NOT_CHECKED"
 
     def availability(self) -> tuple[bool, str]:
         if not self.secure_1psid or not self.secure_1psidts:
@@ -498,6 +603,7 @@ class GeminiOcrEngine:
             if not available:
                 raise OcrEngineError(message)
             configure_gemini_doh(self.doh_url)
+            await self._probe_route()
             client = GeminiClient(self.secure_1psid, self.secure_1psidts, proxy=self.proxy)
             try:
                 await client.init(
@@ -514,13 +620,61 @@ class GeminiOcrEngine:
                 raise OcrEngineError(f"Не удалось подключиться к Gemini: истёк таймаут ({exc}).") from exc
             except GeminiError as exc:
                 raise OcrEngineError(f"Gemini недоступен: {exc}") from exc
-            self._resolved_model = self._select_model(client)
-            self._fallback_model = self._select_fallback_model(client, self._resolved_model)
-            self.gem_id = await self._ensure_gem(client)
-            await self._persist_session_state(client)
+            account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
+            self.last_account_status = getattr(account_status, "name", str(account_status))
+            if account_status != AccountStatus.AVAILABLE:
+                description = getattr(account_status, "description", "доступ ограничен")
+                await client.close()
+                raise OcrEngineError(f"Статус аккаунта Gemini {self.last_account_status}: {description}")
+            try:
+                self._resolved_model = self._select_model(client)
+                self._fallback_model = self._select_fallback_model(client, self._resolved_model)
+                self.gem_id = await self._ensure_gem(client)
+                await self._persist_session_state(client)
+            except Exception:
+                await client.close()
+                raise
             self._client = client
             self._cookie_sync_task = asyncio.create_task(self._sync_cookies_forever(client))
             return client
+
+    async def _probe_route(self) -> None:
+        """Проверяет DoH-маршрут и прогревает правильный DNS-кэш curl."""
+        session = CurlAsyncSession(doh_url=self.doh_url, proxy=self.proxy)
+        try:
+            response = await session.get(
+                GEMINI_ROUTE_PROBE_URL,
+                timeout=min(self.timeout, 30.0),
+                allow_redirects=False,
+            )
+            self.last_remote_ip = str(getattr(response, "primary_ip", "") or "")
+            self.last_route_status = int(response.status_code)
+            logger.info(
+                "gemini_route doh=%s remote_ip=%s http_status=%s",
+                self.doh_url or "disabled",
+                self.last_remote_ip or "unknown",
+                self.last_route_status,
+            )
+            if response.status_code == 429:
+                raise OcrEngineError("Gemini route probe: временная блокировка IP (HTTP 429).")
+            if response.status_code >= 500:
+                raise OcrEngineError(f"Gemini route probe: сервер ответил HTTP {response.status_code}.")
+        except OcrEngineError:
+            raise
+        except Exception as exc:
+            raise OcrEngineError(f"Не удалось проверить маршрут Gemini через DoH: {exc}") from exc
+        finally:
+            await session.close()
+
+    def diagnostics(self) -> dict[str, str | int | bool]:
+        """Текущая безопасная диагностика без cookies и токенов."""
+        return {
+            "doh_enabled": bool(self.doh_url),
+            "doh_url": self.doh_url or "",
+            "remote_ip": self.last_remote_ip,
+            "route_http_status": self.last_route_status,
+            "account_status": self.last_account_status,
+        }
 
     def _select_model(self, client: GeminiClient):
         if self.model:
