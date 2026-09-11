@@ -427,6 +427,7 @@ class BuildImporterTests(unittest.TestCase):
             gemini_secure_1psid="psid-value",
             gemini_secure_1psidts="psidts-value",
             gemini_proxy="",
+            gemini_doh_url="https://xbox-dns.ru/dns-query",
             ocr_gemini_model="gemini-pro",
             ocr_timeout_seconds=15.0,
             ocr_min_confidence=0.7,
@@ -438,6 +439,7 @@ class BuildImporterTests(unittest.TestCase):
         self.assertEqual(importer.engine.secure_1psid, "psid-value")
         self.assertEqual(importer.engine.secure_1psidts, "psidts-value")
         self.assertEqual(importer.engine.model, "gemini-pro")
+        self.assertEqual(importer.engine.doh_url, "https://xbox-dns.ru/dns-query")
         self.assertEqual(importer.parser.fuzzy_threshold, 0.9)
         self.assertEqual(importer.parser.min_confidence, 0.7)
 

@@ -15,11 +15,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
+from pathlib import Path
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, ScheduleSnapshot
 from src.ocr_schedule import (
+    DEFAULT_GEMINI_DOH_URL,
     GeminiOcrEngine,
     OcrEngineError,
     OcrGroupLessons,
@@ -603,6 +605,16 @@ def _float_setting(settings, name: str, default: float) -> float:
         return default
 
 
+def _string_setting(settings, name: str, default: str = "") -> str:
+    value = getattr(settings, name, default)
+    return value.strip() if isinstance(value, str) else default
+
+
+def _path_setting(settings, name: str):
+    value = getattr(settings, name, None)
+    return value if isinstance(value, (str, Path)) else None
+
+
 def build_ocr_importer(
     settings,
     db: Database,
@@ -612,14 +624,15 @@ def build_ocr_importer(
 ) -> OcrScheduleImporter:
     """Собирает сервис импорта по настройкам окружения."""
     engine = build_ocr_engine(
-        secure_1psid=str(getattr(settings, "gemini_secure_1psid", "") or ""),
-        secure_1psidts=str(getattr(settings, "gemini_secure_1psidts", "") or ""),
-        model=str(getattr(settings, "ocr_gemini_model", "") or ""),
-        proxy=str(getattr(settings, "gemini_proxy", "") or ""),
+        secure_1psid=_string_setting(settings, "gemini_secure_1psid"),
+        secure_1psidts=_string_setting(settings, "gemini_secure_1psidts"),
+        model=_string_setting(settings, "ocr_gemini_model"),
+        proxy=_string_setting(settings, "gemini_proxy"),
+        doh_url=_string_setting(settings, "gemini_doh_url", DEFAULT_GEMINI_DOH_URL),
         timeout=_float_setting(settings, "ocr_timeout_seconds", 180.0),
-        env_path=getattr(settings, "gemini_env_path", None),
+        env_path=_path_setting(settings, "gemini_env_path"),
         refresh_interval=_float_setting(settings, "gemini_refresh_interval_seconds", 600.0),
-        gem_id=str(getattr(settings, "gemini_ocr_gem_id", "") or ""),
+        gem_id=_string_setting(settings, "gemini_ocr_gem_id"),
     )
     return OcrScheduleImporter(
         db,

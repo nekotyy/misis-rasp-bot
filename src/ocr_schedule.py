@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import importlib
 import json
 import logging
 import os
@@ -36,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 from gemini_webapi import GeminiClient
 from gemini_webapi.exceptions import (
     AuthError,
@@ -128,6 +130,7 @@ OCR_GEM_SYSTEM_PROMPT = """\
 пояснений.
 """
 COOKIE_SYNC_INTERVAL_SECONDS = 30.0
+DEFAULT_GEMINI_DOH_URL = "https://xbox-dns.ru/dns-query"
 
 SUMMARY_RECOGNITION_PROMPT = """\
 На одной или нескольких приложенных фотографиях — сводное расписание занятий \
@@ -457,6 +460,7 @@ class GeminiOcrEngine:
         secure_1psidts: str = "",
         model: str = "",
         proxy: str = "",
+        doh_url: str = DEFAULT_GEMINI_DOH_URL,
         timeout: float = 60.0,
         env_path: Path | None = None,
         refresh_interval: float = 600.0,
@@ -466,6 +470,7 @@ class GeminiOcrEngine:
         self.secure_1psidts = secure_1psidts.strip()
         self.model = model.strip()
         self.proxy = proxy.strip() or None
+        self.doh_url = doh_url.strip() or None
         self.timeout = max(10.0, timeout)
         self.env_path = Path(env_path) if env_path else None
         self.refresh_interval = max(60.0, refresh_interval)
@@ -492,6 +497,7 @@ class GeminiOcrEngine:
             available, message = self.availability()
             if not available:
                 raise OcrEngineError(message)
+            configure_gemini_doh(self.doh_url)
             client = GeminiClient(self.secure_1psid, self.secure_1psidts, proxy=self.proxy)
             try:
                 await client.init(
@@ -643,6 +649,18 @@ def _is_json_response(text: str) -> bool:
         return isinstance(json.loads(_extract_json_payload(text or "")), dict)
     except json.JSONDecodeError:
         return False
+
+
+def configure_gemini_doh(doh_url: str | None) -> None:
+    """Назначает DoH только внутренней HTTP-сессии ``gemini_webapi``."""
+    access_token_module = importlib.import_module("gemini_webapi.utils.get_access_token")
+
+    def build_session(*args, **kwargs):
+        if doh_url:
+            kwargs.setdefault("doh_url", doh_url)
+        return CurlAsyncSession(*args, **kwargs)
+
+    access_token_module.AsyncSession = build_session
 
 
 def _auth_cookie_values(client: GeminiClient) -> dict[str, str]:
@@ -1162,6 +1180,7 @@ def build_ocr_engine(
     secure_1psidts: str = "",
     model: str = "",
     proxy: str = "",
+    doh_url: str = DEFAULT_GEMINI_DOH_URL,
     timeout: float = 60.0,
     env_path: Path | None = None,
     refresh_interval: float = 600.0,
@@ -1172,6 +1191,7 @@ def build_ocr_engine(
         secure_1psidts=secure_1psidts,
         model=model,
         proxy=proxy,
+        doh_url=doh_url,
         timeout=timeout,
         env_path=env_path,
         refresh_interval=refresh_interval,
