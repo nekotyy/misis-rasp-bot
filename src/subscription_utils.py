@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from src.group_catalog import GroupCatalog
 from src.schedule_search import SearchTarget
 
 
-def make_group_subscription(group_name: str, schedule_id: int) -> dict[str, str | int | None]:
+def make_group_subscription(group_name: str, schedule_id: int | None) -> dict[str, str | int | None]:
+    key = f"group:{schedule_id}" if schedule_id is not None else f"group-pending:{GroupCatalog.normalize(group_name)}"
     return {
         "subscription_type": "group",
-        "subscription_key": f"group:{schedule_id}",
+        "subscription_key": key,
         "subscription_title": group_name,
-        "subscription_url": f"rasp:{schedule_id}",
+        "subscription_url": f"rasp:{schedule_id}" if schedule_id is not None else "",
         "group_name": group_name,
         "schedule_id": schedule_id,
     }

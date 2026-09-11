@@ -228,9 +228,32 @@ class GroupCatalog:
     async def list_groups(self) -> list[GroupInfo]:
         await self.ensure_loaded()
         return sorted(
-            self._groups_by_schedule_id.values(),
+            self._groups_by_name.values(),
             key=lambda item: (item.department_code, item.group_name),
         )
+
+    async def add_pending_groups(self, group_names: list[str]) -> None:
+        """Добавляет подтверждённые админом OCR-группы без обращения к сайту."""
+        clean_names = [" ".join(name.split()) for name in group_names if name and name.strip()]
+        if not clean_names:
+            return
+        if self.db is not None:
+            await self.db.add_pending_groups(clean_names)
+        for group_name in clean_names:
+            normalized = self.normalize(group_name)
+            if normalized in self._groups_by_name:
+                continue
+            group = GroupInfo(
+                department_id=0,
+                department_code="",
+                department_name="",
+                group_name=group_name,
+                schedule_id=None,
+                url="",
+            )
+            self._groups_by_name[normalized] = group
+            self._groups_by_compact_name[self._compact_name_key(group_name)] = group
+        self._loaded = True
 
     async def find_group(self, group_name: str) -> GroupInfo | None:
         await self.ensure_loaded()

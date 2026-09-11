@@ -12,7 +12,10 @@ import json
 import pathlib
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from curl_cffi.requests.exceptions import CurlError
+from gemini_webapi.exceptions import TemporarilyBlockedError, UsageLimitExceededError
 
 from src.ocr_import import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -23,7 +26,7 @@ from src.ocr_import import (
     OcrScheduleImporter,
     format_progress_bar,
 )
-from src.ocr_schedule import OcrEngineError
+from src.ocr_schedule import GeminiOcrEngine, OcrEngineError, classify_gemini_failure
 from src.system_status import COMPONENT_TITLES, check_ocr_status
 
 RECOGNIZED_TEXT = json.dumps(
@@ -72,6 +75,81 @@ class FakeEngine:
         if self._recognize_error:
             raise OcrEngineError(self._recognize_error)
         return RECOGNIZED_TEXT
+
+    def diagnostics(self) -> dict[str, str | int | bool]:
+        return {
+            "doh_enabled": True,
+            "remote_ip": "87.228.47.194",
+            "route_http_status": 200,
+            "account_status": "AVAILABLE",
+        }
+
+
+class GeminiFailureClassificationTests(unittest.TestCase):
+    def test_geo_rejection_is_non_retryable(self) -> None:
+        result = classify_gemini_failure("Account status: LOCATION_REJECTED - unsupported country/region")
+
+        self.assertEqual(result.code, "geo")
+        self.assertFalse(result.retryable)
+
+    def test_ip_429_is_distinct_from_quota(self) -> None:
+        result = classify_gemini_failure(TemporarilyBlockedError("HTTP 429: IP address temporarily flagged"))
+
+        self.assertEqual(result.code, "ip_block")
+        self.assertTrue(result.retryable)
+
+    def test_usage_limit_has_own_category(self) -> None:
+        result = classify_gemini_failure(UsageLimitExceededError("Usage limit exceeded"))
+
+        self.assertEqual(result.code, "quota")
+        self.assertTrue(result.retryable)
+
+    def test_auth_and_network_categories(self) -> None:
+        self.assertEqual(classify_gemini_failure("cookies have expired").code, "auth")
+        self.assertEqual(classify_gemini_failure("connection refused").code, "network")
+        self.assertEqual(classify_gemini_failure("Gemini не завершил распознавание за 60 с.").code, "timeout")
+
+
+class GeminiRouteProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_uses_doh_and_records_real_remote_ip(self) -> None:
+        response = MagicMock(status_code=200, primary_ip="87.228.47.202")
+        session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="https://xbox-dns.ru/dns-query")
+
+        with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_factory:
+            await engine._probe_route()
+
+        session_factory.assert_called_once_with(
+            doh_url="https://xbox-dns.ru/dns-query",
+            proxy=None,
+        )
+        self.assertEqual(engine.diagnostics()["remote_ip"], "87.228.47.202")
+        self.assertEqual(engine.diagnostics()["route_http_status"], 200)
+        session.close.assert_awaited_once()
+
+    async def test_probe_leaves_dns_at_curl_default_when_doh_is_empty(self) -> None:
+        response = MagicMock(status_code=200, primary_ip="142.250.150.101")
+        session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="")
+
+        with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_factory:
+            await engine._probe_route()
+
+        session_factory.assert_called_once_with(proxy=None)
+        self.assertFalse(engine.diagnostics()["doh_enabled"])
+
+    async def test_probe_classifies_http_429_before_authorization(self) -> None:
+        response = MagicMock(status_code=429, primary_ip="87.228.47.194")
+        session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="https://xbox-dns.ru/dns-query")
+
+        with (
+            patch("src.ocr_schedule.CurlAsyncSession", return_value=session),
+            self.assertRaisesRegex(OcrEngineError, "HTTP 429"),
+        ):
+            await engine._probe_route()
+
+        session.close.assert_awaited_once()
 
 
 def make_importer(*, engine: FakeEngine | None = None, alerts: MagicMock | None = None, enabled: bool = True):
@@ -183,6 +261,16 @@ class StatusLineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(line.startswith("🟡"))
         self.assertIn("таймаут распознавания", line)
 
+    async def test_geo_failure_shows_red_reason_code(self) -> None:
+        importer = make_importer(engine=FakeEngine(warm_error="LOCATION_REJECTED country/region"))
+
+        await importer.warm_up()
+        line = importer.status_line(html=False)
+
+        self.assertTrue(line.startswith("🔴"))
+        self.assertIn("географическое ограничение", line)
+        self.assertIn("[geo]", line)
+
     async def test_html_variant_is_escaped(self) -> None:
         importer = make_importer()
         await importer.warm_up()
@@ -238,6 +326,9 @@ class FailureReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("движок умер", importer.last_error)
         self.assertFalse(alerts.report_component_status.await_args.args[1])
+        self.assertEqual(importer.last_failure_code, "unknown")
+        self.assertEqual(importer.consecutive_failures, 1)
+        self.assertIn("Gemini IP: 87.228.47.194", alerts.report_component_status.await_args.kwargs["details"])
 
     async def test_success_clears_error_and_stamps_time(self) -> None:
         alerts = MagicMock(report_component_status=AsyncMock())
@@ -248,6 +339,7 @@ class FailureReportingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(importer.last_error, "")
         self.assertTrue(importer.last_success_at)
+        self.assertEqual(importer.consecutive_failures, 0)
         self.assertTrue(alerts.report_component_status.await_args.args[1])
 
 
@@ -279,6 +371,17 @@ class SystemStatusTests(unittest.IsolatedAsyncioTestCase):
         status = await check_ocr_status(make_importer(enabled=False))
         self.assertFalse(status["ok"])
         self.assertIn("отключён", status["error"])
+
+    async def test_check_reports_classified_runtime_failure(self) -> None:
+        importer = make_importer(engine=FakeEngine(warm_error="LOCATION_REJECTED country/region"))
+        await importer.warm_up()
+
+        status = await check_ocr_status(importer)
+
+        self.assertFalse(status["ok"])
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["diagnostics"]["failure_code"], "geo")
+        self.assertEqual(status["diagnostics"]["remote_ip"], "87.228.47.194")
 
     async def test_check_survives_broken_importer(self) -> None:
         broken = MagicMock()
@@ -372,28 +475,59 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest.mock import patch
 
-        from src.ocr_schedule import GeminiOcrEngine
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
 
         captured: dict[str, object] = {}
 
         class FakeGeminiClient:
             async def init(self, **kwargs) -> None:
+                captured["init"] = kwargs
                 return None
 
-            async def generate_content(self, prompt, files=None, model=None):
+            def resolve_model(self, name):
+                captured.setdefault("resolved_names", []).append(name)
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem",
+                        prompt=OCR_GEM_SYSTEM_PROMPT,
+                        description=OCR_GEM_DESCRIPTION,
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
                 path = files[0]
                 captured["path"] = path
+                captured["model"] = model
+                captured["gem"] = gem
+                captured["temporary"] = temporary
                 with open(path, "rb") as opened:
                     captured["content"] = opened.read()
                 return MagicMock(text='{"group_name": "", "days": []}')
 
         with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
             engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
             await engine.recognize([b"\xff\xd8\xff\xe0fake-jpeg-bytes"])
 
         self.assertIsInstance(captured["path"], str)
         self.assertTrue(str(captured["path"]).endswith(".jpg"))
         self.assertEqual(captured["content"], b"\xff\xd8\xff\xe0fake-jpeg-bytes")
+        self.assertTrue(captured["init"]["auto_refresh"])
+        self.assertEqual(captured["resolved_names"], ["flash", "pro"])
+        self.assertEqual(captured["model"], "resolved-flash")
+        self.assertEqual(captured["gem"], "ocr-gem")
+        self.assertTrue(captured["temporary"])
         self.assertFalse(os.path.exists(str(captured["path"])), "Временный файл должен удаляться после запроса")
 
     async def test_recognize_uploads_several_photos_in_one_request(self) -> None:
@@ -401,7 +535,11 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         import os
         from unittest.mock import patch
 
-        from src.ocr_schedule import GeminiOcrEngine
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
 
         captured: dict[str, object] = {}
 
@@ -409,7 +547,23 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
             async def init(self, **kwargs) -> None:
                 return None
 
-            async def generate_content(self, prompt, files=None, model=None):
+            def resolve_model(self, name):
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem",
+                        prompt=OCR_GEM_SYSTEM_PROMPT,
+                        description=OCR_GEM_DESCRIPTION,
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
                 captured["paths"] = list(files)
                 contents = []
                 for path in files:
@@ -421,6 +575,7 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         images = [b"\xff\xd8\xff\xe0first", b"\x89PNG\r\n\x1a\nsecond"]
         with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
             engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
             await engine.recognize(images)
 
         paths = captured["paths"]
@@ -430,6 +585,100 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["contents"], images)
         for path in paths:
             self.assertFalse(os.path.exists(path), "Временные файлы должны удаляться после запроса")
+
+    def test_update_env_file_replaces_secrets_and_preserves_other_settings(self) -> None:
+        import tempfile
+
+        from src.ocr_schedule import update_env_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = pathlib.Path(directory) / ".env"
+            env_path.write_text("OCR_ENABLED=true\nGEMINI_SECURE_1PSIDTS=old\n", encoding="utf-8")
+
+            update_env_file(
+                env_path,
+                {
+                    "GEMINI_SECURE_1PSIDTS": "new",
+                    "GEMINI_OCR_GEM_ID": "gem-123",
+                },
+            )
+
+            content = env_path.read_text(encoding="utf-8")
+            self.assertIn("OCR_ENABLED=true", content)
+            self.assertIn("GEMINI_SECURE_1PSIDTS=new", content)
+            self.assertIn("GEMINI_OCR_GEM_ID=gem-123", content)
+            self.assertNotIn("=old", content)
+
+    async def test_non_json_flash_response_retries_once_with_pro(self) -> None:
+        from unittest.mock import patch
+
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
+
+        flash = MagicMock(model_id="flash-id")
+        pro = MagicMock(model_id="pro-id")
+        client = MagicMock()
+        client.init = AsyncMock()
+        client.account_status = 1000
+        client.close = AsyncMock()
+        client.resolve_model = MagicMock(side_effect=lambda name: pro if name == "pro" else flash)
+        jar = MagicMock()
+        jar.get = MagicMock(
+            side_effect=lambda **kwargs: MagicMock(
+                id="ocr-gem",
+                prompt=OCR_GEM_SYSTEM_PROMPT,
+                description=OCR_GEM_DESCRIPTION,
+            )
+            if kwargs.get("name")
+            else None
+        )
+        client.fetch_gems = AsyncMock(return_value=jar)
+        client.generate_content = AsyncMock(
+            side_effect=[
+                MagicMock(text="Я не могу обработать изображение."),
+                MagicMock(text='{"group_name": "ИСП-25-1", "days": []}'),
+            ]
+        )
+
+        with patch("src.ocr_schedule.GeminiClient", return_value=client):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            result = await engine.recognize([b"\xff\xd8\xffimage"])
+
+        self.assertIn("ИСП-25-1", result)
+        self.assertEqual(client.generate_content.await_count, 2)
+        self.assertIs(client.generate_content.await_args_list[0].kwargs["model"], flash)
+        self.assertIs(client.generate_content.await_args_list[1].kwargs["model"], pro)
+
+    async def test_transient_connection_reset_is_retried(self) -> None:
+        client = MagicMock()
+        client.generate_content = AsyncMock(
+            side_effect=[
+                CurlError("Recv failure: Connection reset by peer", 35),
+                MagicMock(text='{"group_name": "ИСП-25-1", "days": []}'),
+            ]
+        )
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+
+        with patch("src.ocr_schedule.asyncio.sleep", new=AsyncMock()) as sleep:
+            response = await engine._generate_with_retry(client, "prompt", ["photo.jpg"], "flash")
+
+        self.assertIn("ИСП-25-1", response.text)
+        self.assertEqual(client.generate_content.await_count, 2)
+        sleep.assert_awaited_once_with(2.0)
+
+    async def test_ip_block_is_not_retried(self) -> None:
+        client = MagicMock()
+        client.generate_content = AsyncMock(side_effect=TemporarilyBlockedError("HTTP 429"))
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+
+        with self.assertRaises(TemporarilyBlockedError):
+            await engine._generate_with_retry(client, "prompt", ["photo.jpg"], "flash")
+
+        client.generate_content.assert_awaited_once()
 
     async def test_recognize_rejects_empty_image_list(self) -> None:
         from src.ocr_schedule import GeminiOcrEngine
@@ -453,8 +702,46 @@ class EngineFactoryTests(unittest.TestCase):
         engine = build_ocr_engine(secure_1psid="psid", secure_1psidts="psidts", model="gemini-pro")
         self.assertIsInstance(engine, GeminiOcrEngine)
         self.assertEqual(engine.model, "gemini-pro")
+        self.assertIsNone(engine.doh_url)
         available, _ = engine.availability()
         self.assertTrue(available)
+
+    def test_gemini_session_gets_its_own_doh(self) -> None:
+        import importlib
+        from unittest.mock import patch
+
+        from src.ocr_schedule import configure_gemini_doh
+
+        module = importlib.import_module("gemini_webapi.utils.get_access_token")
+        original = module.AsyncSession
+        session = object()
+        try:
+            with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_class:
+                configure_gemini_doh("https://xbox-dns.ru/dns-query")
+                self.assertIs(module.AsyncSession(verify=True), session)
+            session_class.assert_called_once_with(
+                verify=True,
+                doh_url="https://xbox-dns.ru/dns-query",
+            )
+        finally:
+            module.AsyncSession = original
+
+    def test_gemini_session_leaves_dns_at_default_when_doh_is_empty(self) -> None:
+        import importlib
+        from unittest.mock import patch
+
+        from src.ocr_schedule import configure_gemini_doh
+
+        module = importlib.import_module("gemini_webapi.utils.get_access_token")
+        original = module.AsyncSession
+        session = object()
+        try:
+            with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_class:
+                configure_gemini_doh("")
+                self.assertIs(module.AsyncSession(verify=True), session)
+            session_class.assert_called_once_with(verify=True)
+        finally:
+            module.AsyncSession = original
 
     def test_factory_reports_missing_cookies(self) -> None:
         from src.ocr_schedule import build_ocr_engine
@@ -485,6 +772,18 @@ class LoggingRestoreTests(unittest.TestCase):
             self.assertFalse(std_logging.getLogger("src").disabled)
         finally:
             root.setLevel(original_level)
+
+    def test_restore_logging_reenables_existing_src_children(self) -> None:
+        import logging as std_logging
+
+        from src.main import restore_logging
+
+        child = std_logging.getLogger("src.ocr_schedule")
+        child.disabled = True
+
+        restore_logging()
+
+        self.assertFalse(child.disabled)
 
     def test_restore_logging_adds_handler_when_missing(self) -> None:
         import logging as std_logging

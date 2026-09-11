@@ -1,13 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from aiogram import Dispatcher
 from vkbottle.bot import Bot as VkBot
 
 from src.config import Settings
 from src.db import Database
+from src.main import build_telegram_bot
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
 
@@ -21,6 +22,7 @@ class BotInitializationTests(unittest.IsolatedAsyncioTestCase):
 
         self.mock_settings = MagicMock(spec=Settings)
         self.mock_settings.telegram_bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+        self.mock_settings.telegram_proxy = "socks5://proxy.example:2080"
         self.mock_settings.vk_bot_token = "vk_test_token_1234567890"
         self.mock_settings.vk_disable_ssl_verify = True
         self.mock_settings.admin_telegram_ids = [100001]
@@ -57,6 +59,20 @@ class BotInitializationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(vk_bot, "build_vk_bot returned None when vk_bot_token was set!")
         self.assertIsInstance(vk_bot, VkBot, "build_vk_bot must return a vkbottle.bot.Bot instance!")
+
+    def test_build_telegram_bot_uses_configured_proxy(self):
+        with (
+            patch("src.main.AiohttpSession") as session_class,
+            patch("src.main.Bot") as bot_class,
+        ):
+            session = session_class.return_value
+
+            result = build_telegram_bot(self.mock_settings)
+
+        session_class.assert_called_once_with(proxy="socks5://proxy.example:2080")
+        bot_class.assert_called_once()
+        self.assertIs(bot_class.call_args.kwargs["session"], session)
+        self.assertIs(result, bot_class.return_value)
 
 
     async def test_main_broker_imports_and_instantiation(self):

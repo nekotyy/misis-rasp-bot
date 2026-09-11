@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from datetime import datetime
@@ -63,6 +64,7 @@ def make_db(sources: list[dict] | None = None, latest_snapshot: dict | None = No
     db = MagicMock()
     db.get_active_sources = AsyncMock(return_value=sources if sources is not None else [ACTIVE_SOURCE])
     db.get_latest_snapshot = AsyncMock(return_value=latest_snapshot)
+    db.add_pending_groups = AsyncMock()
     return db
 
 
@@ -222,12 +224,13 @@ class ResolveSourceTests(unittest.IsolatedAsyncioTestCase):
 
         source, error = await importer._resolve_source("ИСП-25-9")
 
-        self.assertIsNone(source)
-        self.assertIn("не найдена", error)
+        self.assertEqual(error, "")
+        self.assertEqual(source["source_key"], "group-pending:исп-25-9")
+        self.assertIsNone(source["schedule_id"])
 
     async def test_unknown_group_lists_known_ones(self) -> None:
         importer = make_importer()
-        source, error = await importer._resolve_source("ЮРИ-30-7")
+        source, error = await importer._resolve_source("не группа")
 
         self.assertIsNone(source)
         self.assertIn("ИСП-25-1", error)
@@ -273,12 +276,26 @@ class BuildDraftTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2026-09-01", dates)
         self.assertEqual(draft.merge.kept_dates, ["2026-08-31"])
 
-    async def test_draft_without_known_group_cannot_apply(self) -> None:
+    async def test_draft_without_known_group_uses_offline_source(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
         draft = await importer.build_draft([b"image-bytes"])
 
-        self.assertFalse(draft.can_apply)
-        self.assertIn("не найдена", draft.source_error)
+        self.assertTrue(draft.can_apply)
+        self.assertEqual(draft.source["source_key"], "group-pending:исп-25-1")
+
+    async def test_recognition_has_hard_timeout(self) -> None:
+        engine = FakeEngine()
+
+        async def slow_recognize(images: list[bytes]) -> str:
+            await asyncio.sleep(1)
+            return RECOGNIZED_JSON
+
+        engine.recognize = slow_recognize
+        importer = make_importer(engine=engine)
+        importer.recognize_timeout = 0.01
+
+        with self.assertRaisesRegex(OcrEngineError, "не завершил распознавание"):
+            await importer.build_draft([b"image-bytes"])
 
 
 class ApplyTests(unittest.IsolatedAsyncioTestCase):
@@ -323,11 +340,23 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
     async def test_apply_refuses_without_source(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
         draft = await importer.build_draft([b"image-bytes"])
+        draft.source = None
+        draft.source_error = "Группа не найдена"
 
         applied, report = await importer.apply(draft)
 
         self.assertFalse(applied)
         self.assertIn("не найдена", report)
+
+    async def test_apply_registers_offline_group_after_snapshot_is_saved(self) -> None:
+        db = make_db(sources=[])
+        importer = make_importer(db=db)
+        draft = await importer.build_draft([b"image-bytes"])
+
+        applied, _ = await importer.apply(draft, notify=False)
+
+        self.assertTrue(applied)
+        db.add_pending_groups.assert_awaited_once_with(["ИСП-25-1"])
 
     async def test_apply_reports_scheduler_failure(self) -> None:
         jobs = MagicMock()
@@ -382,6 +411,8 @@ class PreviewTests(unittest.IsolatedAsyncioTestCase):
     async def test_preview_explains_blocked_import(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
         draft = await importer.build_draft([b"image-bytes"])
+        draft.source = None
+        draft.source_error = "Источник не определён"
 
         preview = format_ocr_preview(draft, html=False)
 
@@ -396,6 +427,7 @@ class BuildImporterTests(unittest.TestCase):
             gemini_secure_1psid="psid-value",
             gemini_secure_1psidts="psidts-value",
             gemini_proxy="",
+            gemini_doh_url="https://xbox-dns.ru/dns-query",
             ocr_gemini_model="gemini-pro",
             ocr_timeout_seconds=15.0,
             ocr_min_confidence=0.7,
@@ -407,6 +439,7 @@ class BuildImporterTests(unittest.TestCase):
         self.assertEqual(importer.engine.secure_1psid, "psid-value")
         self.assertEqual(importer.engine.secure_1psidts, "psidts-value")
         self.assertEqual(importer.engine.model, "gemini-pro")
+        self.assertEqual(importer.engine.doh_url, "https://xbox-dns.ru/dns-query")
         self.assertEqual(importer.parser.fuzzy_threshold, 0.9)
         self.assertEqual(importer.parser.min_confidence, 0.7)
 

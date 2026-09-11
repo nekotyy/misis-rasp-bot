@@ -113,6 +113,24 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         call_kwargs = self.mock_broadcaster.broadcast.call_args
         self.assertIn("Изменения на понедельник", call_kwargs.args or [call_kwargs[0][0]])
 
+    async def test_background_sync_skips_offline_ocr_group(self) -> None:
+        from src.scheduler import ScheduleJobs
+
+        offline_source = {
+            **self.source,
+            "source_key": "group-pending:киб-24-1",
+            "source_url": "",
+            "schedule_id": None,
+        }
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = MagicMock(get_active_sources=AsyncMock(return_value=[offline_source]))
+        jobs.alert_manager = None
+        worker = AsyncMock()
+
+        await jobs._run_for_active_sources("sync-current", worker)
+
+        worker.assert_not_awaited()
+
     def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
         """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
         from src.scheduler import ScheduleJobs

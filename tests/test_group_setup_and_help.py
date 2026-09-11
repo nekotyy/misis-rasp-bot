@@ -141,8 +141,8 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(sub_data)
         self.assertIn("временная ошибка связи с сайтом расписания", error_text)
 
-    async def test_resolve_subscription_input_pending_group_refuses_without_id(self):
-        """Группа без ID (увидена на фото, а не на сайте) не должна давать сломанную подписку."""
+    async def test_resolve_subscription_input_pending_group_subscribes_without_id(self):
+        """Группа с расписанием из фото доступна даже без ID сайта."""
         mock_catalog = MagicMock()
         mock_catalog.find_group = AsyncMock(
             return_value=MagicMock(group_name="МТО-26", schedule_id=None)
@@ -151,9 +151,9 @@ class GroupSetupAndHelpTests(unittest.IsolatedAsyncioTestCase):
             "МТО-26",
             target_group_catalog=mock_catalog,
         )
-        self.assertIsNone(sub_data)
-        self.assertIn("МТО-26", error_text)
-        self.assertIn("не подтверждена сайтом", error_text)
+        self.assertIsNone(error_text)
+        self.assertEqual(sub_data["subscription_key"], "group-pending:мто-26")
+        self.assertIsNone(sub_data["schedule_id"])
 
     async def test_resolve_subscription_input_resolved_group_subscribes_normally(self):
         mock_catalog = MagicMock()

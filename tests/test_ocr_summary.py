@@ -172,6 +172,7 @@ def make_db(sources: list[dict] | None = None, latest_snapshot: dict | None = No
     db = MagicMock()
     db.get_active_sources = AsyncMock(return_value=sources if sources is not None else [ACTIVE_SOURCE_ISP])
     db.get_latest_snapshot = AsyncMock(return_value=latest_snapshot)
+    db.add_pending_groups = AsyncMock()
     return db
 
 
@@ -185,15 +186,16 @@ def make_importer(*, db: MagicMock | None = None, jobs: MagicMock | None = None,
 
 
 class BuildSummaryDraftTests(unittest.IsolatedAsyncioTestCase):
-    async def test_resolves_known_group_and_leaves_unknown_unresolved(self) -> None:
+    async def test_resolves_known_and_new_offline_group(self) -> None:
         importer = make_importer()
         draft = await importer.build_summary_draft([b"image"])
 
         self.assertEqual(len(draft.result.groups), 2)
         resolved_names = {r.group_lessons.group_name for r in draft.resolved}
-        self.assertEqual(resolved_names, {"ИСП-25-3"})
-        unresolved_names = {r.group_lessons.group_name for r in draft.unresolved}
-        self.assertEqual(unresolved_names, {"МТО-26"})
+        self.assertEqual(resolved_names, {"ИСП-25-3", "МТО-26"})
+        self.assertEqual(draft.unresolved, [])
+        offline = next(r for r in draft.resolved if r.group_lessons.group_name == "МТО-26")
+        self.assertEqual(offline.source["source_key"], "group-pending:мто-26")
         self.assertTrue(draft.can_apply)
 
     async def test_resolved_group_merges_with_existing_snapshot(self) -> None:
@@ -217,16 +219,17 @@ class BuildSummaryDraftTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2026-08-31", dates)
         self.assertIn("2026-09-07", dates)
 
-    async def test_no_matching_sources_leaves_everything_unresolved(self) -> None:
+    async def test_no_matching_sources_creates_offline_sources(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
         draft = await importer.build_summary_draft([b"image"])
 
-        self.assertEqual(draft.resolved, [])
-        self.assertFalse(draft.can_apply)
+        self.assertEqual(len(draft.resolved), 2)
+        self.assertTrue(draft.can_apply)
+        self.assertTrue(all(r.source["schedule_id"] is None for r in draft.resolved))
 
 
 class ApplySummaryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_applies_only_resolved_groups(self) -> None:
+    async def test_applies_resolved_and_offline_groups(self) -> None:
         jobs = MagicMock()
         jobs.apply_manual_snapshot = AsyncMock(return_value=None)
         importer = make_importer(jobs=jobs)
@@ -235,12 +238,15 @@ class ApplySummaryTests(unittest.IsolatedAsyncioTestCase):
         applied, report = await importer.apply_summary(draft)
 
         self.assertTrue(applied)
-        jobs.apply_manual_snapshot.assert_awaited_once()
-        self.assertIn("1 из 1", report)
+        self.assertEqual(jobs.apply_manual_snapshot.await_count, 2)
+        self.assertIn("2 из 2", report)
 
     async def test_refuses_when_nothing_resolved(self) -> None:
         importer = make_importer(db=make_db(sources=[]))
         draft = await importer.build_summary_draft([b"image"])
+        for resolution in draft.resolutions:
+            resolution.source = None
+            resolution.merge = None
 
         applied, report = await importer.apply_summary(draft)
 
@@ -259,7 +265,7 @@ class ApplySummaryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class FormatSummaryPreviewTests(unittest.IsolatedAsyncioTestCase):
-    async def test_preview_lists_resolved_and_unresolved(self) -> None:
+    async def test_preview_lists_resolved_and_offline_groups(self) -> None:
         importer = make_importer()
         draft = await importer.build_summary_draft([b"image"])
 
@@ -268,7 +274,7 @@ class FormatSummaryPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ИСП-25-3", preview)
         self.assertIn("МТО-26", preview)
         self.assertIn("Будут обновлены", preview)
-        self.assertIn("Источник не найден", preview)
+        self.assertNotIn("Источник не найден", preview)
 
     async def test_html_preview_has_bold_tags(self) -> None:
         importer = make_importer()
