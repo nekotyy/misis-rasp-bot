@@ -383,7 +383,8 @@ docker compose up -d --build --remove-orphans
 
 - `OCR_ENABLED` — включение импорта расписания из фотографии.
 - `GEMINI_SECURE_1PSID` / `GEMINI_SECURE_1PSIDTS` — куки Google-аккаунта для авторизации в Gemini.
-- `GEMINI_DOH_URL` — DoH только для внутренней HTTP-сессии Gemini (по умолчанию `xbox-dns.ru`).
+- `GEMINI_DOH_URL` — необязательный DoH только для внутренней HTTP-сессии Gemini; пусто означает
+  обычный системный/Docker DNS.
 - `GEMINI_ENV_PATH` — `.env`, куда записывать обновлённые cookies и ID созданного Gem.
 - `GEMINI_REFRESH_INTERVAL_SECONDS` — интервал встроенного auto-refresh cookies (минимум 60 секунд).
 - `GEMINI_OCR_GEM_ID` — ID системного OCR-Gem; после первого запуска заполняется автоматически.
@@ -557,9 +558,10 @@ Google-аккаунта (`GEMINI_SECURE_1PSID` / `GEMINI_SECURE_1PSIDTS`), а н
   -> Cookies) только для первого запуска. Встроенный `auto_refresh` библиотеки вращает
   `__Secure-1PSIDTS`; полный cookie-jar хранится с правами `0600` в `GEMINI_COOKIE_PATH`, а актуальные
   auth-cookies и ID Gem синхронизируются обратно в `GEMINI_ENV_PATH`;
-- `curl_cffi` внутри `gemini_webapi` получает собственный DoH
-  `https://xbox-dns.ru/dns-query`. DNS контейнера не меняется: Telegram, RabbitMQ, сайт расписания и
-  остальные компоненты продолжают использовать обычный Docker DNS;
+- если в `GEMINI_DOH_URL` задан адрес (например, `https://xbox-dns.ru/dns-query`), `curl_cffi` внутри
+  `gemini_webapi` получает собственный DoH. Пустое значение отключает эту настройку и оставляет
+  системный/Docker DNS. В обоих случаях DNS Telegram, RabbitMQ, сайта расписания и остальных
+  компонентов не меняется;
 - при первой инициализации создаётся или обновляется кастомный Gem с системными правилами OCR.
   Модели обнаруживаются динамически: настроенная 3.8 Flash используется первой, а один не-JSON ответ
   автоматически повторяется через доступную аккаунту Pro-модель;

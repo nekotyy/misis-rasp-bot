@@ -127,6 +127,17 @@ class GeminiRouteProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine.diagnostics()["route_http_status"], 200)
         session.close.assert_awaited_once()
 
+    async def test_probe_leaves_dns_at_curl_default_when_doh_is_empty(self) -> None:
+        response = MagicMock(status_code=200, primary_ip="142.250.150.101")
+        session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="")
+
+        with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_factory:
+            await engine._probe_route()
+
+        session_factory.assert_called_once_with(proxy=None)
+        self.assertFalse(engine.diagnostics()["doh_enabled"])
+
     async def test_probe_classifies_http_429_before_authorization(self) -> None:
         response = MagicMock(status_code=429, primary_ip="87.228.47.194")
         session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
@@ -691,7 +702,7 @@ class EngineFactoryTests(unittest.TestCase):
         engine = build_ocr_engine(secure_1psid="psid", secure_1psidts="psidts", model="gemini-pro")
         self.assertIsInstance(engine, GeminiOcrEngine)
         self.assertEqual(engine.model, "gemini-pro")
-        self.assertEqual(engine.doh_url, "https://xbox-dns.ru/dns-query")
+        self.assertIsNone(engine.doh_url)
         available, _ = engine.availability()
         self.assertTrue(available)
 
@@ -712,6 +723,23 @@ class EngineFactoryTests(unittest.TestCase):
                 verify=True,
                 doh_url="https://xbox-dns.ru/dns-query",
             )
+        finally:
+            module.AsyncSession = original
+
+    def test_gemini_session_leaves_dns_at_default_when_doh_is_empty(self) -> None:
+        import importlib
+        from unittest.mock import patch
+
+        from src.ocr_schedule import configure_gemini_doh
+
+        module = importlib.import_module("gemini_webapi.utils.get_access_token")
+        original = module.AsyncSession
+        session = object()
+        try:
+            with patch("src.ocr_schedule.CurlAsyncSession", return_value=session) as session_class:
+                configure_gemini_doh("")
+                self.assertIs(module.AsyncSession(verify=True), session)
+            session_class.assert_called_once_with(verify=True)
         finally:
             module.AsyncSession = original
 

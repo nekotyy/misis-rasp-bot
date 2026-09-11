@@ -132,7 +132,7 @@ OCR_GEM_SYSTEM_PROMPT = """\
 пояснений.
 """
 COOKIE_SYNC_INTERVAL_SECONDS = 30.0
-DEFAULT_GEMINI_DOH_URL = "https://xbox-dns.ru/dns-query"
+DEFAULT_GEMINI_DOH_URL = ""
 GEMINI_ROUTE_PROBE_URL = "https://gemini.google.com/app"
 GEMINI_TRANSIENT_RETRY_DELAYS = (2.0, 5.0)
 
@@ -239,7 +239,7 @@ def classify_gemini_failure(error: BaseException | str) -> GeminiFailureInfo:
             "dns",
             "ошибка DNS/DoH",
             True,
-            "проверить доступность xbox-dns.ru и разрешение gemini.google.com",
+            "проверить доступность настроенного DoH-сервера и разрешение gemini.google.com",
         )
     if any(
         marker in message
@@ -652,8 +652,11 @@ class GeminiOcrEngine:
             return client
 
     async def _probe_route(self) -> None:
-        """Проверяет DoH-маршрут и прогревает правильный DNS-кэш curl."""
-        session = CurlAsyncSession(doh_url=self.doh_url, proxy=self.proxy)
+        """Проверяет маршрут и при включённом DoH прогревает DNS-кэш curl."""
+        session_options = {"proxy": self.proxy}
+        if self.doh_url:
+            session_options["doh_url"] = self.doh_url
+        session = CurlAsyncSession(**session_options)
         try:
             response = await session.get(
                 GEMINI_ROUTE_PROBE_URL,
@@ -848,7 +851,7 @@ def _is_json_response(text: str) -> bool:
 
 
 def configure_gemini_doh(doh_url: str | None) -> None:
-    """Назначает DoH только внутренней HTTP-сессии ``gemini_webapi``."""
+    """При заданном URL назначает DoH только HTTP-сессии ``gemini_webapi``."""
     access_token_module = importlib.import_module("gemini_webapi.utils.get_access_token")
 
     def build_session(*args, **kwargs):

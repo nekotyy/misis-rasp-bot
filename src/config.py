@@ -97,7 +97,7 @@ class Settings:
             gemini_secure_1psid=os.getenv("GEMINI_SECURE_1PSID", "").strip(),
             gemini_secure_1psidts=os.getenv("GEMINI_SECURE_1PSIDTS", "").strip(),
             gemini_proxy=os.getenv("GEMINI_PROXY", "").strip(),
-            gemini_doh_url=os.getenv("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query").strip(),
+            gemini_doh_url=os.getenv("GEMINI_DOH_URL", "").strip(),
             gemini_env_path=(
                 Path(raw_env_path).resolve()
                 if (raw_env_path := os.getenv("GEMINI_ENV_PATH", "").strip())

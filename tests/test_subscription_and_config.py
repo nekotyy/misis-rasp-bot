@@ -34,6 +34,12 @@ class SubscriptionAndConfigTests(unittest.TestCase):
             self.assertFalse(settings.web_cookie_secure)
             self.assertEqual(settings.gemini_doh_url, "https://xbox-dns.ru/dns-query")
 
+    def test_gemini_doh_is_disabled_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+
+        self.assertEqual(settings.gemini_doh_url, "")
+
     def test_subscription_utils_helpers(self):
         group_sub = make_group_subscription("ИСП-25-1", schedule_id=600)
         self.assertEqual(group_sub["subscription_type"], "group")
