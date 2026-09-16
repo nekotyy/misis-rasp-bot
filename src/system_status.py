@@ -342,12 +342,10 @@ class SystemAlertManager:
         self,
         db: Database,
         broadcaster: Any | None = None,
-        cooldown_seconds: float = 1800.0,  # 30 minutes repeat reminder
     ) -> None:
         self.db = db
         self.broadcaster = broadcaster
-        self.cooldown_seconds = cooldown_seconds
-        # component -> {"ok": bool, "down_since": datetime, "last_alert_at": float, "last_error": str}
+        # component -> {"ok": bool, "down_since": datetime, "last_error": str}
         self._states: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
@@ -358,9 +356,9 @@ class SystemAlertManager:
         error_message: str | None = None,
         details: str | None = None,
     ) -> None:
+        """Alerts admins exactly once per state transition: once when a component goes down, once when it recovers. No repeat reminders while it's still down."""
         async with self._lock:
             now_dt = datetime.now()
-            now_mono = monotonic()
             state = self._states.get(component)
             comp_name = COMPONENT_TITLES.get(component, component)
 
@@ -369,7 +367,6 @@ class SystemAlertManager:
                 self._states[component] = {
                     "ok": ok,
                     "down_since": now_dt if not ok else None,
-                    "last_alert_at": now_mono if not ok else 0.0,
                     "last_error": error_message or "",
                 }
                 if not ok:
@@ -382,7 +379,6 @@ class SystemAlertManager:
                 # Service went DOWN
                 state["ok"] = False
                 state["down_since"] = now_dt
-                state["last_alert_at"] = now_mono
                 state["last_error"] = error_message or ""
                 await self._record_and_alert_down(component, comp_name, error_message, details, now_dt)
 
@@ -392,24 +388,10 @@ class SystemAlertManager:
                 duration = now_dt - down_since
                 state["ok"] = True
                 state["down_since"] = None
-                state["last_alert_at"] = 0.0
                 state["last_error"] = ""
                 await self._alert_recovery(comp_name, duration, now_dt)
 
-            elif not was_ok and not ok:
-                # Still down - check cooldown for reminder
-                last_alert = state.get("last_alert_at", 0.0)
-                if now_mono - last_alert >= self.cooldown_seconds:
-                    state["last_alert_at"] = now_mono
-                    state["last_error"] = error_message or ""
-                    await self._record_and_alert_down(
-                        component,
-                        comp_name,
-                        error_message,
-                        details,
-                        now_dt,
-                        is_reminder=True,
-                    )
+            # Still down or still up: no repeat notification.
 
     async def _record_and_alert_down(
         self,
@@ -418,12 +400,11 @@ class SystemAlertManager:
         error_message: str | None,
         details: str | None,
         now_dt: datetime,
-        is_reminder: bool = False,
     ) -> None:
         err_msg = error_message or "Неизвестный сбой"
         await self.db.log_system_error(
             component=component,
-            error_type="outage" if not is_reminder else "outage_reminder",
+            error_type="outage",
             message=err_msg,
             details=details,
             created_at=now_dt.isoformat(timespec="seconds"),
@@ -434,19 +415,17 @@ class SystemAlertManager:
             return
 
         time_str = now_dt.strftime("%d.%m.%Y %H:%M:%S")
-        prefix = "⚠️ <b>НАПОМИНАНИЕ: Служба все еще недоступна!</b>" if is_reminder else "🚨 <b>ВНИМАНИЕ: Сбой службы бота!</b>"
-        vk_prefix = "⚠️ НАПОМИНАНИЕ: Служба все еще недоступна!" if is_reminder else "🚨 ВНИМАНИЕ: Сбой службы бота!"
 
         tg_text = "\n".join([
-            prefix,
+            "<b>Сбой службы бота</b>",
             "───────────────────────────",
-            f"🛠️ <b>Служба:</b> {comp_name}",
-            f"❌ <b>Ошибка:</b> <code>{err_msg}</code>",
-            f"🕒 <b>Время:</b> {time_str}",
-            f"ℹ️ <b>Детали:</b> {details or 'Автоматический мониторинг зафиксировал сбой.'}",
+            f"<b>Служба:</b> {comp_name}",
+            f"<b>Ошибка:</b> <code>{err_msg}</code>",
+            f"<b>Время:</b> {time_str}",
+            f"<b>Детали:</b> {details or 'Автоматический мониторинг зафиксировал сбой.'}",
         ])
         vk_text = "\n".join([
-            vk_prefix,
+            "Сбой службы бота",
             "───────────────────────────",
             f"Служба: {comp_name}",
             f"Ошибка: {err_msg}",
@@ -471,15 +450,15 @@ class SystemAlertManager:
         duration_str = f"{minutes} мин. {seconds} сек." if minutes > 0 else f"{seconds} сек."
 
         tg_text = "\n".join([
-            "✅ <b>СЛУЖБА ВОССТАНОВЛЕНА!</b>",
+            "<b>Служба восстановлена</b>",
             "───────────────────────────",
-            f"🛠️ <b>Служба:</b> {comp_name}",
-            f"🕒 <b>Время восстановления:</b> {time_str}",
-            f"⏱️ <b>Длительность сбоя:</b> {duration_str}",
+            f"<b>Служба:</b> {comp_name}",
+            f"<b>Время восстановления:</b> {time_str}",
+            f"<b>Длительность сбоя:</b> {duration_str}",
             "Все системы работают в штатном режиме.",
         ])
         vk_text = "\n".join([
-            "✅ СЛУЖБА ВОССТАНОВЛЕНА!",
+            "Служба восстановлена",
             "───────────────────────────",
             f"Служба: {comp_name}",
             f"Время восстановления: {time_str}",
@@ -505,7 +484,7 @@ async def format_daily_errors_report(db: Database, html: bool = True, date_prefi
 
     if html:
         lines = [
-            f"⚠️ <b>Ошибки и сбои за сегодня ({today})</b>",
+            f"<b>Ошибки и сбои за сегодня ({today})</b>",
             "───────────────────────────",
             f"• <b>Всего ошибок:</b> <b>{total}</b> (Службы/системы: {sys_total}, Доставка: {deliv_total})",
         ]
@@ -518,7 +497,7 @@ async def format_daily_errors_report(db: Database, html: bool = True, date_prefi
 
         lines.append("───────────────────────────")
         if not errors:
-            lines.append("🎉 <i>За сегодня ошибок не зафиксировано. Все службы работают штатно!</i>")
+            lines.append("<i>За сегодня ошибок не зафиксировано. Все службы работают штатно.</i>")
             return "\n".join(lines)
 
         lines.append("<b>Последние события:</b>")
@@ -527,18 +506,18 @@ async def format_daily_errors_report(db: Database, html: bool = True, date_prefi
             if err.get("kind") == "system":
                 comp = COMPONENT_TITLES.get(err.get("component"), err.get("component"))
                 msg = err.get("message") or "Ошибка"
-                lines.append(f"{idx}. <b>[{time_part}]</b> 🛠️ <b>{comp}</b>: <code>{msg}</code>")
+                lines.append(f"{idx}. <b>[{time_part}]</b> <b>{comp}</b>: <code>{msg}</code>")
             else:
                 plat = str(err.get("platform", "")).upper()
                 msg = err.get("message") or "Сбой отправки"
-                lines.append(f"{idx}. <b>[{time_part}]</b> 📬 <b>{plat}</b>: <code>{msg}</code>")
+                lines.append(f"{idx}. <b>[{time_part}]</b> <b>{plat}</b>: <code>{msg}</code>")
 
         if len(errors) > 15:
             lines.append(f"\n<i>... и ещё {len(errors) - 15} событий.</i>")
         return "\n".join(lines)
     else:
         lines = [
-            f"⚠️ Ошибки и сбои за сегодня ({today})",
+            f"Ошибки и сбои за сегодня ({today})",
             "───────────────────────────",
             f"• Всего ошибок: {total} (Службы: {sys_total}, Доставка: {deliv_total})",
         ]
@@ -551,7 +530,7 @@ async def format_daily_errors_report(db: Database, html: bool = True, date_prefi
 
         lines.append("───────────────────────────")
         if not errors:
-            lines.append("🎉 За сегодня ошибок не зафиксировано. Все службы работают штатно!")
+            lines.append("За сегодня ошибок не зафиксировано. Все службы работают штатно.")
             return "\n".join(lines)
 
         lines.append("Последние события:")
@@ -560,11 +539,11 @@ async def format_daily_errors_report(db: Database, html: bool = True, date_prefi
             if err.get("kind") == "system":
                 comp = COMPONENT_TITLES.get(err.get("component"), err.get("component"))
                 msg = err.get("message") or "Ошибка"
-                lines.append(f"{idx}. [{time_part}] 🛠️ {comp}: {msg}")
+                lines.append(f"{idx}. [{time_part}] {comp}: {msg}")
             else:
                 plat = str(err.get("platform", "")).upper()
                 msg = err.get("message") or "Сбой отправки"
-                lines.append(f"{idx}. [{time_part}] 📬 {plat}: {msg}")
+                lines.append(f"{idx}. [{time_part}] {plat}: {msg}")
 
         if len(errors) > 15:
             lines.append(f"\n... и ещё {len(errors) - 15} событий.")
