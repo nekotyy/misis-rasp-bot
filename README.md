@@ -477,7 +477,7 @@ docker compose up -d --build --remove-orphans
 на фото сводного расписания раньше, чем сайт её опубликовал, — можно добавить в каталог без ID:
 
 ```bash
-docker compose exec bot uv run --frozen python -m scripts.seed_pending_groups storage/groups_2026-09-07.json --course 1
+docker compose exec bot python -m scripts.seed_pending_groups storage/groups_2026-09-07.json --course 1
 ```
 
 Такая группа сразу находится поиском и OCR-импортом (`schedule_id` в источнике будет `None`), но

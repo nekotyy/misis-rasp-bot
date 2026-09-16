@@ -14,7 +14,7 @@
 
 Запуск внутри контейнера:
 
-    docker compose exec bot uv run --frozen python -m scripts.seed_pending_groups \
+    docker compose exec bot python -m scripts.seed_pending_groups \
         storage/groups_2026-09-07.json --course 1
 """
 
