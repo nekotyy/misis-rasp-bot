@@ -1283,7 +1283,8 @@ class OcrScheduleParser:
                     lesson_number=number,
                 )
             )
-        return corrected, max(score, 0.7) if score else 0.8
+            return corrected, max(score, 0.7)
+        return corrected, score
 
     def _validate_days(self, days: list[DaySchedule], issues: list[OcrIssue]) -> None:
         for day in days:

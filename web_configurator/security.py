@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -12,6 +13,8 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 ALL_PERMISSIONS = [
     "stats_overview",
@@ -234,7 +237,8 @@ class WebAuthStore:
     def _load_legacy_users(self, path: Path) -> dict[str, dict[str, Any]]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read legacy web users import file %s: %s", path, exc)
             return {}
         return payload if isinstance(payload, dict) else {}
 
@@ -317,16 +321,14 @@ class LoginRateLimiter:
                     fail_count = int(row["fail_count"] or 0) + 1
                 if fail_count >= self.max_attempts:
                     blocked_until = max(blocked_until, now + self.block_seconds, previous_block)
+                # blocked_until здесь не трогаем: конечное значение для ВСЕХ ключей одной попытки входа
+                # выставляется одним UPDATE ниже, после того как оно посчитано по всем ключам сразу.
                 connection.execute(
                     """
                     INSERT INTO web_login_guard (fingerprint_key, fail_count, blocked_until, updated_at)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT(fingerprint_key) DO UPDATE SET
                         fail_count = excluded.fail_count,
-                        blocked_until = CASE
-                            WHEN excluded.blocked_until > web_login_guard.blocked_until THEN excluded.blocked_until
-                            ELSE web_login_guard.blocked_until
-                        END,
                         updated_at = excluded.updated_at
                     """,
                     (key, fail_count, previous_block, now),

@@ -67,21 +67,21 @@ def format_db_cleanup_admin_report(res: dict, html: bool = True) -> str:
 
     if html:
         return "\n".join([
-            "🧹 <b>Автоматическая очистка БД завершена</b>",
+            "<b>Автоматическая очистка БД завершена</b>",
             "",
-            "ℹ️ <b>Служебная информация:</b>",
+            "<b>Служебная информация:</b>",
             f"• <b>Время запуска:</b> {started_at}",
             f"• <b>Время окончания:</b> {finished_at}",
             f"• <b>Длительность:</b> {elapsed} сек.",
             f"• <b>Условие очистки:</b> записи старше {cutoff_days} дней",
             "",
-            "🗑️ <b>Удалено записей:</b>",
+            "<b>Удалено записей:</b>",
             f"• <code>delivery_events</code>: {delivery_cnt:,}".replace(",", " "),
             f"• <code>change_events</code>: {change_cnt:,}".replace(",", " "),
             f"• <code>schedule_snapshots</code>: {snapshots_cnt:,}".replace(",", " "),
             f"• <b>Всего удалено:</b> {total_deleted:,} шт.".replace(",", " "),
             "",
-            "💾 <b>Размер базы данных:</b>",
+            "<b>Размер базы данных:</b>",
             f"• <b>До очистки:</b> {size_before}",
             f"• <b>После очистки:</b> {size_after}",
             f"• <b>Освобождено на диске:</b> {freed}",
@@ -541,27 +541,9 @@ class ScheduleJobs:
         *,
         notify: bool = True,
     ) -> ChangeSummary | None:
-        baseline = await self.db.get_latest_snapshot(
-            "daily_baseline",
-            schedule_id=source["schedule_id"],
-            source_key=source["source_key"],
-        )
-        await self.db.save_snapshot(
-            "current",
-            snapshot_hash,
-            snapshot,
-            schedule_id=source["schedule_id"],
-            group_name=source.get("group_name"),
-            source_type=source["source_type"],
-            source_key=source["source_key"],
-            source_title=source["source_title"],
-            source_url=source["source_url"],
-        )
-
-        if baseline is None:
-            logger.info("Source %s has no baseline yet. Saving first baseline automatically.", source["source_title"])
+        async def save(snapshot_type: str) -> None:
             await self.db.save_snapshot(
-                "daily_baseline",
+                snapshot_type,
                 snapshot_hash,
                 snapshot,
                 schedule_id=source["schedule_id"],
@@ -571,6 +553,17 @@ class ScheduleJobs:
                 source_title=source["source_title"],
                 source_url=source["source_url"],
             )
+
+        baseline = await self.db.get_latest_snapshot(
+            "daily_baseline",
+            schedule_id=source["schedule_id"],
+            source_key=source["source_key"],
+        )
+        await save("current")
+
+        if baseline is None:
+            logger.info("Source %s has no baseline yet. Saving first baseline automatically.", source["source_title"])
+            await save("daily_baseline")
             return None
 
         change_summary = ScheduleComparator.compare(baseline, snapshot)
@@ -578,17 +571,7 @@ class ScheduleJobs:
             return None
 
         if not notify:
-            await self.db.save_snapshot(
-                "daily_baseline",
-                snapshot_hash,
-                snapshot,
-                schedule_id=source["schedule_id"],
-                group_name=source.get("group_name"),
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
+            await save("daily_baseline")
             return change_summary
 
         change_recorded = await self.db.record_change(
@@ -609,18 +592,9 @@ class ScheduleJobs:
                 source["source_title"],
                 snapshot_hash,
             )
-            await self.db.save_snapshot(
-                "daily_baseline",
-                snapshot_hash,
-                snapshot,
-                schedule_id=source["schedule_id"],
-                group_name=source.get("group_name"),
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
+            await save("daily_baseline")
             return change_summary
+
         await self.broadcaster.broadcast(
             change_summary.message,
             telegram_message=change_summary.telegram_message,
@@ -628,17 +602,7 @@ class ScheduleJobs:
             schedule_id=source["schedule_id"],
             subscription_key=source["source_key"],
         )
-        await self.db.save_snapshot(
-            "daily_baseline",
-            snapshot_hash,
-            snapshot,
-            schedule_id=source["schedule_id"],
-            group_name=source.get("group_name"),
-            source_type=source["source_type"],
-            source_key=source["source_key"],
-            source_title=source["source_title"],
-            source_url=source["source_url"],
-        )
+        await save("daily_baseline")
         return change_summary
 
     async def _count_lessons_for_schedule_id(self, schedule_id: int) -> None:

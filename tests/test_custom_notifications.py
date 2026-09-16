@@ -36,6 +36,15 @@ class CustomNotificationsDatabaseTests(unittest.IsolatedAsyncioTestCase):
         user = await self.db.get_user("telegram", 12345)
         self.assertIsNone(user.custom_sticker_file_id)
 
+    async def test_custom_sticker_survives_list_users(self):
+        """list_users() feeds broadcasts (get_users_for_notifications) — its SELECT must include the sticker column too, not just get_user()'s."""
+        await self.db.upsert_user("telegram", 54321, username="broadcastuser", full_name="Broadcast User")
+        await self.db.set_user_custom_sticker("telegram", 54321, "sticker_broadcast_xyz")
+
+        users = await self.db.list_users(platform="telegram")
+        target = next(u for u in users if u.user_id == 54321)
+        self.assertEqual(target.custom_sticker_file_id, "sticker_broadcast_xyz")
+
 
 class CustomNotificationsNotifierTests(unittest.IsolatedAsyncioTestCase):
     async def test_custom_sticker_in_notifier(self):

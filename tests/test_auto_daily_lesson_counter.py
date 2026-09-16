@@ -65,7 +65,7 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Математика", text)
         self.assertIn("Прошло - 2, всего - ##?", text)
         self.assertIn("Прошло - 1, всего - ##?", text)
-        self.assertIn("💡 <i>Замечена пара с не указанным итоговым количеством пар (##?)!", text)
+        self.assertIn("<i>Замечена пара с не указанным итоговым количеством пар (##?).", text)
 
         # Second run (simulating retry or control check at 23:50/01:00/05:00): MUST BE IDEMPOTENT (skipped)
         await jobs.handle_auto_daily_lesson_counter_job(job)

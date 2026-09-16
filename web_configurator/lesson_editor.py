@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -10,13 +11,16 @@ from src.group_catalog import GroupCatalog
 from src.lesson_counters import normalize_lesson_text, subject_matches, teacher_matches
 from src.parser import ScheduleParser
 
+logger = logging.getLogger(__name__)
+
 
 def load_lesson_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"groups": []}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read lesson counters config %s: %s", path, exc)
         return {"groups": []}
     if isinstance(payload, list):
         return {"groups": payload}

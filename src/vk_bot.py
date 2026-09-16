@@ -66,6 +66,9 @@ PAGE_SIZE = 6
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
 MAX_OCR_IMAGE_BYTES = 20 * 1024 * 1024
 VK_MESSAGE_LIMIT = 4096
+# VK выдаёт peer_id бесед (в отличие от личных диалогов) начиная с этого значения.
+VK_CHAT_PEER_ID_THRESHOLD = 2_000_000_000
+ADMIN_USERS_PAGE_SIZE = 20
 SEARCH_NOT_FOUND_TEXT = (
     "Ничего не найдено.\n\n"
     "Что я пробовал найти:\n"
@@ -106,7 +109,6 @@ def vk_admin_keyboard_rows() -> list[list[str]]:
 
 
 def make_vk_keyboard(rows: list[list[str]]) -> str:
-    from vkbottle import Keyboard, Text
     keyboard = Keyboard(one_time=False, inline=False)
     for row_index, row in enumerate(rows):
         if row_index:
@@ -324,14 +326,14 @@ async def build_vk_admin_status_text(
     tg_users = sum(1 for user in users if user.platform == "telegram")
     tg_personal = sum(1 for u in users if u.platform == "telegram" and u.user_id > 0)
     tg_chats = sum(1 for u in users if u.platform == "telegram" and u.user_id < 0)
-    vk_personal = sum(1 for u in users if u.platform == "vk" and u.user_id < 2000000000)
-    vk_chats = sum(1 for u in users if u.platform == "vk" and u.user_id >= 2000000000)
+    vk_personal = sum(1 for u in users if u.platform == "vk" and u.user_id < VK_CHAT_PEER_ID_THRESHOLD)
+    vk_chats = sum(1 for u in users if u.platform == "vk" and u.user_id >= VK_CHAT_PEER_ID_THRESHOLD)
     total_personal = tg_personal + vk_personal
     total_chats = tg_chats + vk_chats
 
     chat_groups_map: dict[str, dict[str, int]] = {}
     for u in users:
-        is_chat = (u.platform == "telegram" and u.user_id < 0) or (u.platform == "vk" and u.user_id >= 2000000000)
+        is_chat = (u.platform == "telegram" and u.user_id < 0) or (u.platform == "vk" and u.user_id >= VK_CHAT_PEER_ID_THRESHOLD)
         if not is_chat:
             continue
         g_title = u.subscription_title or u.group_name or "Без группы"
@@ -379,14 +381,14 @@ async def build_vk_admin_status_text(
     return "\n".join([
         "Статус бота",
         "───────────────────────────",
-        "⚙️ Системная информация:",
+        "Системная информация:",
         f"• Версия бота: v{BOT_VERSION}.",
         f"• Аптайм: {uptime_str} (старт: {started_str}).",
         f"• Поставлен на сервер: {installed_str}.",
         f"• Память процесса (RAM): {ram_mb} МБ.",
         f"• Размер базы данных: {db_size_str}.",
         "───────────────────────────",
-        "🌐 Сайт расписания и службы:",
+        "Сайт расписания и службы:",
         f"• Сайт МИСИС: {site_status_label}.",
         f"• RabbitMQ: {rmq_label}.",
         "• Telegram Bot API: 🟢 Работает.",
@@ -396,7 +398,7 @@ async def build_vk_admin_status_text(
         "• " + (ocr_importer.status_line(html=False) if ocr_importer is not None else "Распознавание с фото: не настроено") + ".",
         f"• Ошибок за сегодня: {daily_errors_summary['total_errors']} (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
-        "👥 Пользователи и источники:",
+        "Пользователи и источники:",
         f"• Пользователей: {len(users)}.",
         f"• Пользователей с VK: {vk_users}.",
         f"• Пользователей с TG: {tg_users}.",
@@ -404,19 +406,19 @@ async def build_vk_admin_status_text(
         f"• Активных групп: {active_group_count}.",
         f"• Активных преподавателей: {active_teacher_count}.",
         "",
-        "💬 Активные пользовательские группы:",
+        "Активные пользовательские группы:",
         f"• Всего бесед и групп: {total_chats}.",
         f"• Групповых чатов в Telegram: {tg_chats}.",
         f"• Бесед ВКонтакте: {vk_chats}.",
         "• Где настроен бот:",
         *chat_groups_lines,
         "───────────────────────────",
-        "🔄 Состояние расписания:",
+        "Состояние расписания:",
         f"• Последнее изменение: {last_change_at}.",
         f"• {snapshot_line('Последний обычный парс', current_snapshot)}.",
         f"• {snapshot_line('Последний сохраненный эталон', baseline_snapshot)}.",
         "───────────────────────────",
-        "📬 Статистика отправок:",
+        "Статистика отправок:",
         f"• Всего событий доставки: {delivery_stats['events_total']}.",
         f"• Успешно / ошибок: {delivery_stats['sent_total']} / {delivery_stats['failed_total']}.",
         f"• За 24 часа (успешно / ошибок): {delivery_stats['sent_last_24h']} / {delivery_stats['failed_last_24h']}.",
@@ -433,7 +435,7 @@ async def build_vk_admin_status_text(
         f"  - TG авто-отключено из-за доставки: {tg_auto_disabled}.",
         f"• VK (успешно / ошибок): {delivery_stats['vk_sent']} / {delivery_stats['vk_failed']}.",
         "───────────────────────────",
-        "⚠️ Топ TG ошибок за 24ч:",
+        "Топ TG ошибок за 24ч:",
         tg_top_error_lines,
     ])
 
@@ -594,14 +596,7 @@ def build_vk_bot(
     lesson_counter_service = LessonCounterService(db)
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
 
-    def make_keyboard(rows: list[list[str]]) -> str:
-        keyboard = Keyboard(one_time=False, inline=False)
-        for row_index, row in enumerate(rows):
-            if row_index:
-                keyboard.row()
-            for label in row:
-                keyboard.add(Text(label))
-        return keyboard.get_json()
+    make_keyboard = make_vk_keyboard
 
     def paged_rows(items: list[str], page: int) -> tuple[list[list[str]], int]:
         total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -660,8 +655,8 @@ def build_vk_bot(
                 ),
                 random_id=0,
             )
-        except Exception:
-            return
+        except Exception as exc:
+            logger.warning("Failed to notify VK user %s about their error: %s", peer_id, exc)
 
     async def notify_admin_about_error(user_id: int | None, peer_id: int | None, error: Exception) -> None:
         if broadcaster is None:
@@ -694,7 +689,7 @@ def build_vk_bot(
         return bool(user_id and settings.admin_vk_id and user_id == settings.admin_vk_id)
 
     async def user_can_manage_group(peer_id: int, user_id: int) -> bool:
-        if peer_id < 2000000000:
+        if peer_id < VK_CHAT_PEER_ID_THRESHOLD:
             return True
         if user_is_admin(user_id):
             return True
@@ -710,7 +705,7 @@ def build_vk_bot(
                     return join_by == user_id
         except Exception as exc:
             logger.warning("Failed to check conversation members for peer %s: %s", peer_id, exc)
-            return True
+            return False
         return False
 
     async def user_is_editor(user_id: int | None) -> bool:
@@ -913,7 +908,7 @@ def build_vk_bot(
         return "\n".join([
             "Предпросмотр рассылки",
             "───────────────────────────",
-            "ℹ️ Параметры отправки:",
+            "Параметры отправки:",
             f"• Платформа: {platform_str}.",
             f"• Аудитория: {audience_str}.",
             "───────────────────────────",
@@ -946,20 +941,6 @@ def build_vk_bot(
                 ["Назад в меню"],
             ]
         )
-    def settings_keyboard(notifications_enabled: bool, has_group: bool) -> str:
-        rows: list[list[str]] = [
-            ["Пройденные пары"],
-            ["Персонализация"],
-            ["О проекте"],
-            ["Помощь"],
-            ["Отключить уведомления" if notifications_enabled else "Включить уведомления"]
-        ]
-        if has_group:
-            rows.append(["Отписаться от группы"])
-        rows.append(["Назад в меню"])
-        return make_keyboard(rows)
-
-
     async def format_vk_personalization_text(peer_id: int) -> str:
         user = await db.get_user("vk", peer_id)
         has_sticker = bool(user and user.custom_sticker_file_id)
@@ -1029,6 +1010,23 @@ def build_vk_bot(
             return users
         return [user for user in users if normalized in admin_user_search_haystack(user)]
 
+    def format_admin_user_row(user) -> str:
+        platform_label = "tg" if user.platform == "telegram" else user.platform
+        user_label = user.full_name or "Без имени"
+        nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
+        group_label = user.subscription_title or user.group_name or "-"
+        role_flags: list[str] = []
+        if user.is_admin:
+            role_flags.append("админ")
+        if user.is_editor:
+            role_flags.append("редактор")
+        role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
+        return f"• [{platform_label}] {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {admin_user_profile_link(user)}"
+
+    def paginate(total_items: int, page: int, page_size: int) -> tuple[int, int]:
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        return max(0, min(page, total_pages - 1)), total_pages
+
     def admin_broadcast_preview_keyboard(
         target_platform: str = "all",
         target_audience: str = "all",
@@ -1047,31 +1045,6 @@ def build_vk_bot(
             ["Подтвердить рассылку"],
             ["Отменить"],
         ])
-
-    def welcome_text(group_name: str | None, is_editor: bool, is_admin: bool) -> str:
-        lines = [
-            "Бот расписания колледжа",
-            "",
-            f"Твоя группа: {group_name}" if group_name else "Группа пока не выбрана.",
-            "",
-            "Используй кнопки ниже для расписания.",
-        ]
-        if is_admin:
-            lines.append("Кнопка «Админка» доступна тебе как администратору.")
-        return "\n".join(lines)
-
-    async def settings_text(user_id: int, extra: str | None = None) -> str:
-        user = await db.get_user("vk", user_id)
-        notifications_enabled = user.homework_notifications_enabled if user else True
-        lines = [
-            "Дополнительно",
-            "",
-            f"Группа: {user.group_name if user and user.group_name else 'не выбрана'}",
-            f"Уведомления: {'включены' if notifications_enabled else 'выключены'}",
-        ]
-        if extra:
-            lines.extend(["", extra])
-        return "\n".join(lines)
 
     def build_welcome_text(user, is_admin: bool) -> str:
         lines = ["Бот расписания колледжа", ""]
@@ -1303,11 +1276,6 @@ def build_vk_bot(
         for lesson in day.lessons:
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
-
-    def snapshot_line(title: str, snapshot: dict | None) -> str:
-        if snapshot is None:
-            return f"{title}: еще не было"
-        return f"{title}: {snapshot['created_at']}\n  Сайт отдал данные: {snapshot['fetched_at']}"
 
     async def admin_status_text() -> str:
         return await build_vk_admin_status_text(db, settings, ocr_service)
@@ -1638,29 +1606,14 @@ def build_vk_bot(
             await show_screen(peer_id, "Пользователи бота\n───────────────────────────\nПока никто не зарегистрирован.", keyboard=make_keyboard([["Назад в админку"]]))
             return
 
-        user_rows: list[str] = []
-        for user in users:
-            platform_label = "tg" if user.platform == "telegram" else user.platform
-            user_label = user.full_name or "Без имени"
-            nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
-            group_label = user.subscription_title or user.group_name or "-"
-            profile_link = admin_user_profile_link(user)
-            role_flags: list[str] = []
-            if user.is_admin:
-                role_flags.append("админ")
-            if user.is_editor:
-                role_flags.append("редактор")
-            role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-            user_rows.append(f"• [{platform_label}] {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {profile_link}")
+        user_rows = [format_admin_user_row(user) for user in users]
 
-        page_size = 20
-        total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
+        page, total_pages = paginate(len(user_rows), page, ADMIN_USERS_PAGE_SIZE)
         peer_pages[peer_id]["admin_users"] = page
         peer_modes[peer_id] = "admin_users"
 
-        start = page * page_size
-        end = start + page_size
+        start = page * ADMIN_USERS_PAGE_SIZE
+        end = start + ADMIN_USERS_PAGE_SIZE
         lines = [
             "Пользователи бота",
             "───────────────────────────",
@@ -1703,28 +1656,14 @@ def build_vk_bot(
             )
             return True
 
-        user_rows: list[str] = []
-        for user in matches:
-            platform_label = "tg" if user.platform == "telegram" else user.platform
-            user_label = user.full_name or "Без имени"
-            nick_or_name = user.full_name if user.platform == "vk" else (f"@{user.username}" if user.username else (user.full_name or "-"))
-            group_label = user.subscription_title or user.group_name or "-"
-            role_flags: list[str] = []
-            if user.is_admin:
-                role_flags.append("админ")
-            if user.is_editor:
-                role_flags.append("редактор")
-            role_suffix = f" ({', '.join(role_flags)})" if role_flags else ""
-            user_rows.append(f"• [{platform_label}] {user_label} | {nick_or_name} | {user.user_id} | {group_label}{role_suffix}\n  {admin_user_profile_link(user)}")
+        user_rows = [format_admin_user_row(user) for user in matches]
 
-        page_size = 20
-        total_pages = max(1, (len(user_rows) + page_size - 1) // page_size)
-        page = max(0, min(page, total_pages - 1))
+        page, total_pages = paginate(len(user_rows), page, ADMIN_USERS_PAGE_SIZE)
         peer_pages[peer_id]["admin_user_search"] = page
         peer_modes[peer_id] = "admin_user_search_results"
 
-        start = page * page_size
-        end = start + page_size
+        start = page * ADMIN_USERS_PAGE_SIZE
+        end = start + ADMIN_USERS_PAGE_SIZE
         lines = [
             "Результаты поиска",
             "───────────────────────────",
@@ -1801,7 +1740,7 @@ def build_vk_bot(
             if not await user_can_manage_group(peer_id, user_id):
                 await show_screen(peer_id, "Настройка беседы доступна только администраторам беседы или пользователю, добавившему бота.")
                 return
-            success = await handle_subscription_input(peer_id, peer_id if peer_id >= 2000000000 else user_id, text)
+            success = await handle_subscription_input(peer_id, peer_id if peer_id >= VK_CHAT_PEER_ID_THRESHOLD else user_id, text)
             if success:
                 peer_modes[peer_id] = "main_menu"
             return
@@ -1948,7 +1887,7 @@ def build_vk_bot(
         # Кнопка в админке не обязательна: раньше без неё бот просто молчал.
         if (
             user_is_admin(user_id)
-            and peer_id < 2000000000
+            and peer_id < VK_CHAT_PEER_ID_THRESHOLD
             and mode not in {"admin_ocr_input", "admin_ocr_preview", "admin_ocr_summary_input", "admin_ocr_summary_preview"}
             and _has_image_attachment(message)
         ):
@@ -2165,7 +2104,6 @@ def build_vk_bot(
                     doc = next((att.doc for att in message.attachments if att.doc), None)
                     if doc and doc.url:
                         try:
-                            import httpx
                             async with httpx.AsyncClient(timeout=10.0) as client:
                                 resp = await client.get(doc.url)
                                 raw_data = resp.text
@@ -2526,7 +2464,7 @@ def build_vk_bot(
                 return
 
         if is_group_setup_command(text):
-            if peer_id < 2000000000:
+            if peer_id < VK_CHAT_PEER_ID_THRESHOLD:
                 msg_text = (
                     "Настройка бота в беседах ВКонтакте\n\n"
                     "Чтобы получать расписание и уведомления об изменениях в вашей беседe:\n"
@@ -2568,6 +2506,9 @@ def build_vk_bot(
             admin_lesson_drafts.pop(peer_id, None)
             admin_lesson_delete_drafts.pop(peer_id, None)
             admin_lesson_delete_one_drafts.pop(peer_id, None)
+            admin_import_lessons_drafts.pop(peer_id, None)
+            admin_ocr_drafts.pop(peer_id, None)
+            admin_ocr_summary_drafts.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
             return
 
@@ -2787,7 +2728,7 @@ def build_vk_bot(
             if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):
                 await show_screen(
                     peer_id,
-                    "⚡ Запущена принудительная очистка базы данных через RabbitMQ...\n\n"
+                    "Запущена принудительная очистка базы данных через RabbitMQ...\n\n"
                     "После завершения очистки служебный отчёт будет выслан администраторам.",
                     keyboard=admin_back_keyboard(),
                 )

@@ -11,6 +11,8 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.group_catalog import GroupCatalog
+from src.http_retry import get_with_retry
+from src.text_normalize import LATIN_TO_CYRILLIC, normalize_dashes, strip_non_word_chars
 
 
 @dataclass(slots=True)
@@ -118,19 +120,7 @@ class ScheduleSearchCatalog:
                 self._auds_loaded = True
 
     async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
-        last_exc: httpx.HTTPError | None = None
-        for attempt in range(1, self.request_retries + 1):
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                return response
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt >= self.request_retries:
-                    break
-                await asyncio.sleep(self.retry_backoff_seconds * attempt)
-        assert last_exc is not None
-        raise last_exc
+        return await get_with_retry(client, url, retries=self.request_retries, backoff_seconds=self.retry_backoff_seconds)
 
     def _find_partial(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
         if not normalized:
@@ -202,40 +192,13 @@ class ScheduleSearchCatalog:
 
     @staticmethod
     def _compact_name_key(value: str) -> str:
-        return re.sub(r"[^\w]+", "", value, flags=re.UNICODE)
+        return strip_non_word_chars(value)
 
     @staticmethod
     def normalize(value: str) -> str:
-        normalized = unicodedata.normalize("NFKC", value).strip().translate(_LATIN_TO_CYRILLIC).casefold().replace("ё", "е")
-        for dash in ("—", "–", "‑", "−"):
-            normalized = normalized.replace(dash, "-")
+        normalized = unicodedata.normalize("NFKC", value).strip().translate(LATIN_TO_CYRILLIC).casefold().replace("ё", "е")
+        normalized = normalize_dashes(normalized)
         normalized = re.sub(r"\s*-\s*", "-", normalized, flags=re.UNICODE)
         normalized = re.sub(r"(?<=\w)\.(?=\w)", ". ", normalized, flags=re.UNICODE)
         normalized = re.sub(r"[^\w\s.-]+", " ", normalized, flags=re.UNICODE)
         return " ".join(normalized.split())
-
-
-_LATIN_TO_CYRILLIC = str.maketrans(
-    {
-        "A": "А",
-        "a": "а",
-        "B": "В",
-        "E": "Е",
-        "e": "е",
-        "K": "К",
-        "k": "к",
-        "M": "М",
-        "H": "Н",
-        "O": "О",
-        "o": "о",
-        "P": "Р",
-        "p": "р",
-        "C": "С",
-        "c": "с",
-        "T": "Т",
-        "Y": "У",
-        "y": "у",
-        "X": "Х",
-        "x": "х",
-    }
-)

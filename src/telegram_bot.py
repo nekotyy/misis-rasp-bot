@@ -109,7 +109,7 @@ def format_broadcast_progress_status(
             return "\n".join([
                 "<b>Рассылка выполняется...</b>",
                 "",
-                "ℹ️ <b>Служебная информация:</b>",
+                "<b>Служебная информация:</b>",
                 f"• <b>Платформа:</b> {platform_str}",
                 f"• <b>Кому:</b> {audience_str}",
                 f"• <b>Время начала:</b> {progress.started_at}",
@@ -117,7 +117,7 @@ def format_broadcast_progress_status(
                 "<b>Текст рассылки:</b>",
                 escaped_text,
                 "",
-                "🔄 <b>Прогресс рассылки:</b>",
+                "<b>Прогресс рассылки:</b>",
                 "• <b>Состояние:</b> В процессе...",
                 f"• <b>Отправлено:</b> {processed} / {total} ({percent}%)",
                 f"• <b>Прогресс:</b> <code>{bar_str}</code>",
@@ -127,7 +127,7 @@ def format_broadcast_progress_status(
             return "\n".join([
                 "<b>Рассылка завершена</b>",
                 "",
-                "ℹ️ <b>Служебная информация:</b>",
+                "<b>Служебная информация:</b>",
                 f"• <b>Платформа:</b> {platform_str}",
                 f"• <b>Кому:</b> {audience_str}",
                 f"• <b>Время начала:</b> {progress.started_at}",
@@ -136,7 +136,7 @@ def format_broadcast_progress_status(
                 "<b>Текст рассылки:</b>",
                 escaped_text,
                 "",
-                "📊 <b>Итоги рассылки:</b>",
+                "<b>Итоги рассылки:</b>",
                 f"• <b>Всего получателей:</b> {total}",
                 f"• <b>Успешно доставлено:</b> {progress.success_count}",
                 f"• <b>Ошибки доставки:</b> {progress.failed_count}",
@@ -300,9 +300,9 @@ ADMIN_BACK_KEYBOARD = InlineKeyboardMarkup(
 
 ADMIN_STATUS_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors")],
+        [InlineKeyboardButton(text="Ошибки за день", callback_data="admin:daily_errors")],
         [
-            InlineKeyboardButton(text="🔄 Обновить", callback_data="admin:status"),
+            InlineKeyboardButton(text="Обновить", callback_data="admin:status"),
             InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back"),
         ],
     ]
@@ -321,7 +321,7 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors"),
+            InlineKeyboardButton(text="Ошибки за день", callback_data="admin:daily_errors"),
         ],
         [
             InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
@@ -347,10 +347,10 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Импорт пар из JSON", callback_data="admin:import_lessons"),
         ],
         [
-            InlineKeyboardButton(text="📷 Расписание с фото (OCR)", callback_data="admin:ocr_import"),
+            InlineKeyboardButton(text="Расписание с фото (OCR)", callback_data="admin:ocr_import"),
         ],
         [
-            InlineKeyboardButton(text="📋 Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
+            InlineKeyboardButton(text="Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
         ],
         [
             InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
@@ -370,7 +370,7 @@ ADMIN_KEYBOARD_LIMITED = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="⚠️ Ошибки за день", callback_data="admin:daily_errors"),
+            InlineKeyboardButton(text="Ошибки за день", callback_data="admin:daily_errors"),
         ],
         [
             InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
@@ -820,14 +820,14 @@ async def build_admin_status_text(
     return "\n".join([
         "<b>Статус бота</b>",
         "───────────────────────────",
-        "⚙️ <b>Системная информация:</b>",
+        "<b>Системная информация:</b>",
         f"• Версия бота: <b>v{BOT_VERSION}</b>.",
         f"• Аптайм: <b>{uptime_str}</b> (старт: {started_str}).",
         f"• Поставлен на сервер: <b>{installed_str}</b>.",
         f"• Память процесса (RAM): <b>{ram_mb} МБ</b>.",
         f"• Размер базы данных: <b>{db_size_str}</b>.",
         "───────────────────────────",
-        "🌐 <b>Сайт расписания и службы:</b>",
+        "<b>Сайт расписания и службы:</b>",
         f"• Сайт МИСИС: <b>{site_status_label}</b>.",
         f"• RabbitMQ: <b>{rmq_label}</b>.",
         "• Telegram Bot API: <b>🟢 Работает</b>.",
@@ -837,7 +837,7 @@ async def build_admin_status_text(
         "• " + (ocr_importer.status_line(html=True) if ocr_importer is not None else "<b>Распознавание с фото</b>: не настроено") + ".",
         f"• Ошибок за сегодня: <b>{daily_errors_summary['total_errors']}</b> (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
-        "👥 <b>Пользователи и источники:</b>",
+        "<b>Пользователи и источники:</b>",
         f"• Пользователей: <b>{len(users)}</b>.",
         f"• Пользователей с VK: <b>{vk_users}</b>.",
         f"• Пользователей с TG: <b>{tg_users}</b>.",
@@ -845,19 +845,19 @@ async def build_admin_status_text(
         f"• Активных групп: <b>{active_group_count}</b>.",
         f"• Активных преподавателей: <b>{active_teacher_count}</b>.",
         "",
-        "💬 <b>Активные пользовательские группы:</b>",
+        "<b>Активные пользовательские группы:</b>",
         f"• Всего бесед и групп: <b>{total_chats}</b>.",
         f"• Групповых чатов в Telegram: <b>{tg_chats}</b>.",
         f"• Бесед ВКонтакте: <b>{vk_chats}</b>.",
         "• Где настроен бот:",
         *chat_groups_lines,
         "───────────────────────────",
-        "🔄 <b>Состояние расписания:</b>",
+        "<b>Состояние расписания:</b>",
         f"• Последнее изменение: <b>{last_change_at}</b>.",
         f"• {snapshot_line('Последний обычный парс', current_snapshot)}.",
         f"• {snapshot_line('Последний сохраненный эталон', baseline_snapshot)}.",
         "───────────────────────────",
-        "📬 <b>Статистика отправок:</b>",
+        "<b>Статистика отправок:</b>",
         f"• Всего событий доставки: <b>{delivery_stats['events_total']}</b>.",
         f"• Успешно / ошибок: <b>{delivery_stats['sent_total']}</b> / <b>{delivery_stats['failed_total']}</b>.",
         f"• За 24 часа (успешно / ошибок): <b>{delivery_stats['sent_last_24h']}</b> / <b>{delivery_stats['failed_last_24h']}</b>.",
@@ -874,7 +874,7 @@ async def build_admin_status_text(
         f"  - TG авто-отключено из-за доставки: <b>{tg_auto_disabled}</b>.",
         f"• VK (успешно / ошибок): <b>{delivery_stats['vk_sent']}</b> / <b>{delivery_stats['vk_failed']}</b>.",
         "───────────────────────────",
-        "⚠️ <b>Топ TG ошибок за 24ч:</b>",
+        "<b>Топ TG ошибок за 24ч:</b>",
         tg_top_error_lines,
     ])
 
@@ -920,14 +920,6 @@ def build_dispatcher(
     callback_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
-
-    def is_rate_limited(bucket: dict[int, float], key: int, cooldown: float) -> bool:
-        now = monotonic()
-        last_hit = bucket.get(key)
-        if last_hit is not None and now - last_hit < cooldown:
-            return True
-        bucket[key] = now
-        return False
 
     async def wait_rate_limit_queue(
         bucket: dict[int, float],
@@ -1263,7 +1255,7 @@ def build_dispatcher(
         return "\n".join([
             "<b>Предпросмотр рассылки</b>",
             "───────────────────────────",
-            "ℹ️ <b>Параметры отправки:</b>",
+            "<b>Параметры отправки:</b>",
             f"• Платформа: <b>{escape(platform_str)}</b>.",
             f"• Аудитория: <b>{escape(audience_str)}</b>.",
             "───────────────────────────",
@@ -1955,12 +1947,11 @@ def build_dispatcher(
                     return
                 await asyncio.sleep(0.5 * attempt)
 
-    async def callback_is_rate_limited(callback: CallbackQuery, cooldown: float = 0.8) -> bool:
+    async def wait_callback_rate_limit(callback: CallbackQuery, cooldown: float = 0.8) -> None:
         user_id = callback.from_user.id
         if user_is_admin(user_id):
-            return False
+            return
         await wait_rate_limit_queue(callback_rate_limit, callback_rate_locks, user_id, cooldown)
-        return False
 
     async def wait_message_rate_limit(user_id: int, cooldown: float = 0.8) -> None:
         if user_is_admin(user_id):
@@ -2436,7 +2427,7 @@ def build_dispatcher(
             f"{STAR_ICON} <b>Развитие бота расписания</b>\n\n"
             "Бот работает 24/7, ежедневно обрабатывает тысячи запросов и мгновенно оповещает об изменениях в парах.\n"
             "Поддерживая проект Telegram Звёздами (Stars), ты помогаешь оплачивать хостинг и ускорять разработку новых возможностей.\n"
-            "💡 Любая поддержка помогает проекту расти и оставаться бесплатным для всех студентов!\n\n"
+            "Любая поддержка помогает проекту расти и оставаться бесплатным для всех студентов.\n\n"
             "Выбери количество звёзд ниже или отправь своё число в чат:"
         )
         await send_new_context_message(
@@ -2455,7 +2446,7 @@ def build_dispatcher(
 
         await send_reply(
             message,
-            "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+            "<b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
             "После завершения очистки служебный отчёт будет выслан администраторам.",
         )
         if schedule_jobs is not None:
@@ -2484,7 +2475,7 @@ def build_dispatcher(
             if donation["refunded"]:
                 await send_reply(
                     message,
-                    f"⚠️ Пожертвование <b>#{donation['id']}</b> ({donation['stars']} {STAR_ICON}) уже было возвращено ранее.",
+                    f"Пожертвование <b>#{donation['id']}</b> ({donation['stars']} {STAR_ICON}) уже было возвращено ранее.",
                 )
                 return
 
@@ -2495,7 +2486,7 @@ def build_dispatcher(
                 )
             except Exception as exc:
                 logger.error("Failed to refund star payment %s: %s", donation["id"], exc)
-                await send_reply(message, f"❌ Ошибка при возврате средств в Telegram API:\n<code>{escape(str(exc))}</code>")
+                await send_reply(message, f"Ошибка при возврате средств в Telegram API:\n<code>{escape(str(exc))}</code>")
                 return
 
             await db.refund_star_donation(donation["id"])
@@ -2504,14 +2495,14 @@ def build_dispatcher(
             stars = donation["stars"]
             await send_reply(
                 message,
-                f"✅ <b>Возврат выполнен!</b>\n\n"
+                f"<b>Возврат выполнен.</b>\n\n"
                 f"Средства за пожертвование <b>#{donation['id']}</b> ({stars} {STAR_ICON}) успешно возвращены пользователю <code>{user_id}</code>.",
             )
 
             try:
                 user_notify_msg = (
-                    f"⭐️ <b>Возврат средств</b>\n\n"
-                    f"Средства за пожертвование #{donation['id']} ({stars} ⭐) были возвращены администратором на ваш баланс Telegram Stars."
+                    f"<b>Возврат средств</b>\n\n"
+                    f"Средства за пожертвование #{donation['id']} ({stars} {STAR_ICON}) были возвращены администратором на ваш баланс Telegram Stars."
                 )
                 await message.bot.send_message(user_id, user_notify_msg)
             except Exception as exc:
@@ -2529,16 +2520,16 @@ def build_dispatcher(
                 )
                 await send_reply(
                     message,
-                    f"✅ <b>Прямой возврат выполнен!</b>\n\n"
+                    f"<b>Прямой возврат выполнен.</b>\n\n"
                     f"Запрос на возврат для Charge ID <code>{charge_id}</code> пользователю <code>{target_user_id}</code> отправлен.",
                 )
             except Exception as exc:
-                await send_reply(message, f"❌ Ошибка прямого возврата:\n<code>{escape(str(exc))}</code>")
+                await send_reply(message, f"Ошибка прямого возврата:\n<code>{escape(str(exc))}</code>")
             return
 
         await send_reply(
             message,
-            f"❌ Пожертвование с ID или Charge ID <code>{escape(query)}</code> не найдено в базе.\n\n"
+            f"Пожертвование с ID или Charge ID <code>{escape(query)}</code> не найдено в базе.\n\n"
             "Если нужно сделать прямой возврат вне базы, укажи User ID вторым параметром:\n"
             "<code>/dnremove &lt;charge_id&gt; &lt;user_id&gt;</code>",
         )
@@ -2567,8 +2558,8 @@ def build_dispatcher(
         )
 
         thank_you_msg = (
-            f"❤️ <b>Спасибо за вашу поддержку!</b>\n\n"
-            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект становится лучше и продолжает работать 24/7! 💘"
+            f"<b>Спасибо за вашу поддержку!</b>\n\n"
+            f"Вы пожертвовали <b>{stars} {STAR_ICON}</b>. Благодаря вашей помощи проект становится лучше и продолжает работать 24/7."
         )
         await send_reply(message, thank_you_msg)
 
@@ -2749,8 +2740,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:start")
     async def handle_menu_start(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         search_results.pop(callback.from_user.id, None)
         awaiting_schedule_search.discard(callback.from_user.id)
@@ -2774,8 +2764,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data == "menu:settings")
     async def handle_menu_settings(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -2794,8 +2783,7 @@ def build_dispatcher(
         await safe_callback_answer(callback)
     @dispatcher.callback_query(F.data == "start:rasp")
     async def handle_start_rasp(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         if not await ensure_group_selected(callback.bot, callback.from_user.id, callback.from_user.id):
             await safe_callback_answer(callback)
@@ -2804,8 +2792,7 @@ def build_dispatcher(
         await safe_callback_answer(callback)
     @dispatcher.callback_query(F.data.startswith("schedule:"))
     async def handle_schedule_callback(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -2820,8 +2807,7 @@ def build_dispatcher(
         await safe_callback_answer(callback)
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -2942,8 +2928,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("help:"))
     async def handle_help_query(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback):
-            return
+        await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -3022,8 +3007,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("donate:"))
     async def handle_donate_callback(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback, cooldown=0.5):
-            return
+        await wait_callback_rate_limit(callback, cooldown=0.5)
         await register_callback_user(callback)
         if callback.message is None:
             await safe_callback_answer(callback)
@@ -3043,7 +3027,7 @@ def build_dispatcher(
                     callback.bot,
                     callback.message.chat.id,
                     "donate",
-                    "✏️ <b>Своё количество звёзд</b>\n\nОтправь числом в чат, сколько звёзд ты хочешь пожертвовать (от 15 до 2000):",
+                    "<b>Своё количество звёзд</b>\n\nОтправь числом в чат, сколько звёзд ты хочешь пожертвовать (от 15 до 2000):",
                     reply_markup=DONATE_CUSTOM_CANCEL_KEYBOARD,
                 )
                 await safe_callback_answer(callback)
@@ -3062,8 +3046,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("admin:"))
     async def handle_admin_callback(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback, cooldown=1.2):
-            return
+        await wait_callback_rate_limit(callback, cooldown=1.2)
         await register_callback_user(callback)
         if not user_is_admin(callback.from_user.id):
             await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)
@@ -3092,7 +3075,7 @@ def build_dispatcher(
                 callback.bot,
                 callback.message.chat.id,
                 "admin",
-                "⚡ <b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
+                "<b>Запущена принудительная очистка базы данных через RabbitMQ...</b>\n\n"
                 "После завершения очистки служебный отчёт будет выслан администраторам.",
                 reply_markup=ADMIN_KEYBOARD,
             )
@@ -3850,8 +3833,7 @@ def build_dispatcher(
 
     @dispatcher.callback_query(F.data.startswith("editor:toggle:"))
     async def handle_editor_toggle(callback: CallbackQuery) -> None:
-        if await callback_is_rate_limited(callback, cooldown=1.2):
-            return
+        await wait_callback_rate_limit(callback, cooldown=1.2)
         await register_callback_user(callback)
         if not user_is_full_admin(callback.from_user.id):
             await safe_callback_answer(callback, "Недостаточно прав.", show_alert=True)

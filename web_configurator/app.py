@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -137,17 +138,18 @@ def hashed_guard_key(kind: str, value: str) -> str:
     return f"{kind}:{digest}"
 
 
-def audit_hash(kind: str, value: str) -> str:
-    return hashed_guard_key(kind, value)
+def client_fingerprint_source(request: Request, device_id: str) -> str:
+    user_agent = request.headers.get("user-agent", "")
+    accept_language = request.headers.get("accept-language", "")
+    sec_ch_ua = request.headers.get("sec-ch-ua", "")
+    sec_ch_platform = request.headers.get("sec-ch-ua-platform", "")
+    return f"{device_id}|{user_agent}|{accept_language}|{sec_ch_ua}|{sec_ch_platform}"
 
 
 def login_guard_keys(request: Request, login: str) -> list[str]:
     ip = client_ip(request)
     device_id = get_or_create_login_device_id(request)
     user_agent = request.headers.get("user-agent", "")
-    accept_language = request.headers.get("accept-language", "")
-    sec_ch_ua = request.headers.get("sec-ch-ua", "")
-    sec_ch_platform = request.headers.get("sec-ch-ua-platform", "")
     normalized_login = login.strip().lower()
 
     raw_keys = [
@@ -155,7 +157,7 @@ def login_guard_keys(request: Request, login: str) -> list[str]:
         ("device", device_id),
         ("ip_device", f"{ip}|{device_id}"),
         ("ip_ua", f"{ip}|{user_agent}"),
-        ("fingerprint", f"{device_id}|{user_agent}|{accept_language}|{sec_ch_ua}|{sec_ch_platform}"),
+        ("fingerprint", client_fingerprint_source(request, device_id)),
         ("login_ip", f"{normalized_login}|{ip}"),
         ("login_device", f"{normalized_login}|{device_id}"),
     ]
@@ -170,17 +172,12 @@ def record_login_attempt(
     outcome: str,
     reason: str,
 ) -> None:
-    user_agent = request.headers.get("user-agent", "")
-    accept_language = request.headers.get("accept-language", "")
-    sec_ch_ua = request.headers.get("sec-ch-ua", "")
-    sec_ch_platform = request.headers.get("sec-ch-ua-platform", "")
-    fingerprint_source = f"{device_id}|{user_agent}|{accept_language}|{sec_ch_ua}|{sec_ch_platform}"
     login_rate_limiter.record_attempt(
         requested_login=login,
         ip=client_ip(request),
-        user_agent=user_agent,
-        device_id_hash=audit_hash("device", device_id),
-        fingerprint_hash=audit_hash("fingerprint", fingerprint_source),
+        user_agent=request.headers.get("user-agent", ""),
+        device_id_hash=hashed_guard_key("device", device_id),
+        fingerprint_hash=hashed_guard_key("fingerprint", client_fingerprint_source(request, device_id)),
         outcome=outcome,
         reason=reason,
     )
@@ -259,7 +256,7 @@ def current_user(request: Request) -> WebUser:
 
 def require(permission: str):
     def dependency(user: Annotated[WebUser, Depends(current_user)]) -> WebUser:
-        if user.is_superuser or permission in user.permissions:
+        if can(user, permission):
             return user
         raise HTTPException(status_code=403, detail="Недостаточно прав.")
 
@@ -278,12 +275,18 @@ async def index(user: Annotated[WebUser, Depends(current_user)]) -> str:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_form(request: Request) -> Response:
+    error_banner = (
+        "<div class='alert bad'>Неверный логин, пароль или вход временно заблокирован. Попробуйте ещё раз.</div>"
+        if request.query_params.get("error")
+        else ""
+    )
     response = HTMLResponse(base_page(
         "Вход",
         f"""
         <main class="login">
           <form method="post" action="/login" class="panel narrow">
             <div class="brand" style="margin-bottom:18px"><span class="brand-mark">{icon("spark")}</span><div><b>MISIS Control</b><small>secure dashboard</small></div></div>
+            {error_banner}
             <label>Логин <input name="login" autocomplete="username" required></label>
             <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
             <button type="submit">{icon("shield")} Войти</button>
@@ -356,9 +359,10 @@ async def api_metrics(user: Annotated[WebUser, Depends(current_user)]):
 
 
 @app.get("/lessons", response_class=HTMLResponse)
-async def lessons_page(user: Annotated[WebUser, Depends(require("config_lesson_counters"))]) -> str:
+async def lessons_page(request: Request, user: Annotated[WebUser, Depends(require("config_lesson_counters"))]) -> str:
     payload = load_lesson_config(Settings.from_env().lesson_counters_path)
-    return layout("Счетчики пар", lessons_manager_html(payload), user)
+    report = "<div class='alert bad'>Группа не найдена. Проверьте номер или название.</div>" if request.query_params.get("error") == "group" else ""
+    return layout("Счетчики пар", lessons_manager_html(payload, report=report), user)
 
 
 @app.post("/lessons/json", response_class=HTMLResponse)
@@ -458,6 +462,10 @@ async def upsert_lesson_subject(
                 break
     if not replaced:
         subjects.append(replacement)
+    return await save_lesson_payload_with_validation(payload, user, force)
+
+
+async def save_lesson_payload_with_validation(payload: dict[str, Any], user: WebUser, force: str) -> Response:
     normalized, problems = await validate_payload_for_save(payload)
     has_errors = any(problem["level"] == "error" for problem in problems)
     if has_errors and force != "1":
@@ -484,12 +492,7 @@ async def upsert_lesson_subjects_bulk(
 
     subjects = group.setdefault("subjects", [])
     upsert_bulk_subjects(subjects, items)
-    normalized, problems = await validate_payload_for_save(payload)
-    has_errors = any(problem["level"] == "error" for problem in problems)
-    if has_errors and force != "1":
-        return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
-    save_lesson_config(Settings.from_env().lesson_counters_path, payload if has_errors else normalized)
-    return RedirectResponse("/lessons", status_code=303)
+    return await save_lesson_payload_with_validation(payload, user, force)
 
 
 @app.post("/lessons/subjects/delete")
@@ -773,7 +776,9 @@ async def resolve_group_input(group_catalog: GroupCatalog, group_name: str, sche
         except ValueError:
             return None, None
         group = await group_catalog.get_by_schedule_id(resolved_id)
-        return resolved_id, group.group_name if group else group_name.strip()
+        if group is None:
+            return None, None
+        return resolved_id, group.group_name
     if group_name.strip():
         group = await group_catalog.find_group(group_name.strip())
         if group is not None:
@@ -849,7 +854,11 @@ async def enqueue_broadcast(message: str) -> int:
     return sent
 
 
-async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+async def _run_snapshot_action_for_all_active_sources(
+    snapshot_type: str,
+    success_label: str,
+    error_label: str,
+) -> list[tuple[str, str, str]]:
     db = await get_db()
     sources = await db.get_active_sources()
     if not sources:
@@ -863,7 +872,7 @@ async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
             else:
                 snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
             await db.save_snapshot(
-                "current",
+                snapshot_type,
                 snapshot_hash,
                 snapshot,
                 source["schedule_id"],
@@ -873,42 +882,19 @@ async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
                 source_title=source["source_title"],
                 source_url=source["source_url"],
             )
-            rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+            rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), success_label))
         except Exception:
-            logger.exception("Ошибка при перепарсинге источника %s", source.get("source_title", "?"))
+            logger.exception("%s для %s", error_label, source.get("source_title", "?"))
             rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), "ошибка (см. логи)"))
     return rows
+
+
+async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+    return await _run_snapshot_action_for_all_active_sources("current", "перепарсено", "Ошибка при перепарсинге источника")
 
 
 async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
-    db = await get_db()
-    sources = await db.get_active_sources()
-    if not sources:
-        return []
-    parser = ScheduleParser(Settings.from_env().schedule_url)
-    rows: list[tuple[str, str, str]] = []
-    for source in sources:
-        try:
-            if source["source_type"] == "teacher" and source["source_url"]:
-                snapshot, snapshot_hash = await parser.parse_from_url(str(source["source_url"]))
-            else:
-                snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
-            await db.save_snapshot(
-                "daily_baseline",
-                snapshot_hash,
-                snapshot,
-                source["schedule_id"],
-                source["group_name"],
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
-            rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
-        except Exception:
-            logger.exception("Ошибка при сохранении эталона для %s", source.get("source_title", "?"))
-            rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), "ошибка (см. логи)"))
-    return rows
+    return await _run_snapshot_action_for_all_active_sources("daily_baseline", "эталон сохранен", "Ошибка при сохранении эталона")
 
 
 def action_report_html(title: str, rows: list[tuple[str, str, str]], success_label: str) -> str:
@@ -1174,14 +1160,10 @@ def html_escape(value: object) -> str:
 
 
 def json_dumps(value: object) -> str:
-    import json
-
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
 def parse_json_payload(value: str) -> dict:
-    import json
-
     payload = json.loads(value)
     if isinstance(payload, list):
         return {"groups": payload}

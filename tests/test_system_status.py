@@ -96,12 +96,11 @@ class TestSystemStatus(unittest.IsolatedAsyncioTestCase):
         status_zero = await check_web_dashboard_status(0)
         self.assertFalse(status_zero["ok"])
 
-    async def test_alert_manager_transitions_and_cooldown(self) -> None:
+    async def test_alert_manager_transitions_without_repeat_reminders(self) -> None:
         mock_broadcaster = AsyncMock()
         alert_manager = SystemAlertManager(
             db=self.db,
             broadcaster=mock_broadcaster,
-            cooldown_seconds=100.0,
         )
 
         # 1. First failure -> triggers alert
@@ -113,7 +112,7 @@ class TestSystemStatus(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(mock_broadcaster.notify_admins.call_count, 1)
 
-        # 2. Repeated failure within cooldown -> does NOT trigger another alert
+        # 2. Repeated failure -> never re-alerts while still down, no matter how long
         await alert_manager.report_component_status(
             component="schedule_site",
             ok=False,

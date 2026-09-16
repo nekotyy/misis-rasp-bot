@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,8 @@ import aiosqlite
 import httpx
 
 from src.system_status import BOT_VERSION
+
+logger = logging.getLogger(__name__)
 
 _SERVICES_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 SERVICES_CACHE_TTL = 45.0
@@ -169,6 +172,7 @@ async def _schedule_site_status(url: str) -> dict[str, Any]:
             "latency_ms": latency_ms,
         }
     except Exception as exc:
+        logger.debug("Schedule site status check failed for %s: %s", url, exc)
         return {"ok": False, "label": type(exc).__name__}
 
 
@@ -181,6 +185,7 @@ async def _telegram_status(token: str) -> dict[str, Any]:
         payload = response.json()
         return {"ok": bool(payload.get("ok")), "label": payload.get("result", {}).get("username") or response.status_code}
     except Exception as exc:
+        logger.debug("Telegram Bot API status check failed: %s", exc)
         return {"ok": False, "label": type(exc).__name__}
 
 
@@ -193,6 +198,7 @@ async def _vk_status(token: str) -> dict[str, Any]:
         payload = response.json()
         return {"ok": "error" not in payload, "label": payload.get("error", {}).get("error_msg") or "ok"}
     except Exception as exc:
+        logger.debug("VK Bot API status check failed: %s", exc)
         return {"ok": False, "label": type(exc).__name__}
 
 
@@ -204,6 +210,7 @@ async def _rabbitmq_status(url: str) -> dict[str, Any]:
         connection = await aio_pika.connect_robust(url, timeout=5)
         return {"ok": True, "label": "connected"}
     except Exception as exc:
+        logger.debug("RabbitMQ status check failed: %s", exc)
         return {"ok": False, "label": type(exc).__name__}
     finally:
         if connection is not None and not connection.is_closed:

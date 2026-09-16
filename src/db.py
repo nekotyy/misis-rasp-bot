@@ -1,6 +1,6 @@
-import contextlib
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -295,6 +295,18 @@ class Database:
             )
             await db.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_delivery_events_platform_status_created
+                ON delivery_events(platform, status, created_at)
+                """
+            )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_delivery_events_platform_user_id
+                ON delivery_events(platform, user_id, id)
+                """
+            )
+            await db.execute(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_counters_source
                 ON lesson_counters(schedule_id, subject_norm, teacher_norm)
                 """
@@ -307,7 +319,33 @@ class Database:
             )
             await db.commit()
 
-    _SAFE_IDENTIFIER_RE = __import__("re").compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    _SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+    _TELEGRAM_PERMANENT_FAILURE_PHRASES = (
+        "telegramforbiddenerror",
+        "forbidden: bot was blocked by the user",
+        "bot was blocked by the user",
+        "chat not found",
+        "user is deactivated",
+        "have no rights to send a message",
+    )
+
+    @classmethod
+    def _telegram_permanent_failure_sql(cls, column: str = "error_text") -> str:
+        """SQL condition matching Telegram delivery errors that mean the user is permanently unreachable."""
+        conditions = " OR ".join(
+            f"lower(COALESCE({column}, '')) LIKE '%{phrase}%'" for phrase in cls._TELEGRAM_PERMANENT_FAILURE_PHRASES
+        )
+        return f"({conditions})"
+
+    @staticmethod
+    def _source_scope_condition(schedule_id: int | None, source_key: str | None) -> tuple[str, tuple]:
+        """Условие (без WHERE/AND), сужающее выборку до одного источника: source_key приоритетнее schedule_id, оба None — без ограничения (пустая строка)."""
+        if source_key is not None:
+            return "source_key = ?", (source_key,)
+        if schedule_id is not None:
+            return "schedule_id = ?", (schedule_id,)
+        return "", ()
 
     async def _ensure_column(self, db: aiosqlite.Connection, table_name: str, column_name: str, definition: str) -> None:
         if not self._SAFE_IDENTIFIER_RE.match(table_name) or not self._SAFE_IDENTIFIER_RE.match(column_name):
@@ -411,7 +449,8 @@ class Database:
                 homework_notifications_enabled,
                 delivery_disabled_auto,
                 created_at,
-                last_seen_at
+                last_seen_at,
+                custom_sticker_file_id
             FROM users
         """
         clauses: list[str] = []
@@ -437,31 +476,32 @@ class Database:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
 
-        return [
-            UserRecord(
-                platform=row[0],
-                user_id=row[1],
-                username=row[2],
-                full_name=row[3],
-                subscription_type=row[4],
-                subscription_key=row[5],
-                subscription_title=row[6],
-                subscription_url=row[7],
-                audience_subscription_key=row[8],
-                audience_subscription_title=row[9],
-                audience_subscription_url=row[10],
-                group_name=row[11],
-                schedule_id=row[12],
-                is_admin=bool(row[13]),
-                is_editor=bool(row[14]),
-                homework_notifications_enabled=bool(row[15]),
-                delivery_disabled_auto=bool(row[16]),
-                created_at=row[17],
-                last_seen_at=row[18],
-                custom_sticker_file_id=row[19] if len(row) > 19 else None,
-            )
-            for row in rows
-        ]
+        return [self._row_to_user_record(row) for row in rows]
+
+    @staticmethod
+    def _row_to_user_record(row) -> UserRecord:
+        return UserRecord(
+            platform=row[0],
+            user_id=row[1],
+            username=row[2],
+            full_name=row[3],
+            subscription_type=row[4],
+            subscription_key=row[5],
+            subscription_title=row[6],
+            subscription_url=row[7],
+            audience_subscription_key=row[8],
+            audience_subscription_title=row[9],
+            audience_subscription_url=row[10],
+            group_name=row[11],
+            schedule_id=row[12],
+            is_admin=bool(row[13]),
+            is_editor=bool(row[14]),
+            homework_notifications_enabled=bool(row[15]),
+            delivery_disabled_auto=bool(row[16]),
+            created_at=row[17],
+            last_seen_at=row[18],
+            custom_sticker_file_id=row[19] if len(row) > 19 else None,
+        )
 
     async def get_users_for_platform(
         self,
@@ -511,28 +551,7 @@ class Database:
             row = await cursor.fetchone()
         if not row:
             return None
-        return UserRecord(
-            platform=row[0],
-            user_id=row[1],
-            username=row[2],
-            full_name=row[3],
-            subscription_type=row[4],
-            subscription_key=row[5],
-            subscription_title=row[6],
-            subscription_url=row[7],
-            audience_subscription_key=row[8],
-            audience_subscription_title=row[9],
-            audience_subscription_url=row[10],
-            group_name=row[11],
-            schedule_id=row[12],
-            is_admin=bool(row[13]),
-            is_editor=bool(row[14]),
-            homework_notifications_enabled=bool(row[15]),
-            delivery_disabled_auto=bool(row[16]),
-            created_at=row[17],
-            last_seen_at=row[18],
-            custom_sticker_file_id=row[19] if len(row) > 19 else None,
-        )
+        return self._row_to_user_record(row)
 
     async def set_user_group(self, platform: str, user_id: int, group_name: str, schedule_id: int) -> None:
         await self.set_user_subscription(
@@ -706,7 +725,7 @@ class Database:
     async def auto_disable_undeliverable_telegram_users(self) -> int:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
-                """
+                f"""
                 UPDATE users
                 SET
                     delivery_disabled_auto = 1,
@@ -730,14 +749,7 @@ class Database:
                                 LIMIT 1
                             )
                             AND last_event.status = 'failed'
-                            AND (
-                                lower(COALESCE(last_event.error_text, '')) LIKE '%telegramforbiddenerror%'
-                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%forbidden: bot was blocked by the user%'
-                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%bot was blocked by the user%'
-                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%chat not found%'
-                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%user is deactivated%'
-                                OR lower(COALESCE(last_event.error_text, '')) LIKE '%have no rights to send a message%'
-                            )
+                            AND {self._telegram_permanent_failure_sql("last_event.error_text")}
                     )
                 """
             )
@@ -885,7 +897,8 @@ class Database:
                 cursor = await db.execute(
                     "SELECT schedule_id, group_name, department_id, department_code, department_name, url FROM groups"
                 )
-            except aiosqlite.OperationalError:
+            except aiosqlite.OperationalError as exc:
+                logger.warning("Failed to read groups catalog table (likely missing/mid-migration): %s", exc)
                 return []
             rows = await cursor.fetchall()
         return [
@@ -967,40 +980,19 @@ class Database:
         schedule_id: int | None = None,
         source_key: str | None = None,
     ) -> dict | None:
+        condition, condition_params = self._source_scope_condition(schedule_id, source_key)
+        scope_sql = f" AND {condition}" if condition else ""
         async with aiosqlite.connect(self.path) as db:
-            if source_key is not None:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
-                    FROM schedule_snapshots
-                    WHERE snapshot_type = ? AND source_key = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (snapshot_type, source_key),
-                )
-            elif schedule_id is None:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
-                    FROM schedule_snapshots
-                    WHERE snapshot_type = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (snapshot_type,),
-                )
-            else:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
-                    FROM schedule_snapshots
-                    WHERE snapshot_type = ? AND schedule_id = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (snapshot_type, schedule_id),
-                )
+            cursor = await db.execute(
+                f"""
+                SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                FROM schedule_snapshots
+                WHERE snapshot_type = ?{scope_sql}
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (snapshot_type, *condition_params),
+            )
             row = await cursor.fetchone()
 
         if not row:
@@ -1062,38 +1054,19 @@ class Database:
         schedule_id: int | None = None,
         source_key: str | None = None,
     ) -> dict | None:
+        condition, condition_params = self._source_scope_condition(schedule_id, source_key)
+        where_sql = f"WHERE {condition}" if condition else ""
         async with aiosqlite.connect(self.path) as db:
-            if source_key is not None:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
-                    FROM change_events
-                    WHERE source_key = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (source_key,),
-                )
-            elif schedule_id is None:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
-                    FROM change_events
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """
-                )
-            else:
-                cursor = await db.execute(
-                    """
-                    SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
-                    FROM change_events
-                    WHERE schedule_id = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (schedule_id,),
-                )
+            cursor = await db.execute(
+                f"""
+                SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
+                FROM change_events
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                condition_params,
+            )
             row = await cursor.fetchone()
 
         if not row:
@@ -1183,8 +1156,9 @@ class Database:
     async def get_delivery_stats(self) -> dict[str, int]:
         threshold_24h = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
         async with aiosqlite.connect(self.path) as db:
+            permanent_failure_sql = self._telegram_permanent_failure_sql()
             cursor = await db.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*),
                     SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END),
@@ -1206,20 +1180,8 @@ class Database:
                     SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND via_broker = 1 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND via_broker = 0 THEN 1 ELSE 0 END),
                     SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND created_at >= ? THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND (
-                        lower(COALESCE(error_text, '')) LIKE '%telegramforbiddenerror%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%bot was blocked by the user%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%chat not found%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%user is deactivated%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%have no rights to send a message%'
-                    ) THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND created_at >= ? AND (
-                        lower(COALESCE(error_text, '')) LIKE '%telegramforbiddenerror%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%bot was blocked by the user%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%chat not found%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%user is deactivated%'
-                        OR lower(COALESCE(error_text, '')) LIKE '%have no rights to send a message%'
-                    ) THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND {permanent_failure_sql} THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND platform = 'telegram' AND created_at >= ? AND {permanent_failure_sql} THEN 1 ELSE 0 END)
                 FROM delivery_events
                 """,
                 (threshold_24h, threshold_24h, threshold_24h, threshold_24h),
@@ -1322,31 +1284,19 @@ class Database:
         schedule_id: int | None = None,
         source_key: str | None = None,
     ) -> bool:
+        condition, condition_params = self._source_scope_condition(schedule_id, source_key)
+        scope_sql = f" AND {condition}" if condition else ""
         async with aiosqlite.connect(self.path) as db:
-            if source_key is not None:
-                cursor = await db.execute(
-                    """
-                    SELECT 1
-                    FROM schedule_snapshots
-                    WHERE snapshot_type = 'daily_baseline'
-                      AND source_key = ?
-                      AND created_at LIKE ?
-                    LIMIT 1
-                    """,
-                    (source_key, f"{day_prefix}%"),
-                )
-            else:
-                cursor = await db.execute(
-                    """
-                    SELECT 1
-                    FROM schedule_snapshots
-                    WHERE snapshot_type = 'daily_baseline'
-                      AND schedule_id = ?
-                      AND created_at LIKE ?
-                    LIMIT 1
-                    """,
-                    (schedule_id, f"{day_prefix}%"),
-                )
+            cursor = await db.execute(
+                f"""
+                SELECT 1
+                FROM schedule_snapshots
+                WHERE snapshot_type = 'daily_baseline'{scope_sql}
+                  AND created_at LIKE ?
+                LIMIT 1
+                """,
+                (*condition_params, f"{day_prefix}%"),
+            )
             row = await cursor.fetchone()
         return row is not None
 
@@ -1585,6 +1535,7 @@ class Database:
 
     async def cleanup_old_records(self, days: int = 90) -> dict:
         cutoff_days = max(1, days)
+        cutoff_offset = f"-{cutoff_days} days"
         started_at = datetime.now()
         start_time = monotonic()
         size_before_bytes = self.path.stat().st_size if self.path.exists() else 0
@@ -1594,7 +1545,8 @@ class Database:
             # 1. delivery_events
             try:
                 cursor = await db.execute(
-                    f"DELETE FROM delivery_events WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                    "DELETE FROM delivery_events WHERE datetime(created_at) < datetime('now', ?)",
+                    (cutoff_offset,),
                 )
                 deleted_counts["delivery_events"] = cursor.rowcount if cursor.rowcount is not None else 0
             except Exception as exc:
@@ -1604,7 +1556,8 @@ class Database:
             # 2. change_events
             try:
                 cursor = await db.execute(
-                    f"DELETE FROM change_events WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                    "DELETE FROM change_events WHERE datetime(created_at) < datetime('now', ?)",
+                    (cutoff_offset,),
                 )
                 deleted_counts["change_events"] = cursor.rowcount if cursor.rowcount is not None else 0
             except Exception as exc:
@@ -1614,11 +1567,12 @@ class Database:
             # 3. schedule_snapshots (preserve latest snapshot for each source_key)
             try:
                 cursor = await db.execute(
-                    f"""
-                    DELETE FROM schedule_snapshots
-                    WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')
-                      AND id NOT IN (SELECT MAX(id) FROM schedule_snapshots GROUP BY source_key)
                     """
+                    DELETE FROM schedule_snapshots
+                    WHERE datetime(created_at) < datetime('now', ?)
+                      AND id NOT IN (SELECT MAX(id) FROM schedule_snapshots GROUP BY source_key)
+                    """,
+                    (cutoff_offset,),
                 )
                 deleted_counts["schedule_snapshots"] = cursor.rowcount if cursor.rowcount is not None else 0
             except Exception as exc:
@@ -1628,7 +1582,8 @@ class Database:
             # 4. system_errors
             try:
                 cursor = await db.execute(
-                    f"DELETE FROM system_errors WHERE datetime(created_at) < datetime('now', '-{cutoff_days} days')"
+                    "DELETE FROM system_errors WHERE datetime(created_at) < datetime('now', ?)",
+                    (cutoff_offset,),
                 )
                 deleted_counts["system_errors"] = cursor.rowcount if cursor.rowcount is not None else 0
             except Exception as exc:
@@ -1822,8 +1777,10 @@ class Database:
                 return str(row[0])
 
         if self.path.exists():
-            with contextlib.suppress(Exception):
+            try:
                 mtime = datetime.fromtimestamp(self.path.stat().st_ctime)
                 return mtime.isoformat(timespec="seconds")
+            except OSError as exc:
+                logger.warning("Failed to stat database file for first-created-at fallback: %s", exc)
         return None
 
