@@ -26,6 +26,7 @@ ALL_PERMISSIONS = [
     "config_lesson_counters",
     "manage_bot_admin",
     "manage_web_users",
+    "manage_gemini",
 ]
 
 PERMISSION_LABELS = {
@@ -38,6 +39,7 @@ PERMISSION_LABELS = {
     "config_lesson_counters": "Редактор пар",
     "manage_web_users": "Веб-пользователи",
     "manage_bot_admin": "Управление ботом",
+    "manage_gemini": "Управление Gemini",
 }
 
 INSECURE_SECRET_VALUES = {"", "change-me", "change-me-long-random-secret", "dev-secret-change-me"}

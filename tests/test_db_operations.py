@@ -209,6 +209,24 @@ class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):
         await self.db.add_pending_groups([])
         self.assertEqual(await self.db.get_all_groups(), [])
 
+    async def test_ocr_status_snapshot_round_trip(self) -> None:
+        self.assertIsNone(await self.db.get_ocr_status_snapshot())
+
+        await self.db.save_ocr_status_snapshot({"enabled": True, "engine": {"account_status": "OK"}})
+        snapshot = await self.db.get_ocr_status_snapshot()
+
+        self.assertTrue(snapshot["enabled"])
+        self.assertEqual(snapshot["engine"]["account_status"], "OK")
+        self.assertIn("snapshot_updated_at", snapshot)
+
+    async def test_ocr_status_snapshot_overwrites_previous(self) -> None:
+        await self.db.save_ocr_status_snapshot({"is_warm": False})
+        await self.db.save_ocr_status_snapshot({"is_warm": True})
+
+        snapshot = await self.db.get_ocr_status_snapshot()
+
+        self.assertTrue(snapshot["is_warm"])
+
 
 if __name__ == "__main__":
     unittest.main()

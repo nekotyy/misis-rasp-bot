@@ -154,6 +154,12 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS ocr_status_snapshot (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS groups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     schedule_id INTEGER,
@@ -1658,6 +1664,32 @@ class Database:
                 (component, error_type, safe_msg, safe_details, now_str),
             )
             await db.commit()
+
+    async def save_ocr_status_snapshot(self, payload: dict) -> None:
+        now_str = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO ocr_status_snapshot (id, payload_json, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+                """,
+                (json.dumps(payload, ensure_ascii=False), now_str),
+            )
+            await db.commit()
+
+    async def get_ocr_status_snapshot(self) -> dict | None:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("SELECT payload_json, updated_at FROM ocr_status_snapshot WHERE id = 1")
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except json.JSONDecodeError:
+            return None
+        payload["snapshot_updated_at"] = row[1]
+        return payload
 
     async def get_daily_errors(
         self,

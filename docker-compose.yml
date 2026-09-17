@@ -17,6 +17,7 @@ services:
       RABBITMQ_PREFETCH_COUNT: ${RABBITMQ_PREFETCH_COUNT:-20}
       LESSON_COUNTERS_PATH: /app/runtime/lesson_counters.json
       LESSON_COUNTERS_QUEUE: ${LESSON_COUNTERS_QUEUE:-misis_lesson_counters}
+      GEMINI_COOKIE_PATH: /app/runtime/gemini_cookies
     volumes:
       - ./runtime:/app/runtime
 

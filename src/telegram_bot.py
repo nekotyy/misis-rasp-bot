@@ -643,6 +643,7 @@ ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Подтвердить и разослать", callback_data="admin:ocr_summary_confirm")],
         [InlineKeyboardButton(text="Сохранить без рассылки", callback_data="admin:ocr_summary_confirm_silent")],
+        [InlineKeyboardButton(text="Добавить ещё фото", callback_data="admin:ocr_summary_add_more")],
         [InlineKeyboardButton(text="Отменить", callback_data="admin:ocr_summary_cancel")],
     ]
 )
@@ -693,6 +694,18 @@ def format_admin_ocr_summary_prompt(error: str = "") -> str:
             "",
             "После распознавания покажу, для скольких групп нашёлся источник, и спрошу "
             "подтверждение — ничего не сохранится и не разошлётся без него.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_admin_ocr_summary_add_more_prompt(queued_count: int) -> str:
+    lines = ["<b>Добавляю фото к сводному расписанию</b>", ""]
+    if queued_count:
+        lines.append(f"Уже загружено фото: {queued_count}.")
+    lines.extend(
+        [
+            "Пришли ещё <b>фото</b> листа (можно несколько или альбомом) — распознаю их вместе с уже загруженными.",
         ]
     )
     return "\n".join(lines)
@@ -921,6 +934,10 @@ def build_dispatcher(
     admin_ocr_drafts: dict[int, Any] = {}
     awaiting_admin_ocr_summary_photo: set[int] = set()
     admin_ocr_summary_drafts: dict[int, Any] = {}
+    # Фото, накопленные для текущего сводного распознавания — сюда же уходят
+    # добавленные через «Добавить ещё фото», чтобы Gemini свёл все страницы
+    # листа в один снимок, а не только последнюю присланную пачку.
+    admin_ocr_summary_images: dict[int, list[bytes]] = {}
     admin_ocr_album_buffers: dict[str, list[Message]] = {}
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
@@ -3077,7 +3094,7 @@ def build_dispatcher(
             "lesson_confirm", "lesson_confirm_force",
             "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
             "ocr_import", "ocr_confirm", "ocr_confirm_silent", "ocr_cancel",
-            "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel",
+            "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel", "ocr_summary_add_more",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
@@ -3355,6 +3372,7 @@ def build_dispatcher(
             awaiting_admin_ocr_summary_photo.add(callback.from_user.id)
             awaiting_admin_ocr_photo.discard(callback.from_user.id)
             admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            admin_ocr_summary_images.pop(callback.from_user.id, None)
             await send_new_context_message(
                 callback.bot,
                 callback.message.chat.id,
@@ -3364,9 +3382,24 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback)
             return
+        if action == "ocr_summary_add_more":
+            # Черновик и уже накопленные фото остаются на месте — следующее
+            # присланное фото добавится к ним, а не заменит их.
+            awaiting_admin_ocr_summary_photo.add(callback.from_user.id)
+            queued = len(admin_ocr_summary_images.get(callback.from_user.id, []))
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_summary_add_more_prompt(queued),
+                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "ocr_summary_cancel":
             awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
             admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            admin_ocr_summary_images.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
             await send_new_context_message(
                 callback.bot,
@@ -3388,6 +3421,7 @@ def build_dispatcher(
             if applied:
                 awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
                 admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+                admin_ocr_summary_images.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
             prefix = "<b>Сводное расписание импортировано</b>" if applied else "<b>Импорт не выполнен</b>"
             await send_new_context_message(
@@ -4048,26 +4082,40 @@ def build_dispatcher(
             )
             return
 
-        if len(messages) > MAX_OCR_IMAGES:
+        # Фото копятся между заходами: «Добавить ещё фото» не заменяет уже
+        # загруженные страницы листа, а дозаписывает к ним новые.
+        previous_images = admin_ocr_summary_images.get(first.from_user.id, [])
+        has_existing_draft = first.from_user.id in admin_ocr_summary_drafts
+        retry_keyboard = ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD if has_existing_draft else ADMIN_OCR_SUMMARY_INPUT_KEYBOARD
+
+        if len(previous_images) + len(messages) > MAX_OCR_IMAGES:
             await send_new_context_message(
                 first.bot,
                 first.chat.id,
                 "admin_ocr",
-                format_admin_ocr_summary_prompt(f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."),
-                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+                format_admin_ocr_summary_prompt(
+                    f"Слишком много фото (уже загружено {len(previous_images)}, максимум {MAX_OCR_IMAGES} всего). "
+                    "Подтверди текущий черновик или отмени и начни заново."
+                    if previous_images
+                    else f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."
+                ),
+                reply_markup=retry_keyboard,
             )
             return
 
-        images, download_error = await download_admin_images(messages)
-        if images is None:
+        new_images, download_error = await download_admin_images(messages)
+        if new_images is None:
             await send_new_context_message(
                 first.bot,
                 first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_summary_prompt(download_error),
-                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+                reply_markup=retry_keyboard,
             )
             return
+
+        images = previous_images + new_images
+        admin_ocr_summary_images[first.from_user.id] = images
 
         upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
         progress_message = await safe_send_message(
@@ -4103,7 +4151,7 @@ def build_dispatcher(
                     f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
                     "Пришли фото поменьше/по одному или увеличь OCR_TIMEOUT_SECONDS."
                 ),
-                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+                reply_markup=retry_keyboard,
             )
             return
         except OcrEngineError as exc:
@@ -4112,7 +4160,7 @@ def build_dispatcher(
                 first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_summary_prompt(f"Не удалось распознать фото: {exc}"),
-                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+                reply_markup=retry_keyboard,
             )
             return
         except Exception as exc:
@@ -4122,7 +4170,7 @@ def build_dispatcher(
                 first.chat.id,
                 "admin_ocr",
                 format_admin_ocr_summary_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
-                reply_markup=ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
+                reply_markup=retry_keyboard,
             )
             return
 

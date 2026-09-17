@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
+from src.lesson_counters import LessonCounterService, LessonCounterSyncResult, sync_lesson_counters_for_date
 from src.message_broker import OutboundMessage, RabbitMQBroker
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST
 from src.parser import ScheduleParser
@@ -241,6 +242,7 @@ PERMISSION_DESCRIPTIONS = {
     "config_lesson_counters": "Доступ к настройке счетчиков пар: группы, дисциплины, преподаватели, карточный режим и JSON-режим.",
     "manage_bot_admin": "Управление ботом из вебки: рассылки, тестовая доставка, перепарсинг и сохранение эталонов.",
     "manage_web_users": "Создание веб-пользователей, изменение их прав и удаление лишних учеток.",
+    "manage_gemini": "Мониторинг OCR: аккаунт Gemini, лимиты, модель, авторефреш кук и последние ошибки распознавания.",
 }
 
 def current_user(request: Request) -> WebUser:
@@ -362,6 +364,23 @@ async def api_metrics(user: Annotated[WebUser, Depends(current_user)]):
 async def lessons_page(request: Request, user: Annotated[WebUser, Depends(require("config_lesson_counters"))]) -> str:
     payload = load_lesson_config(Settings.from_env().lesson_counters_path)
     report = "<div class='alert bad'>Группа не найдена. Проверьте номер или название.</div>" if request.query_params.get("error") == "group" else ""
+    return layout("Счетчики пар", lessons_manager_html(payload, report=report), user)
+
+
+@app.post("/lessons/sync", response_class=HTMLResponse)
+async def sync_lessons(user: Annotated[WebUser, Depends(require("config_lesson_counters"))]) -> str:
+    """Принудительно считает сегодняшние пары для всех групп с настроенными счетчиками, минуя расписание job'ов.
+
+    Тот же код и та же защита от дублей (daily_lesson_counter_logs), что и у планового автоподсчета —
+    повторный вызов за тот же день просто пропустит уже учтённые группы, ничего не задвоит.
+    """
+    payload = load_lesson_config(Settings.from_env().lesson_counters_path)
+    try:
+        result = await sync_lesson_counters_now()
+        report = lesson_counter_sync_report_html(result)
+    except Exception:
+        logger.exception("Ошибка при принудительной синхронизации счетчиков пар")
+        report = "<div class='alert bad'>Не удалось синхронизировать пары. Подробности в логах сервера.</div>"
     return layout("Счетчики пар", lessons_manager_html(payload, report=report), user)
 
 
@@ -581,6 +600,11 @@ async def control_baseline(user: Annotated[WebUser, Depends(require("manage_bot_
     return layout("Управление ботом", await bot_control_html(action_report_html("Сохранение эталонов", rows, "эталон сохранен")), user)
 
 
+@app.get("/gemini", response_class=HTMLResponse)
+async def gemini_page(user: Annotated[WebUser, Depends(require("manage_gemini"))]) -> str:
+    return layout("Управление Gemini", await gemini_status_html(), user)
+
+
 def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: str | None = None) -> str:
     groups = [item for item in payload.get("groups", []) if isinstance(item, dict)]
     group_cards = "\n".join(lesson_group_card(group) for group in groups)
@@ -598,6 +622,9 @@ def lessons_manager_html(payload: dict[str, Any], report: str = "", raw_json: st
         <span class="chip">Групп: {len(groups)}</span>
         <span class="chip">JSON доступен</span>
       </div>
+      <form method="post" action="/lessons/sync">
+        <button type="submit" class="secondary">{icon("refresh")} Синхронизировать пары за сегодня</button>
+      </form>
     </section>
     {report}
     <section class="panel">
@@ -893,6 +920,37 @@ async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
     return await _run_snapshot_action_for_all_active_sources("current", "перепарсено", "Ошибка при перепарсинге источника")
 
 
+async def sync_lesson_counters_now() -> LessonCounterSyncResult:
+    fresh_settings = Settings.from_env()
+    db = await get_db()
+    parser = ScheduleParser(fresh_settings.schedule_url)
+    service = LessonCounterService(db, lesson_counters_path=fresh_settings.lesson_counters_path)
+    target_date_iso = datetime.now().date().isoformat()
+    return await sync_lesson_counters_for_date(db, parser, service, target_date_iso)
+
+
+def lesson_counter_sync_report_html(result: LessonCounterSyncResult) -> str:
+    if result.is_empty:
+        return "<div class='alert'>Синхронизация пар: нет ни одной группы с настроенными счетчиками.</div>"
+
+    lines = [
+        f"<div class='alert good'>Синхронизация пар завершена. Учтено групп: {len(result.processed)}"
+        f"{f', уже было учтено сегодня: {len(result.skipped_already_done)}' if result.skipped_already_done else ''}"
+        f"{f', ошибок: {len(result.failed)}' if result.failed else ''}.</div>"
+    ]
+    if result.processed:
+        lines.append(f"<div class='alert'>Учтено: {html_escape(', '.join(result.processed))}.</div>")
+    if result.skipped_already_done:
+        lines.append(
+            f"<div class='alert'>Уже было учтено сегодня (пропущено, защита от дублей): "
+            f"{html_escape(', '.join(result.skipped_already_done))}.</div>"
+        )
+    if result.failed:
+        failed_text = ", ".join(f"{group} ({error})" for group, error in result.failed)
+        lines.append(f"<div class='alert bad'>Ошибки: {html_escape(failed_text)}.</div>")
+    return "".join(lines)
+
+
 async def save_baseline_for_all_active_sources() -> list[tuple[str, str, str]]:
     return await _run_snapshot_action_for_all_active_sources("daily_baseline", "эталон сохранен", "Ошибка при сохранении эталона")
 
@@ -954,6 +1012,121 @@ async def bot_control_html(report: str = "") -> str:
         <label>Текст сообщения <textarea name="message" placeholder="Сообщение для всех пользователей с включенными уведомлениями." required></textarea></label>
         <button type="submit">{icon('send')} Поставить в очередь</button>
       </form>
+    </section>
+    """
+
+
+async def gemini_status_html() -> str:
+    db = await get_db()
+    snapshot = await db.get_ocr_status_snapshot()
+    errors = [item for item in await db.get_daily_errors(limit=200) if item.get("component") == "ocr"]
+
+    if snapshot is None:
+        return """
+        <section class="page-head compact-head">
+          <div>
+            <p class="eyebrow">OCR</p>
+            <h2>Управление Gemini</h2>
+            <p>Аккаунт, лимиты, модель и ошибки распознавания расписания с фото.</p>
+          </div>
+        </section>
+        <div class="empty-state">Данных пока нет — движок ещё не прогревался и ни одно фото не распознавалось.</div>
+        """
+
+    engine = snapshot.get("engine") or {}
+    enabled = bool(snapshot.get("enabled"))
+    is_warm = bool(snapshot.get("is_warm"))
+    last_error = str(snapshot.get("last_error") or "")
+    last_success_at = str(snapshot.get("last_success_at") or "")
+    updated_at = str(snapshot.get("snapshot_updated_at") or "")
+
+    if not enabled:
+        state_chip = "<span class='chip'>выключен</span>"
+    elif last_error:
+        state_chip = "<span class='chip'>ошибка</span>"
+    elif is_warm:
+        state_chip = "<span class='chip'>готов</span>"
+    else:
+        state_chip = "<span class='chip'>греется</span>"
+
+    account_rows = "".join(
+        gemini_info_row(label, value)
+        for label, value in (
+            ("Статус аккаунта", str(engine.get("account_status") or "—")),
+            ("Описание", str(engine.get("account_status_description") or "—")),
+            ("Модель", str(engine.get("model_configured") or "не задана")),
+            ("Build", str(engine.get("build_label") or "—")),
+            ("Session ID", str(engine.get("session_id") or "—")),
+            ("Язык", str(engine.get("language") or "—")),
+            ("Куки настроены", "да" if engine.get("cookies_configured") else "нет"),
+            ("Прокси", "настроен" if engine.get("proxy_configured") else "нет"),
+            ("Сессия активна", "да" if engine.get("session_active") else "нет"),
+            ("Уверенность (мин.)", str(snapshot.get("min_confidence", "—"))),
+            ("Порог совпадений", str(snapshot.get("fuzzy_threshold", "—"))),
+            ("Таймаут распознавания", f"{snapshot.get('recognize_timeout', '—')} с"),
+        )
+    )
+
+    usage_panels = "".join(
+        gemini_json_panel(title, engine.get(key))
+        for title, key in (("Использование", "usage_info"), ("Лимиты", "quotas"), ("Статус злоупотреблений", "abuse_status"))
+    )
+
+    error_rows = "".join(
+        f"<tr><td>{html_escape(item.get('created_at') or '')}</td><td>{html_escape(item.get('error_type') or '')}</td>"
+        f"<td>{html_escape(item.get('message') or '')}</td></tr>"
+        for item in errors[:30]
+    )
+    errors_block = (
+        f"<div class='table-wrap'><table><tr><th>Когда</th><th>Тип</th><th>Сообщение</th></tr>{error_rows}</table></div>"
+        if error_rows
+        else "<div class='empty-state small'>Сегодня ошибок распознавания не было.</div>"
+    )
+
+    last_success_chip = f"<span class='chip'>Последнее фото: {html_escape(last_success_at)}</span>" if last_success_at else ""
+    last_error_banner = f"<div class='alert bad'>Последняя ошибка: {html_escape(last_error)}</div>" if last_error else ""
+
+    return f"""
+    <section class="page-head compact-head">
+      <div>
+        <p class="eyebrow">OCR</p>
+        <h2>Управление Gemini</h2>
+        <p>Аккаунт, лимиты, модель и ошибки распознавания расписания с фото. Обновляется автоматически после прогрева и после каждого распознавания.</p>
+      </div>
+      <div class="head-chips">
+        {state_chip}
+        <span class="chip">Обновлено: {html_escape(updated_at or '—')}</span>
+        {last_success_chip}
+      </div>
+    </section>
+    {last_error_banner}
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('spark')}</span><h3>Аккаунт и сессия</h3></div>
+      <div class="table-wrap"><table>{account_rows}</table></div>
+    </section>
+    {usage_panels}
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('alert')}</span><h3>Ошибки распознавания сегодня</h3></div>
+      {errors_block}
+    </section>
+    """
+
+
+def gemini_info_row(label: str, value: str) -> str:
+    return f"<tr><td>{html_escape(label)}</td><td>{html_escape(value)}</td></tr>"
+
+
+def gemini_json_panel(title: str, value: object) -> str:
+    if value in (None, "", {}, []):
+        return ""
+    try:
+        pretty = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        pretty = str(value)
+    return f"""
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('layers')}</span><h3>{html_escape(title)}</h3></div>
+      <pre class="json-preview">{html_escape(pretty)}</pre>
     </section>
     """
 
@@ -1072,6 +1245,8 @@ def layout(title: str, content: str, user: WebUser) -> str:
         nav_items.append(nav_link("/lessons", "Счетчики пар", "counter"))
     if can(user, "manage_bot_admin"):
         nav_items.append(nav_link("/control", "Управление ботом", "tools"))
+    if can(user, "manage_gemini"):
+        nav_items.append(nav_link("/gemini", "Управление Gemini", "spark"))
     if can(user, "manage_web_users"):
         nav_items.append(nav_link("/web-users", "Веб-пользователи", "shield"))
     nav = "".join(nav_items)
@@ -1206,6 +1381,7 @@ main{max-width:1440px;margin:0 auto;padding:0 32px 42px}.hero,.page-head{positio
 .two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.action-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.action-card{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;background:#101318}.action-card b{display:flex;gap:8px;align-items:center}.action-card p{color:var(--muted)}.broadcast-form{display:grid;gap:12px}.broadcast-form textarea{min-height:180px}.summary-gap{margin-top:6px}
 .head-chips,.chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;min-height:28px;border:1px solid #3a372f;background:#1a1d20;color:#ded4c5;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700}.inline-form{display:grid;grid-template-columns:minmax(200px,1fr) 180px auto;gap:12px;align-items:end}.lesson-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px}.lesson-card{margin:0}.lesson-card-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px}.subject-list{display:grid;gap:10px}.subject-row{border:1px solid var(--line);border-radius:8px;background:#101318;padding:0}.subject-row summary{display:flex;justify-content:space-between;gap:12px;align-items:center;cursor:pointer;padding:12px}.subject-row summary small{display:block;color:var(--muted);margin-top:3px}.subject-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:14px}.subject-form.edit{padding:0 12px 12px;margin-top:0}.subject-form button{grid-column:1/-1}.bulk-form{display:grid;gap:10px;margin-top:14px}.bulk-form textarea{min-height:140px}.bulk-form button{width:fit-content}.delete-line{padding:0 12px 12px}.empty-state{border:1px dashed #3a3f48;border-radius:8px;padding:18px;color:var(--muted);background:#101318}.empty-state.small{padding:12px}.json-details summary{display:flex;gap:10px;align-items:center;cursor:pointer;font-weight:800}.json-form{margin-top:14px}
 .alert{padding:13px;border-radius:8px;background:#241d0d;border:1px solid #5b4315;margin-bottom:12px;color:#fde68a}.alert.good{background:#0f241d;border-color:#1f6b4b;color:#bbf7d0}.alert.bad,.error{color:#fecdd3;background:#2a1119;border-color:#7f1d1d}.warning{color:#fbbf24}.ok{color:var(--good)}.bad{color:var(--bad)}
+.json-preview{margin:0;padding:14px;background:#0e1115;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:340px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5;color:#ded4c5;white-space:pre-wrap;word-break:break-word}
 @media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.topbar{padding:20px}main{padding:0 16px 32px}.toolbar,.editor-layout,.inline-form,.subject-form,.admin-user-head,.two-col,.action-grid{grid-template-columns:1fr}.lesson-grid{grid-template-columns:1fr}.sidebar nav{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.to-top{right:14px;bottom:14px}}
 </style>
 """

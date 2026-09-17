@@ -51,10 +51,16 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
             lesson_counters_path=self.json_path,
         )
 
-        # Mock active sources in DB
-        self.db.get_active_sources = AsyncMock(return_value=[
-            {"source_type": "group", "schedule_id": 600, "group_name": "ИСП-25-1", "source_title": "ИСП-25-1"}
-        ])
+        # Group is configured for lesson counting (JSON is the source of truth for which
+        # groups get auto-counted, not the subscriber list — a group can have zero
+        # subscribers and still be tracked).
+        import json
+        self.json_path.write_text(
+            json.dumps({"groups": [{"schedule_id": 600, "group_name": "ИСП-25-1", "subjects": []}]}),
+            encoding="utf-8",
+        )
+        # No subscribers at all for this group — auto-count must still process it.
+        self.db.get_active_sources = AsyncMock(return_value=[])
 
         job = AutoDailyLessonCounterJob(target_date_iso=target_date)
 
