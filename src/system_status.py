@@ -135,13 +135,22 @@ async def check_ocr_status(ocr_importer: Any) -> dict[str, Any]:
     if not available:
         return {"ok": False, "ready": False, "engine": engine, "error": message, "checked_at": now}
 
-    ready = bool(getattr(ocr_importer, "is_warm", False))
+    diagnostics_getter = getattr(ocr_importer, "diagnostics", None)
+    diagnostics: dict[str, Any] = {}
+    if callable(diagnostics_getter):
+        with contextlib.suppress(Exception):
+            result = diagnostics_getter()
+            if isinstance(result, dict):
+                diagnostics = result
+    last_error = str(getattr(ocr_importer, "last_error", "") or "")
+    ready = bool(getattr(ocr_importer, "is_warm", False)) and not last_error
     return {
-        "ok": True,
+        "ok": not last_error,
         "ready": ready,
         "engine": engine,
-        "error": None if ready else "Модели ещё греются",
+        "error": last_error or (None if ready else "Модели ещё греются"),
         "details": message,
+        "diagnostics": diagnostics,
         "checked_at": now,
     }
 

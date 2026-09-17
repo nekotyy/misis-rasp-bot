@@ -29,6 +29,7 @@ class Settings:
     schedule_request_delay_seconds: float
     schedule_request_jitter_seconds: float
     telegram_bot_token: str
+    telegram_proxy: str
     vk_bot_token: str
     vk_disable_ssl_verify: bool
     admin_telegram_id: int | None
@@ -49,6 +50,10 @@ class Settings:
     gemini_secure_1psid: str
     gemini_secure_1psidts: str
     gemini_proxy: str
+    gemini_doh_url: str
+    gemini_env_path: Path | None
+    gemini_refresh_interval_seconds: float
+    gemini_ocr_gem_id: str
     ocr_gemini_model: str
     ocr_timeout_seconds: float
     ocr_min_confidence: float
@@ -71,6 +76,7 @@ class Settings:
             schedule_request_delay_seconds=float(os.getenv("SCHEDULE_REQUEST_DELAY_SECONDS", "8").strip()),
             schedule_request_jitter_seconds=float(os.getenv("SCHEDULE_REQUEST_JITTER_SECONDS", "4").strip()),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_proxy=os.getenv("TELEGRAM_PROXY", "").strip(),
             vk_bot_token=os.getenv("VK_BOT_TOKEN", "").strip(),
             vk_disable_ssl_verify=os.getenv("VK_DISABLE_SSL_VERIFY", "").strip().lower() in {"1", "true", "yes", "on"},
             admin_telegram_id=admin_telegram_ids[0] if admin_telegram_ids else None,
@@ -91,6 +97,17 @@ class Settings:
             gemini_secure_1psid=os.getenv("GEMINI_SECURE_1PSID", "").strip(),
             gemini_secure_1psidts=os.getenv("GEMINI_SECURE_1PSIDTS", "").strip(),
             gemini_proxy=os.getenv("GEMINI_PROXY", "").strip(),
+            gemini_doh_url=os.getenv("GEMINI_DOH_URL", "").strip(),
+            gemini_env_path=(
+                Path(raw_env_path).resolve()
+                if (raw_env_path := os.getenv("GEMINI_ENV_PATH", "").strip())
+                else None
+            ),
+            gemini_refresh_interval_seconds=max(
+                60.0,
+                float(os.getenv("GEMINI_REFRESH_INTERVAL_SECONDS", "600").strip()),
+            ),
+            gemini_ocr_gem_id=os.getenv("GEMINI_OCR_GEM_ID", "").strip(),
             ocr_gemini_model=os.getenv("OCR_GEMINI_MODEL", "").strip(),
             ocr_timeout_seconds=float(os.getenv("OCR_TIMEOUT_SECONDS", "180").strip()),
             ocr_min_confidence=_clamp_float(os.getenv("OCR_MIN_CONFIDENCE", "0.6"), 0.0, 1.0, 0.6),

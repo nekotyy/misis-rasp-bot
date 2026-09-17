@@ -155,6 +155,7 @@ async def run(payload: dict, *, notify: bool, dry_run: bool) -> int:
         return 0
 
     change = await jobs.apply_manual_snapshot(source, merged.snapshot, notify=notify)
+    await importer.register_pending_source(source)
     if change is None:
         logger.info("Снимок сохранён. Отличий от эталона нет, рассылки не было.")
     elif notify:

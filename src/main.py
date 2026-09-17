@@ -9,6 +9,7 @@ from time import monotonic, time
 import aio_pika
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from src.config import Settings
@@ -46,6 +47,12 @@ def restore_logging() -> None:
     """
     for logger_name in ("src", "__main__", ""):
         logging.getLogger(logger_name).disabled = False
+    # `fileConfig()` помечает disabled каждый уже созданный дочерний логгер
+    # отдельно. Включения только родителя `src` недостаточно: события
+    # `src.ocr_schedule` и `src.ocr_import` всё равно бесследно пропадут.
+    for logger_name, logger_object in logging.root.manager.loggerDict.items():
+        if logger_name.startswith("src.") and isinstance(logger_object, logging.Logger):
+            logger_object.disabled = False
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     if not root.handlers:
@@ -81,6 +88,15 @@ def start_background_task(name: str, coro) -> asyncio.Task:
     return task
 
 
+def build_telegram_bot(settings: Settings) -> Bot:
+    session = AiohttpSession(proxy=settings.telegram_proxy or None)
+    return Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
+    )
+
+
 async def run_forever(name: str, runner, restart_delay_seconds: float = 15.0) -> None:
     while True:
         try:
@@ -110,10 +126,7 @@ def start_telegram_polling(
         return
 
     async def _run_once() -> None:
-        bot = Bot(
-            token=settings.telegram_bot_token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        )
+        bot = build_telegram_bot(settings)
         broadcaster.telegram_bot = bot
         dispatcher = build_dispatcher(
             settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer

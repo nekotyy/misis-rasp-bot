@@ -212,6 +212,17 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(group)
         self.assertIsNone(group.schedule_id)
 
+    async def test_add_pending_group_updates_db_and_live_catalog(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
+
+        await catalog.add_pending_groups(["МТО-26"])
+
+        group = await catalog.find_group("мто - 26")
+        self.assertIsNotNone(group)
+        self.assertIsNone(group.schedule_id)
+        self.assertEqual([item.group_name for item in await catalog.list_groups()], ["МТО-26"])
+        self.assertEqual([row["group_name"] for row in await self.db.get_all_groups()], ["МТО-26"])
+
     async def test_pending_groups_excluded_from_schedule_id_lookup(self) -> None:
         await self.db.add_pending_groups(["МТО-26"])
 

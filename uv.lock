@@ -41,6 +41,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/dd/c1ea24eb687e564b6b64db3939b858bbcbd3f6998496508a168ce54c5770/aiogram-3.31.0-py3-none-any.whl", hash = "sha256:d889493c5917a867fc9da81fd6e6b3ae438e98bfe1b004fcdafe7400461a6c1b", size = 859100, upload-time = "2026-08-26T00:00:41.178Z" },
 ]
 
+[package.optional-dependencies]
+proxy = [
+    { name = "aiohttp-socks" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -148,6 +153,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/19/08d41839658bdd44a0ed2480f3891705ecb487ce28c0dde62c9040c997e0/aiohttp-3.14.3-cp314-cp314t-win32.whl", hash = "sha256:b304db572b4368edd8dda8a2274f73156fe15558fca4a917cb8a09fc47af5963", size = 474180, upload-time = "2026-07-23T01:57:19.306Z" },
     { url = "https://files.pythonhosted.org/packages/99/5d/3cd6ef0a2b2851f7ab913b5b079334781bd50ff56a323e4454063377a080/aiohttp-3.14.3-cp314-cp314t-win_amd64.whl", hash = "sha256:b20032766aedf6261c7a566585a40867d092ac03a0d81592d5370ef9b054f99b", size = 500528, upload-time = "2026-07-23T01:57:21.762Z" },
     { url = "https://files.pythonhosted.org/packages/a4/37/cfd1ed540a4d318da025590d96b728e63713c09e9377950fc655dadeb856/aiohttp-3.14.3-cp314-cp314t-win_arm64.whl", hash = "sha256:2e1161602f45a54de2ce0905243a95f58cb42dcd378402f3697f5e0b21e9d2e7", size = 469280, upload-time = "2026-07-23T01:57:24.241Z" },
+]
+
+[[package]]
+name = "aiohttp-socks"
+version = "0.10.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "python-socks" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/07/1598f292433bcdceb069515811ba5221034f4f12535d06c3372a1b71a785/aiohttp_socks-0.10.2.tar.gz", hash = "sha256:942d7c86e2e579418fc7a734610dd97daaf00707c7462f6ccf679b2325767930", size = 11307, upload-time = "2025-11-10T08:50:44.723Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/51/906d2ef2e9dfe2f3e76e53696f2d73c508f99b54c05d7e9acd8e7033d505/aiohttp_socks-0.10.2-py3-none-any.whl", hash = "sha256:84b29d14356bcda4affa03ef267108416390e1c9029922c66be18ef4b106f980", size = 10470, upload-time = "2025-11-10T08:50:42.065Z" },
 ]
 
 [[package]]
@@ -781,7 +799,7 @@ version = "1.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aio-pika" },
-    { name = "aiogram" },
+    { name = "aiogram", extra = ["proxy"] },
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "apscheduler" },
@@ -803,7 +821,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aio-pika", specifier = ">=9.5.5,<10.0.0" },
-    { name = "aiogram", specifier = ">=3.20.0,<4.0.0" },
+    { name = "aiogram", extras = ["proxy"], specifier = ">=3.20.0,<4.0.0" },
     { name = "aiosqlite", specifier = ">=0.21.0,<1.0.0" },
     { name = "alembic", specifier = ">=1.13.2,<2.0.0" },
     { name = "apscheduler", specifier = ">=3.10.4,<4.0.0" },
@@ -1282,6 +1300,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+]
+
+[[package]]
+name = "python-socks"
+version = "2.8.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/ad/5bbfab3d3a266963cca0c09e23a725bbf5f0535d21c8bd1d5272e4430771/python_socks-2.8.2.tar.gz", hash = "sha256:ffc493951854fa3fc0551e0434a09a7b9f9047f9ad666dce42cb94a52e8a34b6", size = 39656, upload-time = "2026-06-23T05:22:01.994Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/18/23b981b1cf58c1e7b7e36fa1392daf12878b6a3c26c5e4248601647a6d09/python_socks-2.8.2-py3-none-any.whl", hash = "sha256:7cf785d0631e0659384a773b3c402bc22cccdc23894ba1d65f8524748ace1193", size = 55501, upload-time = "2026-06-23T05:22:00.658Z" },
 ]
 
 [[package]]

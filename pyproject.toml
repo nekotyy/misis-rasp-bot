@@ -5,7 +5,7 @@ description = "Async Telegram/VK bot for MISIS schedule and homework notificatio
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiogram>=3.20.0,<4.0.0",
+    "aiogram[proxy]>=3.20.0,<4.0.0",
     "vkbottle>=4.4.3,<5.0.0",
     "aiosqlite>=0.21.0,<1.0.0",
     "httpx>=0.28.0,<1.0.0",

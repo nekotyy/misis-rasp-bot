@@ -22,6 +22,7 @@ class SubscriptionAndConfigTests(unittest.TestCase):
             "RABBITMQ_URL": "amqp://guest:guest@localhost:5672/",
             "LESSON_COUNTERS_ENABLED": "true",
             "WEB_COOKIE_SECURE": "false",
+            "GEMINI_DOH_URL": "https://xbox-dns.ru/dns-query",
         }
         with patch.dict(os.environ, env_vars, clear=False):
             settings = Settings.from_env()
@@ -31,11 +32,21 @@ class SubscriptionAndConfigTests(unittest.TestCase):
             self.assertEqual(settings.admin_vk_id, 555444)
             self.assertTrue(settings.lesson_counters_enabled)
             self.assertFalse(settings.web_cookie_secure)
+            self.assertEqual(settings.gemini_doh_url, "https://xbox-dns.ru/dns-query")
+
+    def test_gemini_doh_is_disabled_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+
+        self.assertEqual(settings.gemini_doh_url, "")
 
     def test_subscription_utils_helpers(self):
         group_sub = make_group_subscription("ИСП-25-1", schedule_id=600)
         self.assertEqual(group_sub["subscription_type"], "group")
         self.assertEqual(group_sub["subscription_title"], "ИСП-25-1")
+        pending_sub = make_group_subscription("МТО-26", schedule_id=None)
+        self.assertEqual(pending_sub["subscription_key"], "group-pending:мто-26")
+        self.assertEqual(pending_sub["subscription_url"], "")
 
         teacher_target = SearchTarget(
             kind="teacher",
