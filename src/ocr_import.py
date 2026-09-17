@@ -929,3 +929,77 @@ def format_ocr_summary_preview(draft: OcrSummaryImportDraft, *, html: bool = Tru
     else:
         lines.append("Импорт недоступен: сначала исправь ошибки выше и пришли фото заново.")
     return _truncate_preview("\n".join(lines), max_length)
+
+
+def format_admin_gemini_status(ocr_service: OcrScheduleImporter | None, *, html: bool = True) -> str:
+    """Подробный экран состояния Gemini прямо в боте: аккаунт, лимиты, модель, ошибки."""
+
+    def esc(value: object) -> str:
+        return escape(str(value)) if html else str(value)
+
+    def bold(value: object) -> str:
+        return f"<b>{value}</b>" if html else str(value)
+
+    def code(value: object) -> str:
+        return f"<code>{value}</code>" if html else str(value)
+
+    lines = [bold("Управление Gemini"), "───────────────────────────"]
+    if ocr_service is None or ocr_service.engine is None:
+        lines.append("OCR-движок не настроен.")
+        return "\n".join(lines)
+
+    diag = ocr_service.diagnostics()
+    live = ocr_service.engine.live_status()
+
+    lines.append(f"Готовность: {'🟢 готов' if diag.get('ready') else '🔴 не готов'}")
+    lines.append(f"Модель: {bold(esc(live.get('model_configured') or 'по умолчанию'))}")
+    account_status = live.get("account_status")
+    if account_status:
+        description = live.get("account_status_description") or ""
+        lines.append(f"Статус аккаунта: {bold(esc(account_status))}" + (f" — {esc(description)}" if description else ""))
+    lines.append(f"Куки настроены: {bold('да' if live.get('cookies_configured') else 'нет')}")
+    lines.append(f"Прокси: {bold('настроен' if live.get('proxy_configured') else 'нет')}")
+    lines.append(f"Сессия активна: {bold('да' if live.get('session_active') else 'нет')}")
+    if live.get("build_label"):
+        lines.append(f"Build: {code(esc(live['build_label']))}")
+    if live.get("session_id"):
+        lines.append(f"Session ID: {code(esc(live['session_id']))}")
+
+    remote_ip = diag.get("remote_ip")
+    if remote_ip:
+        route_status = diag.get("route_http_status") or "—"
+        doh = diag.get("doh_url") or "выключен"
+        lines.append(f"Маршрут: IP {bold(esc(remote_ip))}, HTTP {route_status}, DoH: {esc(doh)}")
+
+    lines.append("───────────────────────────")
+    lines.append(bold("Лимиты и использование"))
+    usage_info = live.get("usage_info")
+    if isinstance(usage_info, dict) and usage_info:
+        lines.append(esc(", ".join(f"{k}: {v}" for k, v in usage_info.items())))
+    quotas = live.get("quotas")
+    if isinstance(quotas, dict) and quotas:
+        lines.append(esc(", ".join(f"{k}: {v}" for k, v in quotas.items())))
+    abuse_status = live.get("abuse_status")
+    if isinstance(abuse_status, dict) and abuse_status:
+        lines.append(esc(", ".join(f"{k}: {v}" for k, v in abuse_status.items())))
+    if not any([usage_info, quotas, abuse_status]):
+        lines.append("Пока нет данных — появятся после первого обращения к Gemini.")
+
+    lines.append("───────────────────────────")
+    lines.append(bold("История и ошибки"))
+    lines.append(f"Последний успех: {bold(esc(diag.get('last_success_at') or 'ещё не было'))}")
+    lines.append(f"Последняя доступность: {bold(esc(diag.get('last_available_at') or '—'))}")
+    if diag.get("last_failure_at"):
+        lines.append(f"Последний сбой: {bold(esc(diag['last_failure_at']))}")
+        lines.append(
+            f"Категория: {bold(esc(diag.get('failure_title') or diag.get('failure_code') or '—'))}"
+            f" [{esc(diag.get('failure_code') or '?')}]"
+        )
+        lines.append(f"Повторяемая: {bold('да' if diag.get('failure_retryable') else 'нет')}")
+        if diag.get("failure_action"):
+            lines.append(f"Действие: {esc(diag['failure_action'])}")
+        lines.append(f"Сбоев подряд: {bold(diag.get('consecutive_failures', 0))}")
+    else:
+        lines.append("Сбоев не зафиксировано.")
+
+    return "\n".join(lines)

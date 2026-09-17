@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
+from src.ocr_import import format_admin_gemini_status
 from src.telegram_bot import (
     ADMIN_KEYBOARD,
     ADMIN_OCR_INPUT_KEYBOARD,
@@ -19,6 +20,7 @@ from src.vk_bot import (
     format_vk_ocr_prompt,
     format_vk_ocr_summary_add_more_prompt,
     format_vk_ocr_summary_prompt,
+    vk_admin_keyboard_rows,
 )
 
 
@@ -148,6 +150,88 @@ class VkOcrHelpersTests(unittest.TestCase):
         message = MagicMock()
         message.attachments = []
         self.assertEqual(_collect_vk_image_urls(message), [])
+
+
+class AdminGeminiPanelTests(unittest.TestCase):
+    """Экран «Управление Gemini» прямо в боте — отдельный от веб-дашборда вход."""
+
+    def test_telegram_admin_keyboard_has_gemini_button(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        self.assertIn("admin:gemini_status", callbacks)
+
+    def test_vk_admin_keyboard_has_gemini_button(self) -> None:
+        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        self.assertIn("Управление Gemini", labels)
+
+    def test_reports_unconfigured_engine(self) -> None:
+        service = MagicMock(engine=None)
+        text = format_admin_gemini_status(service)
+        self.assertIn("не настроен", text)
+
+    def test_reports_none_service(self) -> None:
+        text = format_admin_gemini_status(None)
+        self.assertIn("не настроен", text)
+
+    def _make_service(self) -> MagicMock:
+        engine = MagicMock()
+        engine.live_status.return_value = {
+            "model_configured": "gemini-3.8-flash",
+            "account_status": "AVAILABLE",
+            "account_status_description": "Account is authorized",
+            "cookies_configured": True,
+            "proxy_configured": False,
+            "session_active": True,
+            "build_label": "v1",
+            "session_id": "sess-1",
+            "usage_info": {"used": 10},
+            "quotas": {"limit": 100},
+            "abuse_status": {"flags": 0},
+        }
+        service = MagicMock(engine=engine)
+        service.diagnostics.return_value = {
+            "ready": True,
+            "remote_ip": "1.2.3.4",
+            "route_http_status": 200,
+            "doh_url": "",
+            "last_success_at": "17.09 12:00",
+            "last_available_at": "2026-09-17T12:00:00",
+            "last_failure_at": "",
+        }
+        return service
+
+    def test_html_variant_renders_account_status_and_usage(self) -> None:
+        text = format_admin_gemini_status(self._make_service(), html=True)
+        self.assertIn("<b>", text)
+        self.assertIn("AVAILABLE", text)
+        self.assertIn("gemini-3.8-flash", text)
+        self.assertIn("used: 10", text)
+
+    def test_plain_variant_has_no_html_tags(self) -> None:
+        text = format_admin_gemini_status(self._make_service(), html=False)
+        self.assertNotIn("<b>", text)
+        self.assertNotIn("<code>", text)
+        self.assertIn("AVAILABLE", text)
+
+    def test_shows_failure_details_when_present(self) -> None:
+        service = self._make_service()
+        service.diagnostics.return_value.update(
+            {
+                "last_failure_at": "17.09 11:00",
+                "failure_code": "auth",
+                "failure_title": "ошибка авторизации cookies",
+                "failure_action": "обновить __Secure-1PSID и __Secure-1PSIDTS в .env",
+                "failure_retryable": False,
+                "consecutive_failures": 3,
+            }
+        )
+        text = format_admin_gemini_status(service, html=False)
+        self.assertIn("ошибка авторизации cookies", text)
+        self.assertIn("[auth]", text)
+        self.assertIn("3", text)
+
+    def test_no_failures_reports_clean(self) -> None:
+        text = format_admin_gemini_status(self._make_service(), html=False)
+        self.assertIn("Сбоев не зафиксировано", text)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from src.ocr_import import (
     OCR_STAGE_UPLOAD,
     OcrScheduleImporter,
     build_ocr_importer,
+    format_admin_gemini_status,
     format_ocr_preview,
     format_ocr_summary_preview,
     format_progress_bar,
@@ -317,6 +318,15 @@ ADMIN_DAILY_ERRORS_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_GEMINI_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Обновить", callback_data="admin:gemini_status"),
+            InlineKeyboardButton(text="« Назад в меню", callback_data="admin:back"),
+        ],
+    ]
+)
+
 ADMIN_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
@@ -351,6 +361,9 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(text="Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
+        ],
+        [
+            InlineKeyboardButton(text="Управление Gemini", callback_data="admin:gemini_status"),
         ],
         [
             InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
@@ -3082,6 +3095,7 @@ def build_dispatcher(
             "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
             "ocr_import", "ocr_confirm", "ocr_confirm_silent", "ocr_cancel",
             "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel", "ocr_summary_add_more",
+            "gemini_status",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
@@ -3686,6 +3700,12 @@ def build_dispatcher(
         if action == "daily_errors":
             text = await format_daily_errors_report(db, html=True)
             await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_DAILY_ERRORS_KEYBOARD)
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback)
+            return
+        if action == "gemini_status":
+            text = format_admin_gemini_status(ocr_service)
+            await safe_edit_message_text(callback.message, text, reply_markup=ADMIN_GEMINI_KEYBOARD)
             context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
             await safe_callback_answer(callback)
             return
