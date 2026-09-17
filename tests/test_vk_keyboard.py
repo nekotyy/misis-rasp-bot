@@ -126,6 +126,10 @@ class TestVkAdminKeyboardLimits(unittest.TestCase):
         self.assertIn("Расписание с фото", labels)
         self.assertIn("Сводное расписание", labels)
 
+    def test_admin_keyboard_has_gemini_button(self) -> None:
+        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        self.assertIn("Управление Gemini", labels)
+
 
 if __name__ == "__main__":
     unittest.main()

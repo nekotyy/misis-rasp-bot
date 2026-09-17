@@ -28,6 +28,7 @@ from src.ocr_import import (
     OCR_STAGE_UPLOAD,
     OcrScheduleImporter,
     build_ocr_importer,
+    format_admin_gemini_status,
     format_ocr_preview,
     format_ocr_summary_preview,
     format_progress_bar,
@@ -100,7 +101,7 @@ def vk_admin_keyboard_rows() -> list[list[str]]:
         ["Последнее изменение", "Информация по группам"],
         ["Скачать БД", "Скачать пары"],
         ["Добавить пару", "Изменить пару"],
-        ["Импорт пар из JSON", "Расписание с фото", "Сводное расписание"],
+        ["Импорт пар из JSON", "Расписание с фото", "Сводное расписание", "Управление Gemini"],
         ["Удалить пару", "Удалить пары"],
         ["Пользователи", "Разослать"],
         ["Тестовая рассылка", "Очистить БД"],
@@ -992,6 +993,9 @@ def build_vk_bot(
 
     def admin_daily_errors_keyboard() -> str:
         return make_keyboard([["Статус", "Назад в меню"]])
+
+    def admin_gemini_keyboard() -> str:
+        return make_keyboard([["Обновить", "Назад в меню"]])
 
     def admin_user_profile_link(user) -> str:
         if user.platform == "vk":
@@ -2764,7 +2768,7 @@ def build_vk_bot(
             return
 
         if user_is_admin(user_id):
-            if text in {"Назад в меню", "Назад в админку"} and mode in {"admin_menu", "admin_status", "admin_daily_errors", "admin_users", "admin_user_search", "admin_user_search_results", "admin_editors"}:
+            if text in {"Назад в меню", "Назад в админку"} and mode in {"admin_menu", "admin_status", "admin_daily_errors", "admin_gemini_status", "admin_users", "admin_user_search", "admin_user_search_results", "admin_editors"}:
                 admin_broadcast_drafts.pop(peer_id, None)
                 admin_lesson_drafts.pop(peer_id, None)
                 admin_user_search_state.pop(peer_id, None)
@@ -2861,6 +2865,10 @@ def build_vk_bot(
             if text == "Ошибки за день":
                 peer_modes[peer_id] = "admin_daily_errors"
                 await show_screen(peer_id, await format_daily_errors_report(db, html=False), keyboard=admin_daily_errors_keyboard())
+                return
+            if text == "Управление Gemini" or (text == "Обновить" and mode == "admin_gemini_status"):
+                peer_modes[peer_id] = "admin_gemini_status"
+                await show_screen(peer_id, format_admin_gemini_status(ocr_service, html=False), keyboard=admin_gemini_keyboard())
                 return
             if text == "Перепарсить":
                 await show_screen(
