@@ -14,7 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService
+from src.lesson_counters import LessonCounterService, sync_lesson_counters_for_date
 from src.message_broker import (
     AutoDailyLessonCounterJob,
     AutoDailyLessonCounterJobBroker,
@@ -644,47 +644,4 @@ class ScheduleJobs:
     async def handle_auto_daily_lesson_counter_job(self, job: AutoDailyLessonCounterJob) -> None:
         if not self.lesson_counters_enabled or self.lesson_counter_service is None:
             return
-
-        from collections import defaultdict
-        target_date_iso = job.target_date_iso
-        sources = await self.db.get_active_sources()
-        group_sources = [s for s in sources if s.get("source_type") == "group" and s.get("schedule_id")]
-        if not group_sources:
-            return
-
-        for source in group_sources:
-            schedule_id = source["schedule_id"]
-            group_name = str(source.get("group_name") or source.get("source_title") or f"Группа #{schedule_id}")
-
-            # Idempotency check: 100% protection against duplicate incrementing
-            if await self.db.is_daily_counter_processed(target_date_iso, group_name):
-                logger.debug("Group %s for date %s already processed for lesson counters. Skipping.", group_name, target_date_iso)
-                continue
-
-            try:
-                snapshot, _ = await self.parser.parse(schedule_id)
-                day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
-
-                if day_item is not None and day_item.lessons:
-                    # Count frequency of each lesson (subject, teacher) for +1, +2, +3 etc.
-                    counts: dict[tuple[str, str], int] = defaultdict(int)
-                    for lesson in day_item.lessons:
-                        subj = lesson.subject.strip()
-                        teach = lesson.teacher.strip()
-                        if subj:
-                            counts[(subj, teach)] += 1
-
-                    for (subj, teach), cnt in counts.items():
-                        self.lesson_counter_service.auto_increment_or_create_subject_in_json(
-                            group_name=group_name,
-                            schedule_id=schedule_id,
-                            subject=subj,
-                            teacher=teach,
-                            count=cnt,
-                        )
-
-                # Mark as processed idempotently
-                await self.db.mark_daily_counter_processed(target_date_iso, group_name)
-                logger.info("Auto daily lesson counter: processed %s for %s", group_name, target_date_iso)
-            except Exception as exc:
-                logger.warning("Failed to auto-process daily lesson counters for group %s (%s): %s", group_name, target_date_iso, exc)
+        await sync_lesson_counters_for_date(self.db, self.parser, self.lesson_counter_service, job.target_date_iso)

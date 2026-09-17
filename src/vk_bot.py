@@ -479,6 +479,14 @@ def format_vk_ocr_summary_prompt(error: str = "") -> str:
     return "\n".join(lines)
 
 
+def format_vk_ocr_summary_add_more_prompt(queued_count: int) -> str:
+    lines = ["Добавляю фото к сводному расписанию", ""]
+    if queued_count:
+        lines.append(f"Уже загружено фото: {queued_count}.")
+    lines.append("Пришли ещё фото листа — распознаю их вместе с уже загруженными.")
+    return "\n".join(lines)
+
+
 def _best_vk_photo_url(photo) -> str:
     sizes = getattr(photo, "sizes", None) or []
     best_url = ""
@@ -591,6 +599,9 @@ def build_vk_bot(
     admin_import_lessons_drafts: dict[int, dict] = {}
     admin_ocr_drafts: dict[int, Any] = {}
     admin_ocr_summary_drafts: dict[int, Any] = {}
+    # Фото, накопленные для текущего сводного распознавания — «Добавить ещё
+    # фото» дозаписывает сюда новые страницы листа вместо замены прежних.
+    admin_ocr_summary_images: dict[int, list[bytes]] = {}
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
@@ -1998,6 +2009,7 @@ def build_vk_bot(
         if user_is_admin(user_id) and mode in {"admin_ocr_summary_input", "admin_ocr_summary_preview"}:
             if text == "Отменить":
                 admin_ocr_summary_drafts.pop(peer_id, None)
+                admin_ocr_summary_images.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
                 await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
                 return
@@ -2016,6 +2028,7 @@ def build_vk_bot(
                     applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
                     if applied:
                         admin_ocr_summary_drafts.pop(peer_id, None)
+                        admin_ocr_summary_images.pop(peer_id, None)
                         peer_modes[peer_id] = "admin_menu"
                         await show_screen(
                             peer_id,
@@ -2030,14 +2043,47 @@ def build_vk_bot(
                     )
                     return
 
-            images, download_error = await download_vk_images(message)
-            if images is None:
+                if text == "Добавить ещё фото":
+                    queued = len(admin_ocr_summary_images.get(peer_id, []))
+                    await show_screen(
+                        peer_id,
+                        format_vk_ocr_summary_add_more_prompt(queued),
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+
+            previous_images = admin_ocr_summary_images.get(peer_id, [])
+            has_existing_draft = peer_id in admin_ocr_summary_drafts
+            retry_keyboard = (
+                make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Добавить ещё фото"], ["Отменить"]])
+                if has_existing_draft
+                else make_keyboard([["Отменить"]])
+            )
+
+            new_images, download_error = await download_vk_images(message)
+            if new_images is None:
                 await show_screen(
                     peer_id,
                     format_vk_ocr_summary_prompt(download_error),
-                    keyboard=make_keyboard([["Отменить"]]),
+                    keyboard=retry_keyboard,
                 )
                 return
+
+            if len(previous_images) + len(new_images) > MAX_OCR_IMAGES:
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_summary_prompt(
+                        f"Слишком много фото (уже загружено {len(previous_images)}, максимум {MAX_OCR_IMAGES} всего). "
+                        "Подтверди текущий черновик или отмени и начни заново."
+                        if previous_images
+                        else f"Слишком много фото за раз (максимум {MAX_OCR_IMAGES}). Пришли частями."
+                    ),
+                    keyboard=retry_keyboard,
+                )
+                return
+
+            images = previous_images + new_images
+            admin_ocr_summary_images[peer_id] = images
 
             upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
             await show_screen(peer_id, format_progress_bar(upload_label, 10))
@@ -2058,14 +2104,14 @@ def build_vk_bot(
                         f"Распознавание не уложилось в {ocr_service.recognize_timeout:.0f} с и было прервано. "
                         "Пришли фото поменьше или увеличь OCR_TIMEOUT_SECONDS."
                     ),
-                    keyboard=make_keyboard([["Отменить"]]),
+                    keyboard=retry_keyboard,
                 )
                 return
             except OcrEngineError as exc:
                 await show_screen(
                     peer_id,
                     format_vk_ocr_summary_prompt(f"Не удалось распознать фото: {exc}"),
-                    keyboard=make_keyboard([["Отменить"]]),
+                    keyboard=retry_keyboard,
                 )
                 return
             except Exception as exc:
@@ -2073,14 +2119,14 @@ def build_vk_bot(
                 await show_screen(
                     peer_id,
                     format_vk_ocr_summary_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
-                    keyboard=make_keyboard([["Отменить"]]),
+                    keyboard=retry_keyboard,
                 )
                 return
 
             admin_ocr_summary_drafts[peer_id] = draft
             peer_modes[peer_id] = "admin_ocr_summary_preview"
             keyboard = (
-                make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Отменить"]])
+                make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Добавить ещё фото"], ["Отменить"]])
                 if draft.can_apply
                 else make_keyboard([["Отменить"]])
             )
@@ -2509,6 +2555,7 @@ def build_vk_bot(
             admin_import_lessons_drafts.pop(peer_id, None)
             admin_ocr_drafts.pop(peer_id, None)
             admin_ocr_summary_drafts.pop(peer_id, None)
+            admin_ocr_summary_images.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
             return
 
@@ -2762,6 +2809,7 @@ def build_vk_bot(
                     await show_screen(peer_id, availability_message, keyboard=admin_keyboard())
                     return
                 admin_ocr_summary_drafts.pop(peer_id, None)
+                admin_ocr_summary_images.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_ocr_summary_input"
                 await show_screen(peer_id, format_vk_ocr_summary_prompt(), keyboard=make_keyboard([["Отменить"]]))
                 return

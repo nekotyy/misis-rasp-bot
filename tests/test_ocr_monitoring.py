@@ -76,6 +76,9 @@ class FakeEngine:
             raise OcrEngineError(self._recognize_error)
         return RECOGNIZED_TEXT
 
+    def live_status(self) -> dict:
+        return {"engine": self.name}
+
     def diagnostics(self) -> dict[str, str | int | bool]:
         return {
             "doh_enabled": True,
@@ -156,6 +159,7 @@ def make_importer(*, engine: FakeEngine | None = None, alerts: MagicMock | None 
     db = MagicMock()
     db.get_active_sources = AsyncMock(return_value=[ACTIVE_SOURCE])
     db.get_latest_snapshot = AsyncMock(return_value=None)
+    db.save_ocr_status_snapshot = AsyncMock()
     return OcrScheduleImporter(
         db,
         MagicMock(apply_manual_snapshot=AsyncMock(return_value=None)),
@@ -693,6 +697,96 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
         with self.assertRaises(OcrEngineError):
             await engine.recognize([b"x"] * (MAX_OCR_IMAGES + 1))
+
+
+class StatusSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    """Панель «Управление Gemini» читает то, что импортёр пишет в БД после каждого события."""
+
+    async def test_warm_up_saves_snapshot(self) -> None:
+        importer = make_importer()
+
+        await importer.warm_up()
+
+        importer.db.save_ocr_status_snapshot.assert_awaited()
+        payload = importer.db.save_ocr_status_snapshot.await_args.args[0]
+        self.assertTrue(payload["is_warm"])
+        self.assertEqual(payload["engine"]["engine"], "fake")
+
+    async def test_build_draft_saves_snapshot_on_success(self) -> None:
+        importer = make_importer()
+
+        await importer.build_draft([b"image"])
+
+        payload = importer.db.save_ocr_status_snapshot.await_args.args[0]
+        self.assertEqual(payload["last_error"], "")
+        self.assertTrue(payload["last_success_at"])
+
+    async def test_build_draft_saves_snapshot_on_failure(self) -> None:
+        importer = make_importer(engine=FakeEngine(recognize_error="движок умер"))
+
+        with self.assertRaises(OcrEngineError):
+            await importer.build_draft([b"image"])
+
+        payload = importer.db.save_ocr_status_snapshot.await_args.args[0]
+        self.assertIn("движок умер", payload["last_error"])
+
+    async def test_snapshot_save_failure_does_not_break_warm_up(self) -> None:
+        importer = make_importer()
+        importer.db.save_ocr_status_snapshot = AsyncMock(side_effect=RuntimeError("БД лежит"))
+
+        await importer.warm_up()
+
+        self.assertTrue(importer.is_warm, "Сбой сохранения снимка не должен мешать прогреву")
+
+    async def test_engine_without_live_status_does_not_break_snapshot(self) -> None:
+        class BareEngine(FakeEngine):
+            def live_status(self):
+                raise AttributeError
+
+        importer = make_importer(engine=BareEngine())
+
+        await importer.warm_up()
+
+        importer.db.save_ocr_status_snapshot.assert_awaited()
+
+
+class GeminiEngineLiveStatusTests(unittest.TestCase):
+    def test_live_status_without_session_reports_config_only(self) -> None:
+        from src.ocr_schedule import GeminiOcrEngine
+
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b", model="gemini-pro")
+
+        status = engine.live_status()
+
+        self.assertEqual(status["model_configured"], "gemini-pro")
+        self.assertTrue(status["cookies_configured"])
+        self.assertFalse(status["session_active"])
+        self.assertNotIn("account_status", status)
+
+    def test_live_status_reports_client_fields_when_session_active(self) -> None:
+        from src.ocr_schedule import GeminiOcrEngine
+
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+        fake_status = MagicMock()
+        fake_status.name = "SIGNED_IN"
+        fake_status.description = "Аккаунт в порядке"
+        engine._client = MagicMock(
+            account_status=fake_status,
+            build_label="v1",
+            session_id="sess-1",
+            language="ru",
+            usage_info={"used": 1},
+            quotas=None,
+            abuse_status=None,
+        )
+
+        status = engine.live_status()
+
+        self.assertEqual(status["account_status"], "SIGNED_IN")
+        self.assertEqual(status["account_status_description"], "Аккаунт в порядке")
+        self.assertEqual(status["build_label"], "v1")
+        self.assertEqual(status["usage_info"], {"used": 1})
+        self.assertNotIn("quotas", status)
 
 
 class EngineFactoryTests(unittest.TestCase):

@@ -25,7 +25,7 @@
 
 Запуск внутри контейнера:
 
-    docker compose exec bot uv run --frozen python -m scripts.import_schedule /app/runtime/schedule.json
+    docker compose exec bot python -m scripts.import_schedule /app/runtime/schedule.json
 
 По умолчанию снимок только сохраняется. Рассылка подписчикам включается флагом
 --notify: это видимое всем действие, поэтому оно не должно происходить случайно.

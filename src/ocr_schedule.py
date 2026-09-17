@@ -498,6 +498,16 @@ def _looks_like_classroom(value: str) -> bool:
     return bool(_CLASSROOM_RE.match(value))
 
 
+_DIRECTION_CLASSROOM_RE = re.compile(r"^[а-яё]{1,2}-[а-яё]{1,2}$", re.IGNORECASE | re.UNICODE)
+
+
+def _normalize_classroom_case(value: str) -> str:
+    """Короткие буквенные коды крыльев вида 'С-З'/'с-З' приводит к единому нижнему регистру ('с-з')."""
+    if _DIRECTION_CLASSROOM_RE.match(value):
+        return value.lower()
+    return value
+
+
 def _extract_json_payload(text: str) -> str:
     """Достаёт JSON из ответа модели, даже если она обернула его в ```json или дописала слово-другое."""
     cleaned = _JSON_FENCE_RE.sub("", text.strip()).strip()
@@ -754,6 +764,46 @@ class GeminiOcrEngine:
         """Заранее устанавливает сессию, чтобы первое фото не ждало авторизации."""
         await self._ensure_client()
 
+    def live_status(self) -> dict:
+        """Снимок состояния аккаунта/сессии Gemini для панели мониторинга.
+
+        Не трогает сеть — читает то, что клиент уже знает о себе (account_status,
+        usage_info, quotas, abuse_status обновляются библиотекой сами при обращениях
+        к Gemini и при фоновом авторефреше кук). Куки в снимок не попадают.
+        """
+        status: dict = {
+            "engine": self.name,
+            "model_configured": self.model or "",
+            "proxy_configured": bool(self.proxy),
+            "timeout_seconds": self.timeout,
+            "cookies_configured": bool(self.secure_1psid and self.secure_1psidts),
+            "session_active": self._client is not None,
+        }
+        client = self._client
+        if client is None:
+            return status
+
+        account_status = getattr(client, "account_status", None)
+        if account_status is not None:
+            status["account_status"] = getattr(account_status, "name", str(account_status))
+            status["account_status_description"] = getattr(account_status, "description", "")
+
+        status["build_label"] = getattr(client, "build_label", None)
+        status["session_id"] = getattr(client, "session_id", None)
+        status["language"] = getattr(client, "language", None)
+
+        for attr in ("usage_info", "quotas", "abuse_status"):
+            value = getattr(client, attr, None)
+            if value is None:
+                continue
+            try:
+                json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                value = {"raw": str(value)}
+            status[attr] = value
+
+        return status
+
     async def recognize(self, images: list[bytes], *, prompt: str | None = None) -> str:
         if not images:
             raise OcrEngineError("Пустое изображение.")
@@ -1008,7 +1058,7 @@ class OcrScheduleParser:
                 number = _coerce_lesson_number(raw_lesson.get("number"), position)
                 subject = str(raw_lesson.get("subject") or "").strip()
                 teacher = str(raw_lesson.get("teacher") or "").strip()
-                classroom = str(raw_lesson.get("classroom") or "").strip()
+                classroom = _normalize_classroom_case(str(raw_lesson.get("classroom") or "").strip())
 
                 if not subject:
                     issues.append(
@@ -1137,7 +1187,7 @@ class OcrScheduleParser:
                 number = _coerce_lesson_number(raw_lesson.get("number"), position)
                 subject = str(raw_lesson.get("subject") or "").strip()
                 teacher = str(raw_lesson.get("teacher") or "").strip()
-                classroom = str(raw_lesson.get("classroom") or "").strip()
+                classroom = _normalize_classroom_case(str(raw_lesson.get("classroom") or "").strip())
 
                 if not subject:
                     issues.append(

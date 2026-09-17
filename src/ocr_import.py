@@ -284,12 +284,33 @@ class OcrScheduleImporter:
         return result
 
     async def _report(self, ok: bool, error: str | None = None, details: str | None = None) -> None:
-        if self.alert_manager is None:
-            return
+        if self.alert_manager is not None:
+            try:
+                await self.alert_manager.report_component_status("ocr", ok, error, details=details)
+            except Exception:
+                logger.exception("Не удалось отправить статус OCR в мониторинг.")
+        await self._save_status_snapshot()
+
+    async def _save_status_snapshot(self) -> None:
+        """Сохраняет снимок состояния OCR в БД для панели «Управление Gemini»."""
+        payload: dict = {
+            "enabled": self.enabled,
+            "is_warm": self.is_warm,
+            "last_error": self.last_error,
+            "last_success_at": self.last_success_at,
+            "min_confidence": self.parser.min_confidence,
+            "fuzzy_threshold": self.parser.fuzzy_threshold,
+            "recognize_timeout": self.recognize_timeout,
+        }
+        if self.engine is not None:
+            try:
+                payload["engine"] = self.engine.live_status()
+            except Exception:
+                logger.exception("Не удалось получить состояние OCR-движка.")
         try:
-            await self.alert_manager.report_component_status("ocr", ok, error, details=details)
+            await self.db.save_ocr_status_snapshot(payload)
         except Exception:
-            logger.exception("Не удалось отправить статус OCR в мониторинг.")
+            logger.exception("Не удалось сохранить снимок статуса OCR.")
 
     def status_line(self, html: bool = True) -> str:
         """Строка о состоянии распознавания для экрана статуса."""
@@ -778,10 +799,9 @@ def format_ocr_preview(draft: OcrImportDraft, *, html: bool = True, max_length: 
     lines.append(bold("Что распознано"))
     shown = 0
     for day in result.snapshot.days:
-        lines.append(esc(format_human_date(day.date_label)))
         if not day.lessons:
-            lines.append("  пар нет")
             continue
+        lines.append(esc(format_human_date(day.date_label)))
         for lesson in day.lessons:
             if shown >= MAX_PREVIEW_LESSONS:
                 break

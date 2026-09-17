@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import unicodedata
+from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -13,8 +15,77 @@ from pathlib import Path
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import ScheduleSnapshot
+from src.parser import ScheduleParser
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class LessonCounterSyncResult:
+    processed: list[str] = field(default_factory=list)
+    skipped_already_done: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.processed or self.skipped_already_done or self.failed)
+
+
+async def sync_lesson_counters_for_date(
+    db: Database,
+    parser: ScheduleParser,
+    lesson_counter_service: LessonCounterService,
+    target_date_iso: str,
+) -> LessonCounterSyncResult:
+    """Считает прошедшие пары для всех групп с настроенными счетчиками на указанную дату.
+
+    Общий код для планового запуска (ScheduleJobs.handle_auto_daily_lesson_counter_job) и
+    ручной принудительной синхронизации из веб-дашборда — оба идут по одному и тому же списку
+    групп (из JSON-конфига счетчиков, а не по списку подписчиков) и через одну и ту же защиту
+    от дублей: daily_lesson_counter_logs с UNIQUE(target_date_iso, group_name) гарантирует, что
+    пара за конкретный день учитывается для группы ровно один раз, сколько бы раз этот вызов ни
+    повторили (по расписанию и вручную, дважды подряд и т.д.).
+    """
+    result = LessonCounterSyncResult()
+    group_sources = lesson_counter_service.configured_groups()
+
+    for source in group_sources:
+        schedule_id = source["schedule_id"]
+        group_name = source["group_name"]
+
+        if await db.is_daily_counter_processed(target_date_iso, group_name):
+            result.skipped_already_done.append(group_name)
+            continue
+
+        try:
+            snapshot, _ = await parser.parse(schedule_id)
+            day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
+
+            if day_item is not None and day_item.lessons:
+                counts: dict[tuple[str, str], int] = defaultdict(int)
+                for lesson in day_item.lessons:
+                    subj = lesson.subject.strip()
+                    teach = lesson.teacher.strip()
+                    if subj:
+                        counts[(subj, teach)] += 1
+
+                for (subj, teach), cnt in counts.items():
+                    lesson_counter_service.auto_increment_or_create_subject_in_json(
+                        group_name=group_name,
+                        schedule_id=schedule_id,
+                        subject=subj,
+                        teacher=teach,
+                        count=cnt,
+                    )
+
+            await db.mark_daily_counter_processed(target_date_iso, group_name)
+            result.processed.append(group_name)
+            logger.info("Lesson counter sync: processed %s for %s", group_name, target_date_iso)
+        except Exception as exc:
+            logger.warning("Lesson counter sync failed for group %s (%s): %s", group_name, target_date_iso, exc)
+            result.failed.append((group_name, str(exc)))
+
+    return result
 
 
 def normalize_lesson_text(value: str) -> str:
@@ -174,6 +245,36 @@ class LessonCounterService:
     async def configured_schedule_ids(self) -> list[int]:
         counters = await self.db.list_lesson_counters()
         return sorted({int(counter["schedule_id"]) for counter in counters if counter["schedule_id"] is not None})
+
+    def configured_groups(self) -> list[dict]:
+        """Группы с настроенными счетчиками пар прямо из JSON-конфига (а не из БД, которая — лишь
+        снимок на момент последнего старта бота). Именно эти группы реально показываются пользователям
+        через format_counters_text, поэтому подсчет должен идти по ним, а не по списку подписчиков —
+        у группы может быть настроен счетчик и без единого подписчика на её расписание."""
+        if not self.lesson_counters_path or not self.lesson_counters_path.exists():
+            return []
+        try:
+            with open(self.lesson_counters_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to read lesson counters JSON for configured groups: %s", exc)
+            return []
+
+        groups = data.get("groups", []) if isinstance(data, dict) else []
+        result: list[dict] = []
+        for item in groups:
+            if not isinstance(item, dict):
+                continue
+            raw_schedule_id = item.get("schedule_id")
+            if raw_schedule_id is None:
+                continue
+            try:
+                schedule_id = int(raw_schedule_id)
+            except (TypeError, ValueError):
+                continue
+            group_name = str(item.get("group_name") or item.get("name") or "").strip() or f"Группа #{schedule_id}"
+            result.append({"schedule_id": schedule_id, "group_name": group_name})
+        return result
 
     async def _resolve_schedule_id(self, item: dict, group_catalog: GroupCatalog) -> int | None:
         raw_schedule_id = item.get("schedule_id")

@@ -38,7 +38,7 @@ services:
       LESSON_COUNTERS_PATH: /app/runtime/lesson_counters.json
       WEB_USERS_JSON_IMPORT_PATH: /app/runtime/web_users.json
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
-    command: ["uv", "run", "--frozen", "uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uvicorn", "web_configurator.app:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
       - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8080}:8080"
     volumes:

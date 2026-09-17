@@ -1,9 +1,24 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     UV_LINK_MODE=copy
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
 
@@ -13,11 +28,7 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
+COPY --from=builder /app/.venv ./.venv
 
 COPY alembic.ini ./
 COPY migrations ./migrations
@@ -29,4 +40,4 @@ COPY README.md ./
 
 RUN mkdir -p /app/runtime
 
-CMD ["uv", "run", "--frozen", "-m", "src.main"]
+CMD ["python", "-m", "src.main"]
