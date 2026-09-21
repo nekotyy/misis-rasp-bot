@@ -187,21 +187,26 @@ class ScheduleComparator:
 
     @staticmethod
     def _day_changed(prev_day: dict | None, current_day: DaySchedule) -> bool:
-        current_map = {
-            lesson.number: (lesson.subject, lesson.teacher, lesson.classroom)
+        # Список (мультимножество), а не dict, намеренно: dict, ключом которого был бы
+        # номер пары, схлопнул бы две разные пары с одинаковым номером в один слот —
+        # ровно так бывает у личного расписания препода, где в один день пара №1 может
+        # идти сразу в нескольких его группах. Сортировка снимает и другую сторону той
+        # же проблемы: чувствительность к порядку, в котором пары пришли на вход.
+        current_list = sorted(
+            (lesson.number, lesson.subject, lesson.teacher, lesson.classroom)
             for lesson in current_day.lessons
-        }
+        )
 
         if prev_day is None:
-            return bool(current_map)
+            return bool(current_list)
 
-        prev_map = {
-            lesson["number"]: (lesson["subject"], lesson["teacher"], lesson["classroom"])
+        prev_list = sorted(
+            (lesson["number"], lesson["subject"], lesson["teacher"], lesson["classroom"])
             for lesson in prev_day["lessons"]
-        }
-        if not current_map:
+        )
+        if not current_list:
             return False
-        return prev_map != current_map
+        return prev_list != current_list
 
 
 def filter_days(snapshot: ScheduleSnapshot, days_count: int) -> list[DaySchedule]:

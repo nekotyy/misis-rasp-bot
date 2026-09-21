@@ -96,6 +96,54 @@ class ScheduleComparatorTests(unittest.TestCase):
         self.assertIsNone(summary)
 
 
+class ScheduleComparatorDuplicateLessonNumberTests(unittest.TestCase):
+    """Регресс: у личного расписания препода в один день пара с одинаковым номером
+
+    может идти сразу в нескольких его группах — номер пары уникален в рамках одной
+    группы, но не для препода, который ведёт в нескольких. Раньше сравнение строило
+    dict {номер: (...)}, который схлопывал такие пары в одну, и результат зависел от
+    порядка на входе (не гарантированного, т.к. приходит из группировки в БД) —
+    отсюда ложные "изменения" и повторные рассылки на ровном месте."""
+
+    def setUp(self) -> None:
+        self.today = datetime.now().date().isoformat()
+
+    def _day_dict(self, lessons: list[dict]) -> dict:
+        return {"content": {"days": [{"date_iso": self.today, "date_label": "Сегодня", "lessons": lessons}]}}
+
+    def _snapshot(self, lessons: list[Lesson]) -> ScheduleSnapshot:
+        return ScheduleSnapshot(
+            group_name="Иванов И.И.",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today, lessons=lessons)],
+        )
+
+    def test_same_content_different_input_order_is_not_a_change(self) -> None:
+        lesson_a = {"number": 1, "subject": "Математика", "teacher": "ИСП-25-1", "classroom": "301"}
+        lesson_b = {"number": 1, "subject": "Физика", "teacher": "ИСП-25-4", "classroom": "202"}
+        previous = self._day_dict([lesson_a, lesson_b])
+        current = self._snapshot([
+            Lesson(number=1, subject="Физика", teacher="ИСП-25-4", classroom="202"),
+            Lesson(number=1, subject="Математика", teacher="ИСП-25-1", classroom="301"),
+        ])
+
+        summary = ScheduleComparator.compare(previous, current)
+
+        self.assertIsNone(summary, "Тот же набор пар в другом порядке не должен считаться изменением")
+
+    def test_adding_a_second_group_with_the_same_number_is_a_real_change(self) -> None:
+        lesson_a = {"number": 1, "subject": "Математика", "teacher": "ИСП-25-1", "classroom": "301"}
+        previous = self._day_dict([lesson_a])
+        current = self._snapshot([
+            Lesson(number=1, subject="Математика", teacher="ИСП-25-1", classroom="301"),
+            Lesson(number=1, subject="Физика", teacher="ИСП-25-4", classroom="202"),
+        ])
+
+        summary = ScheduleComparator.compare(previous, current)
+
+        self.assertIsNotNone(summary, "Появление второй группы с тем же номером пары — реальное изменение")
+
+
 class GetDayByOffsetTests(unittest.TestCase):
     """Регресс на баг: кнопка «сегодня» показывала завтрашний день, если в снимке
     (например, из OCR-фото) вообще не было записи на сегодняшнюю дату — код брал

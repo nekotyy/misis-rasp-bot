@@ -1075,6 +1075,7 @@ class Database:
                     WHERE snapshot_type = ? AND source_type = 'group' AND source_key IS NOT NULL
                     GROUP BY source_key
                 ) AS latest ON latest.max_id = s.id
+                ORDER BY s.source_key
                 """,
                 (snapshot_type,),
             )

@@ -37,7 +37,14 @@ def compute_snapshot_hash(snapshot: ScheduleSnapshot) -> str:
     normalized_parts: list[str] = [snapshot.group_name]
     for day in snapshot.days:
         normalized_parts.append(day.date_iso)
-        for lesson in sorted(day.lessons, key=lambda item: item.number):
+        # Сортировка по полному кортежу, а не только по номеру: у личного расписания
+        # препода несколько групп могут иметь пару с одинаковым номером в один день,
+        # и без этого порядок (а значит и хеш) при одинаковом содержимом зависел бы
+        # от порядка, в котором группы вернула БД — не гарантированного между вызовами.
+        for lesson in sorted(
+            day.lessons,
+            key=lambda item: (item.number, item.subject, item.teacher, item.classroom),
+        ):
             normalized_parts.append(
                 "|".join(
                     [

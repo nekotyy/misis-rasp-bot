@@ -209,7 +209,15 @@ async def build_teacher_schedule_snapshot(db: Database, teacher_name: str) -> Sc
                 )
 
     days = [
-        DaySchedule(date_label=label, date_iso=date_iso, lessons=sorted(lessons, key=lambda item: item.number))
+        DaySchedule(
+            date_label=label,
+            date_iso=date_iso,
+            # Сортировка по (номер, группа, ...) — не только по номеру: у одного и того
+            # же препода в один день пара с одинаковым номером может идти сразу в
+            # нескольких группах, и без полного ключа порядок (а с ним и хеш снимка)
+            # зависел бы от порядка, в котором группы вернула БД.
+            lessons=sorted(lessons, key=lambda item: (item.number, item.teacher, item.subject, item.classroom)),
+        )
         for date_iso, (label, lessons) in sorted(days_by_date.items())
     ]
     return ScheduleSnapshot(group_name=teacher_name, fetched_at=datetime.now(), days=days)
