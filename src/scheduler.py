@@ -17,7 +17,9 @@ from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
+    normalize_lesson_text,
     sync_lesson_counters_for_date,
+    teacher_matches,
 )
 from src.message_broker import (
     AutoDailyLessonCounterJob,
@@ -610,7 +612,45 @@ class ScheduleJobs:
             subscription_key=source["source_key"],
         )
         await save("daily_baseline")
+        if source["source_type"] == "group":
+            try:
+                await self._notify_affected_teachers(snapshot)
+            except Exception:
+                logger.exception("Не удалось пересчитать подписки на преподов после изменения группы %s.", source["source_title"])
         return change_summary
+
+    async def _notify_affected_teachers(self, group_snapshot: ScheduleSnapshot) -> None:
+        """Сразу пересчитывает и, если нужно, уведомляет подписки "на препода" этой группы.
+
+        Личное расписание препода собирается из групп (`build_teacher_schedule_snapshot`),
+        а не с отдельной страницы сайта — так что как только у группы что-то поменялось
+        (с сайта или из ручной/OCR загрузки) и это уже разослано студентам, есть смысл в
+        тот же момент пересчитать и разослать препода(ов), которые в ней ведут, а не
+        ждать их собственного слота в плановой синхронизации.
+        """
+        teacher_names = {
+            lesson.teacher.strip()
+            for day in group_snapshot.days
+            for lesson in day.lessons
+            if lesson.teacher.strip()
+        }
+        if not teacher_names:
+            return
+        sources = await self.db.get_active_sources()
+        for teacher_source in sources:
+            if teacher_source.get("source_type") != "teacher":
+                continue
+            teacher_norm = normalize_lesson_text(str(teacher_source.get("source_title") or ""))
+            if not any(teacher_matches(teacher_norm, name) for name in teacher_names):
+                continue
+            try:
+                await self._sync_source(teacher_source)
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось сразу пересчитать препода %s после изменения группы: %s",
+                    teacher_source.get("source_title"),
+                    exc,
+                )
 
     async def _count_lessons_for_schedule_id(self, schedule_id: int) -> None:
         snapshot, snapshot_hash = await self.parser.parse(schedule_id)

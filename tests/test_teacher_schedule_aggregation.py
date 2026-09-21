@@ -4,9 +4,14 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 from src.db import Database
-from src.lesson_counters import build_teacher_schedule_snapshot
+from src.lesson_counters import (
+    build_teacher_schedule_snapshot,
+    resolve_group_preview_content,
+    snapshot_to_search_content,
+)
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 
 
@@ -131,12 +136,62 @@ class TestBuildTeacherScheduleSnapshot(unittest.IsolatedAsyncioTestCase):
 
         day1 = snapshot.days[0]
         self.assertEqual(len(day1.lessons), 1)
-        self.assertEqual(day1.lessons[0].subject, "[ИСП-25-1] Математика")
+        self.assertEqual(day1.lessons[0].subject, "Математика")
+        self.assertEqual(day1.lessons[0].teacher, "ИСП-25-1")
         self.assertNotIn("Петров", [lesson.teacher for lesson in day1.lessons])
 
         day2 = snapshot.days[1]
         self.assertEqual(len(day2.lessons), 1)
-        self.assertEqual(day2.lessons[0].subject, "[КИБ-24-1] Матанализ")
+        self.assertEqual(day2.lessons[0].subject, "Матанализ")
+        self.assertEqual(day2.lessons[0].teacher, "КИБ-24-1")
+
+    async def test_lessons_on_same_day_are_sorted_by_number_not_group_order(self) -> None:
+        """Регресс: у препода несколько групп в один день — пары шли в порядке обхода
+        групп в БД (например 3, 1, 2), а не по возрастанию номера пары."""
+        common_day = "2026-09-14"
+        group_a = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso=common_day, lessons=[
+                Lesson(number=3, subject="Информационные технологии", teacher="Коврижных О.А.", classroom="303"),
+            ])],
+        )
+        group_b = ScheduleSnapshot(
+            group_name="ИСП-25-4",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso=common_day, lessons=[
+                Lesson(number=1, subject="Информационные технологии", teacher="Коврижных О.А.", classroom="303"),
+            ])],
+        )
+        group_c = ScheduleSnapshot(
+            group_name="ИСП-25-2",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso=common_day, lessons=[
+                Lesson(number=2, subject="Информационные технологии", teacher="Коврижных О.А.", classroom="303"),
+            ])],
+        )
+        # Порядок сохранения намеренно не совпадает с порядком номеров пар.
+        await self.db.save_snapshot(
+            "current", "hash_a", group_a, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+        await self.db.save_snapshot(
+            "current", "hash_d", group_b, schedule_id=104, group_name="ИСП-25-4",
+            source_type="group", source_key="group:104", source_title="ИСП-25-4", source_url="rasp:104",
+        )
+        await self.db.save_snapshot(
+            "current", "hash_c", group_c, schedule_id=102, group_name="ИСП-25-2",
+            source_type="group", source_key="group:102", source_title="ИСП-25-2", source_url="rasp:102",
+        )
+
+        snapshot = await build_teacher_schedule_snapshot(self.db, "Коврижных О.А.")
+
+        self.assertEqual(len(snapshot.days), 1)
+        numbers = [lesson.number for lesson in snapshot.days[0].lessons]
+        self.assertEqual(numbers, sorted(numbers))
+        self.assertEqual(numbers, [1, 2, 3])
+        groups_in_order = [lesson.teacher for lesson in snapshot.days[0].lessons]
+        self.assertEqual(groups_in_order, ["ИСП-25-4", "ИСП-25-2", "ИСП-25-1"])
 
     async def test_no_matching_lessons_yields_empty_days(self) -> None:
         group_a = ScheduleSnapshot(
@@ -162,6 +217,70 @@ class TestBuildTeacherScheduleSnapshot(unittest.IsolatedAsyncioTestCase):
     async def test_no_group_snapshots_yet(self) -> None:
         snapshot = await build_teacher_schedule_snapshot(self.db, "Иванов И.И.")
         self.assertEqual(snapshot.days, [])
+
+
+class TestResolveGroupPreviewContent(unittest.IsolatedAsyncioTestCase):
+    """Предпросмотр чужой группы при поиске должен сперва проверять БД и только
+
+    потом идти на сайт — так же, как уже устроено для своей подписки и для
+    подписки "на препода".
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self._tmp.name) / "test.db")
+        await self.db.initialize()
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_uses_db_snapshot_and_never_touches_site_when_available(self) -> None:
+        snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "current", "hash_a", snapshot, schedule_id=600, group_name="ИСП-25-1",
+            source_type="group", source_key="group:600", source_title="ИСП-25-1", source_url="http://test/rasp/600",
+        )
+        parser = MagicMock()
+        parser.parse_from_url = AsyncMock(side_effect=AssertionError("site must not be called when DB has a snapshot"))
+
+        content = await resolve_group_preview_content(self.db, parser, "http://test/rasp/600")
+
+        parser.parse_from_url.assert_not_called()
+        self.assertEqual(content["days"][0]["lessons"][0]["subject"], "Математика")
+
+    async def test_falls_back_to_site_when_no_snapshot_saved_yet(self) -> None:
+        snapshot = ScheduleSnapshot(
+            group_name="МТО-26",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[])],
+        )
+        parser = MagicMock()
+        parser.parse_from_url = AsyncMock(return_value=(snapshot, "hash_live"))
+
+        content = await resolve_group_preview_content(self.db, parser, "http://test/rasp/700")
+
+        parser.parse_from_url.assert_awaited_once_with("http://test/rasp/700")
+        self.assertEqual(content["group_name"], "МТО-26")
+
+    async def test_snapshot_to_search_content_matches_stored_shape(self) -> None:
+        snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301"),
+            ])],
+        )
+
+        content = snapshot_to_search_content(snapshot)
+
+        self.assertEqual(content["group_name"], "ИСП-25-1")
+        self.assertEqual(content["days"][0]["lessons"][0]["classroom"], "301")
 
 
 if __name__ == "__main__":

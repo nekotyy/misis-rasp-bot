@@ -16,6 +16,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import ScheduleParser
+from src.subscription_utils import extract_numeric_id
 
 logger = logging.getLogger(__name__)
 
@@ -195,21 +196,63 @@ async def build_teacher_schedule_snapshot(db: Database, teacher_name: str) -> Sc
                 if not teacher_matches(teacher_norm, lesson_teacher):
                     continue
                 label, lessons = days_by_date.setdefault(date_iso, (str(day.get("date_label") or date_iso), []))
-                subject = str(raw_lesson.get("subject") or "")
+                # В личном расписании препода поле "teacher" полезнее показывать как
+                # группу — сам себя по имени препод и так узнает, а вот с какой
+                # группой у него эта пара, без этого не понять.
                 lessons.append(
                     Lesson(
                         number=int(raw_lesson.get("number") or 0),
-                        subject=f"[{group_title}] {subject}" if group_title else subject,
-                        teacher=lesson_teacher,
+                        subject=str(raw_lesson.get("subject") or ""),
+                        teacher=group_title or lesson_teacher,
                         classroom=str(raw_lesson.get("classroom") or ""),
                     )
                 )
 
     days = [
-        DaySchedule(date_label=label, date_iso=date_iso, lessons=lessons)
+        DaySchedule(date_label=label, date_iso=date_iso, lessons=sorted(lessons, key=lambda item: item.number))
         for date_iso, (label, lessons) in sorted(days_by_date.items())
     ]
     return ScheduleSnapshot(group_name=teacher_name, fetched_at=datetime.now(), days=days)
+
+
+def snapshot_to_search_content(snapshot: ScheduleSnapshot) -> dict:
+    """Приводит ScheduleSnapshot к тому же dict-формату, в котором снимки хранятся в БД."""
+    return {
+        "group_name": snapshot.group_name,
+        "fetched_at": snapshot.fetched_at.isoformat(timespec="seconds"),
+        "days": [
+            {
+                "date_label": day.date_label,
+                "date_iso": day.date_iso,
+                "lessons": [
+                    {
+                        "number": lesson.number,
+                        "subject": lesson.subject,
+                        "teacher": lesson.teacher,
+                        "classroom": lesson.classroom,
+                    }
+                    for lesson in day.lessons
+                ],
+            }
+            for day in snapshot.days
+        ],
+    }
+
+
+async def resolve_group_preview_content(db: Database, parser: ScheduleParser, group_url: str) -> dict:
+    """Расписание группы для беглого предпросмотра при поиске (не своя подписка).
+
+    Сначала пробует уже известный в БД снимок этой группы (`schedule_snapshots`,
+    `snapshot_type = "current"`) — если у неё есть подписчики, её кто-то уже
+    синхронизирует, и это работает даже при недоступном сайте. На сайт идёт
+    напрямую только если по этой группе снимка ещё вообще ни разу не было.
+    """
+    schedule_id = extract_numeric_id(group_url)
+    stored = await db.get_latest_snapshot("current", schedule_id=schedule_id) if schedule_id is not None else None
+    if stored is not None:
+        return stored["content"]
+    snapshot_obj, _ = await parser.parse_from_url(group_url)
+    return snapshot_to_search_content(snapshot_obj)
 
 
 class LessonCounterService:

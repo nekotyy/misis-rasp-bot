@@ -166,7 +166,8 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         jobs.parser.parse_from_url.assert_not_called()
         self.assertTrue(snapshot_hash)
         self.assertEqual(len(snapshot.days), 1)
-        self.assertEqual(snapshot.days[0].lessons[0].subject, "[ИСП-25-1] Математика")
+        self.assertEqual(snapshot.days[0].lessons[0].subject, "Математика")
+        self.assertEqual(snapshot.days[0].lessons[0].teacher, "ИСП-25-1")
 
     def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
         """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
@@ -192,6 +193,117 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         for func in registered_funcs:
             # None of the registered jobs should be a sync lambda returning an unawaited coroutine
             self.assertFalse(func.__name__ == "<lambda>", "Job must not be an unawaited sync lambda")
+
+
+class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase):
+    """Регресс: изменение группы (в т.ч. из ручной/OCR загрузки) должно сразу же
+
+    пересчитать и, если нужно, разослать подписки "на препода", которые в ней
+    ведут — не дожидаясь их отдельного слота в плановой синхронизации.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self._tmp.name) / "test_teacher_cascade.db")
+        await self.db.initialize()
+
+        self.mock_broadcaster = AsyncMock()
+        self.mock_broadcaster.broadcast = AsyncMock()
+
+        await self.db.upsert_user(
+            "telegram", 42, "prep", "Иванов И.И.",
+            subscription_type="teacher", subscription_key="teacher:5",
+            subscription_title="Иванов И.И.", subscription_url="http://example.com/prep/5",
+        )
+
+        # ScheduleComparator смотрит только на ближайшие дни от текущей даты, поэтому дата
+        # в тесте должна быть реальным "сегодня", а не произвольной фиксированной датой.
+        self.today_iso = datetime.now().date().isoformat()
+
+        old_group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="Петров П.П.", classroom="202"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_old", old_group_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+        await self.db.save_snapshot(
+            "current", "hash_old", old_group_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+
+        old_teacher_snapshot = ScheduleSnapshot(
+            group_name="Иванов И.И.",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[],
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_teacher_old", old_teacher_snapshot, schedule_id=None, group_name="Иванов И.И.",
+            source_type="teacher", source_key="teacher:5", source_title="Иванов И.И.", source_url="http://example.com/prep/5",
+        )
+
+        self.group_source = {
+            "source_type": "group",
+            "source_key": "group:101",
+            "source_title": "ИСП-25-1",
+            "source_url": "rasp:101",
+            "schedule_id": 101,
+            "group_name": "ИСП-25-1",
+        }
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_teacher_matching_new_group_lesson_gets_notified_immediately(self) -> None:
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+
+        new_group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 9, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301"),
+            ])],
+        )
+
+        await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new")
+
+        self.assertEqual(self.mock_broadcaster.broadcast.await_count, 2)
+        notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
+        self.assertEqual(notified_keys, {"group:101", "teacher:5"})
+
+        teacher_current = await self.db.get_latest_snapshot("current", source_key="teacher:5")
+        self.assertIsNotNone(teacher_current)
+        self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["subject"], "Математика")
+        self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["teacher"], "ИСП-25-1")
+
+    async def test_unrelated_teacher_is_not_notified(self) -> None:
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+
+        new_group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 9, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="Сидоров С.С.", classroom="202"),
+            ])],
+        )
+
+        await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new2")
+
+        self.assertEqual(self.mock_broadcaster.broadcast.await_count, 1)
+        notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
+        self.assertEqual(notified_keys, {"group:101"})
 
 
 if __name__ == "__main__":
