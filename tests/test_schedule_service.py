@@ -4,7 +4,13 @@ import unittest
 from datetime import datetime, timedelta
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
-from src.schedule_service import ScheduleComparator, get_day_by_offset, get_day_by_offset_from_content
+from src.schedule_service import (
+    ScheduleComparator,
+    ScheduleFormatter,
+    format_human_date,
+    get_day_by_offset,
+    get_day_by_offset_from_content,
+)
 
 
 class ScheduleComparatorTests(unittest.TestCase):
@@ -146,6 +152,76 @@ class GetDayByOffsetTests(unittest.TestCase):
         result = get_day_by_offset(snapshot, 1)
         self.assertIsNotNone(result)
         self.assertEqual(result.date_iso, tomorrow)
+
+
+class FormatSearchSnapshotTests(unittest.TestCase):
+    """Регресс: предпросмотр при поиске показывал вообще все дни, какие были в снимке
+
+    (у препода снимок собирается сразу из всех его групп и может охватывать очень
+    широкий диапазон; у группы из OCR список дней со временем только растёт) —
+    должен показывать только ближайшие несколько дней."""
+
+    @staticmethod
+    def _day(offset: int, lessons_count: int = 1) -> dict:
+        date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat()
+        return {
+            "date_iso": date_iso,
+            "date_label": date_iso,
+            "lessons": [
+                {"number": i + 1, "subject": "Математика", "teacher": "Иванов И.И.", "classroom": "301"}
+                for i in range(lessons_count)
+            ],
+        }
+
+    @staticmethod
+    def _human(offset: int) -> str:
+        date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat()
+        return format_human_date(date_iso)
+
+    def test_limits_to_three_upcoming_days_by_default(self) -> None:
+        content = {"days": [self._day(offset) for offset in range(10)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content)
+
+        for offset in range(3):
+            self.assertIn(self._human(offset), text)
+        for offset in range(3, 10):
+            self.assertNotIn(self._human(offset), text)
+
+    def test_past_days_are_excluded_even_within_the_count(self) -> None:
+        content = {"days": [self._day(-5), self._day(-1), self._day(0), self._day(1)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content)
+
+        self.assertNotIn(self._human(-5), text)
+        self.assertNotIn(self._human(-1), text)
+        self.assertIn(self._human(0), text)
+        self.assertIn(self._human(1), text)
+
+    def test_days_are_shown_chronologically_regardless_of_input_order(self) -> None:
+        content = {"days": [self._day(2), self._day(0), self._day(1)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content)
+
+        pos0 = text.index(self._human(0))
+        pos1 = text.index(self._human(1))
+        pos2 = text.index(self._human(2))
+        self.assertTrue(pos0 < pos1 < pos2)
+
+    def test_custom_days_count_is_respected(self) -> None:
+        content = {"days": [self._day(offset) for offset in range(10)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content, days_count=1)
+
+        self.assertIn(self._human(0), text)
+        self.assertNotIn(self._human(1), text)
+
+    def test_no_lessons_in_window_shows_fallback(self) -> None:
+        content = {"days": [self._day(offset, lessons_count=0) for offset in range(3)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content)
+
+        self.assertIn("Пар нет.", text)
 
 
 if __name__ == "__main__":

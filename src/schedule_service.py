@@ -101,9 +101,21 @@ class ScheduleFormatter:
         return "\n\n".join(blocks)
 
     @staticmethod
-    def format_search_snapshot(title: str, content: dict) -> str:
+    def format_search_snapshot(title: str, content: dict, days_count: int = 3) -> str:
+        """Показывает не весь известный снимок, а только ближайшие `days_count` дней.
+
+        У препода снимок собирается из всех его групп сразу (`build_teacher_schedule_snapshot`)
+        и может охватывать очень широкий диапазон дат; у группы из OCR-фото список дней
+        со временем только растёт, потому что новые фото вливаются в старые (`merge_ocr_days`),
+        а не заменяют их. Без ограничения предпросмотр при поиске превращался в "вообще все
+        пары за всё время" вместо разумного окна на ближайшие дни.
+        """
         lines = [f"Расписание для {title}", ""]
-        days = content.get("days", [])
+        today = datetime.now().date().isoformat()
+        days = sorted(
+            (day for day in content.get("days", []) if str(day.get("date_iso") or "") >= today),
+            key=lambda day: str(day.get("date_iso") or ""),
+        )[:days_count]
         added_any = False
         for day in days:
             lessons = sorted(day.get("lessons", []), key=lambda item: item["number"])
