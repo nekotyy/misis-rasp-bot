@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from curl_cffi.requests.exceptions import CurlError
-from gemini_webapi.exceptions import TemporarilyBlockedError, UsageLimitExceededError
+from gemini_webapi.exceptions import GeminiError, TemporarilyBlockedError, UsageLimitExceededError
 
 from src.ocr_import import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -683,6 +683,72 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
             await engine._generate_with_retry(client, "prompt", ["photo.jpg"], "flash")
 
         client.generate_content.assert_awaited_once()
+
+    async def test_background_unauthenticated_status_invalidates_zombie_session(self) -> None:
+        """gemini_webapi может молча перевести аккаунт в UNAUTHENTICATED в фоне (heartbeat/
+        auto-refresh получили reject-код от Google) без единого явного AuthError на нашей
+        стороне. Раньше `self._client` в этом случае не сбрасывался: сессия навсегда
+        оставалась "session_active=да", а каждый следующий вызов падал с той же ошибкой.
+        """
+        from gemini_webapi.constants import AccountStatus
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
+
+        client = MagicMock()
+        client.init = AsyncMock()
+        client.account_status = AccountStatus.AVAILABLE
+        client.close = AsyncMock()
+        client.resolve_model = MagicMock(side_effect=lambda name: MagicMock(model_id=name))
+        jar = MagicMock()
+        jar.get = MagicMock(
+            side_effect=lambda **kwargs: MagicMock(
+                id="ocr-gem",
+                prompt=OCR_GEM_SYSTEM_PROMPT,
+                description=OCR_GEM_DESCRIPTION,
+            )
+            if kwargs.get("name")
+            else None
+        )
+        client.fetch_gems = AsyncMock(return_value=jar)
+
+        async def fail_generate(*args, **kwargs):
+            # Аккаунт "протух" между инициализацией клиента и самим запросом — ровно как
+            # это увидел админ в панели: сессия числилась активной, а generate_content всё
+            # равно упал на внутренней проверке account_status.
+            client.account_status = AccountStatus.UNAUTHENTICATED
+            raise GeminiError("Permission denied. Account status: UNAUTHENTICATED - Session is not authenticated.")
+
+        client.generate_content = AsyncMock(side_effect=fail_generate)
+
+        with patch("src.ocr_schedule.GeminiClient", return_value=client):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            with self.assertRaises(OcrEngineError):
+                await engine.recognize([b"\xff\xd8\xffimage"])
+
+        self.assertIsNone(
+            engine._client,
+            "Зомби-сессия должна сбрасываться, чтобы следующий вызов переавторизовался с нуля",
+        )
+
+    async def test_sync_cookies_forever_self_heals_when_account_goes_unauthenticated(self) -> None:
+        """Та же деградация, замеченная не в момент запроса, а фоновой синхронизацией кук —
+        она обязана сама сбросить клиента, не дожидаясь следующего фото пользователя.
+        """
+        from gemini_webapi.constants import AccountStatus
+        from src.ocr_schedule import GeminiOcrEngine
+
+        engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+        fake_client = MagicMock(account_status=AccountStatus.UNAUTHENTICATED)
+        engine._client = fake_client
+
+        with patch("src.ocr_schedule.asyncio.sleep", new=AsyncMock()):
+            await engine._sync_cookies_forever(fake_client)
+
+        self.assertIsNone(engine._client)
 
     async def test_recognize_rejects_empty_image_list(self) -> None:
         from src.ocr_schedule import GeminiOcrEngine
