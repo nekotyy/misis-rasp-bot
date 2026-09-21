@@ -2145,7 +2145,7 @@ def build_dispatcher(
             bot,
             chat_id,
             "schedule",
-            ScheduleFormatter.format_search_snapshot(target.title, snapshot["content"]),
+            ScheduleFormatter.format_search_snapshot(target.title, snapshot["content"], html=True),
             reply_markup=build_search_result_keyboard(),
         )
         return True

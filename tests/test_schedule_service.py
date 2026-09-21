@@ -271,6 +271,67 @@ class FormatSearchSnapshotTests(unittest.TestCase):
 
         self.assertIn("Пар нет.", text)
 
+    def test_plain_lesson_line_matches_the_rest_of_the_app(self) -> None:
+        """Регресс: предпросмотр поиска писал "1 в 301 по ..." без точки после номера,
+
+        хотя везде в остальном боте (обычное расписание, уведомления) формат "1. в ...".
+        """
+        content = {"days": [self._day(0)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content)
+
+        self.assertIn("1. в 301 по Математика у Иванов И.И.", text)
+
+    def test_html_mode_matches_the_bold_style_of_the_regular_schedule_card(self) -> None:
+        content = {"days": [self._day(0)]}
+
+        text = ScheduleFormatter.format_search_snapshot("ИСП-25-1", content, html=True)
+
+        self.assertIn("<b>1.</b> в <b>301</b> по <b>Математика</b> у <b>Иванов И.И.</b>", text)
+
+    def test_html_mode_escapes_unsafe_characters(self) -> None:
+        """Регресс: без экранирования сырой текст с сайта/OCR мог сломать разбор HTML
+
+        в Telegram (parse_mode=HTML по умолчанию), и сообщение с результатом поиска
+        просто не доходило бы до пользователя (safe_send_message глотает такую ошибку)."""
+        today = datetime.now().date().isoformat()
+        content = {
+            "days": [
+                {
+                    "date_iso": today,
+                    "date_label": today,
+                    "lessons": [
+                        {"number": 1, "subject": "1 < 2 & чат", "teacher": "Иванов<script>", "classroom": "3&4"},
+                    ],
+                }
+            ]
+        }
+
+        text = ScheduleFormatter.format_search_snapshot("Гр<уппа>", content, html=True)
+
+        self.assertNotIn("<script>", text)
+        self.assertIn("Гр&lt;уппа&gt;", text)
+        self.assertIn("3&amp;4", text)
+
+    def test_plain_mode_does_not_escape(self) -> None:
+        today = datetime.now().date().isoformat()
+        content = {
+            "days": [
+                {
+                    "date_iso": today,
+                    "date_label": today,
+                    "lessons": [
+                        {"number": 1, "subject": "A & B", "teacher": "Иванов", "classroom": "1"},
+                    ],
+                }
+            ]
+        }
+
+        text = ScheduleFormatter.format_search_snapshot("Группа", content)
+
+        self.assertIn("A & B", text)
+        self.assertNotIn("&amp;", text)
+
 
 if __name__ == "__main__":
     unittest.main()
