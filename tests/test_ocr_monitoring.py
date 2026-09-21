@@ -1008,3 +1008,104 @@ class ReadyNoticeThrottleTests(unittest.TestCase):
 
         broken = pathlib.Path("/proc/definitely/not/writable/.marker")
         self.assertIsInstance(should_notify_ocr_ready(broken, 12), bool)
+
+
+class StaleCookieCacheRetryTests(unittest.IsolatedAsyncioTestCase):
+    """Регресс: после простоя контейнера дольше срока жизни кэша кук gemini_webapi
+
+    сам стирает протухший кэш и просит повторить попытку ("the next attempt can
+    fall through to the supplied credentials") — но `_ensure_client` не повторял,
+    а сразу поднимал ошибку, требуя ручного обновления .env, хотя переданные
+    cookies были рабочими.
+    """
+
+    @staticmethod
+    def _make_fake_client_class(status_by_attempt: list) -> type:
+        from gemini_webapi.constants import AccountStatus
+
+        from src.ocr_schedule import OCR_GEM_DESCRIPTION, OCR_GEM_SYSTEM_PROMPT
+
+        class FakeGeminiClient:
+            calls = 0
+
+            def __init__(self, *args, **kwargs) -> None:
+                self.account_status = AccountStatus.AVAILABLE
+
+            async def init(self, **kwargs) -> None:
+                index = min(FakeGeminiClient.calls, len(status_by_attempt) - 1)
+                self.account_status = status_by_attempt[index]
+                FakeGeminiClient.calls += 1
+
+            async def close(self) -> None:
+                return None
+
+            def resolve_model(self, name):
+                return f"resolved-{name}"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem", prompt=OCR_GEM_SYSTEM_PROMPT, description=OCR_GEM_DESCRIPTION
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+        return FakeGeminiClient
+
+    async def test_stale_unauthenticated_cache_retries_once_and_succeeds(self) -> None:
+        from unittest.mock import patch
+
+        from gemini_webapi.constants import AccountStatus
+
+        from src.ocr_schedule import GeminiOcrEngine
+
+        fake_client_cls = self._make_fake_client_class([AccountStatus.UNAUTHENTICATED, AccountStatus.AVAILABLE])
+
+        with patch("src.ocr_schedule.GeminiClient", fake_client_cls):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            engine._persist_session_state = AsyncMock()
+            client = await engine._ensure_client()
+
+        self.assertEqual(client.account_status, AccountStatus.AVAILABLE)
+        self.assertEqual(fake_client_cls.calls, 2, "Должно быть ровно две попытки: протухший кэш, потом .env cookies")
+
+    async def test_persistent_unauthenticated_status_still_raises_after_one_retry(self) -> None:
+        from unittest.mock import patch
+
+        from gemini_webapi.constants import AccountStatus
+
+        from src.ocr_schedule import GeminiOcrEngine, OcrEngineError
+
+        fake_client_cls = self._make_fake_client_class([AccountStatus.UNAUTHENTICATED])
+
+        with patch("src.ocr_schedule.GeminiClient", fake_client_cls):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            engine._persist_session_state = AsyncMock()
+            with self.assertRaises(OcrEngineError):
+                await engine._ensure_client()
+
+        self.assertEqual(fake_client_cls.calls, 2, "Ровно одна попытка повтора, не бесконечный цикл")
+
+    async def test_non_auth_failure_does_not_retry(self) -> None:
+        """Гео-блок и подобные — не протухший кэш, повторять смысла нет."""
+        from unittest.mock import patch
+
+        from gemini_webapi.constants import AccountStatus
+
+        from src.ocr_schedule import GeminiOcrEngine, OcrEngineError
+
+        fake_client_cls = self._make_fake_client_class([AccountStatus.LOCATION_REJECTED])
+
+        with patch("src.ocr_schedule.GeminiClient", fake_client_cls):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            engine._persist_session_state = AsyncMock()
+            with self.assertRaises(OcrEngineError):
+                await engine._ensure_client()
+
+        self.assertEqual(fake_client_cls.calls, 1, "Негативные статусы, кроме протухшего кэша, повторять не нужно")
