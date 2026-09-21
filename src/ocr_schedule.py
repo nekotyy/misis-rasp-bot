@@ -670,6 +670,36 @@ class GeminiOcrEngine:
                 raise OcrEngineError(message)
             configure_gemini_doh(self.doh_url)
             await self._probe_route()
+            client = await self._init_client_retrying_stale_cache()
+            try:
+                self._resolved_model = self._select_model(client)
+                self._fallback_model = self._select_fallback_model(client, self._resolved_model)
+                self.gem_id = await self._ensure_gem(client)
+                await self._persist_session_state(client)
+            except Exception:
+                await client.close()
+                raise
+            self._client = client
+            self._cookie_sync_task = asyncio.create_task(self._sync_cookies_forever(client))
+            return client
+
+    async def _init_client_retrying_stale_cache(self) -> GeminiClient:
+        """Поднимает клиент, автоматически повторяя один раз при протухшем кэше кук.
+
+        `gemini_webapi` пробует закэшированные (последний раз повёрнутые) куки из
+        `GEMINI_COOKIE_PATH` раньше тех, что явно переданы (`GEMINI_SECURE_1PSID`/
+        `PSIDTS`) — так задумано, чтобы не терять самую свежую ротацию. Но если
+        контейнер простоял без дела дольше короткого срока жизни этого кэша (а не
+        самих переданных cookies), кэш протухает сам по себе; библиотека это
+        обнаруживает и стирает протухший файл именно для того, чтобы следующая
+        попытка сразу подхватила переданные cookies (см. её собственный лог
+        "clearing them so the next attempt can fall through to the supplied
+        credentials"). Без этого повтора здесь распознавание требовало бы ручного
+        обновления .env при каждом перезапуске после простоя, хотя переданные
+        cookies всё это время были рабочими.
+        """
+        last_error: OcrEngineError | None = None
+        for attempt in range(2):
             client = GeminiClient(self.secure_1psid, self.secure_1psidts, proxy=self.proxy)
             try:
                 await client.init(
@@ -686,23 +716,24 @@ class GeminiOcrEngine:
                 raise OcrEngineError(f"Не удалось подключиться к Gemini: истёк таймаут ({exc}).") from exc
             except GeminiError as exc:
                 raise OcrEngineError(f"Gemini недоступен: {exc}") from exc
+
             account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
             self.last_account_status = getattr(account_status, "name", str(account_status))
-            if account_status != AccountStatus.AVAILABLE:
-                description = getattr(account_status, "description", "доступ ограничен")
-                await client.close()
-                raise OcrEngineError(f"Статус аккаунта Gemini {self.last_account_status}: {description}")
-            try:
-                self._resolved_model = self._select_model(client)
-                self._fallback_model = self._select_fallback_model(client, self._resolved_model)
-                self.gem_id = await self._ensure_gem(client)
-                await self._persist_session_state(client)
-            except Exception:
-                await client.close()
-                raise
-            self._client = client
-            self._cookie_sync_task = asyncio.create_task(self._sync_cookies_forever(client))
-            return client
+            if account_status == AccountStatus.AVAILABLE:
+                return client
+
+            description = getattr(account_status, "description", "доступ ограничен")
+            await client.close()
+            last_error = OcrEngineError(f"Статус аккаунта Gemini {self.last_account_status}: {description}")
+            if attempt == 0 and account_status == AccountStatus.UNAUTHENTICATED:
+                logger.warning(
+                    "Кэш Gemini-кук протух (обычно после простоя дольше его срока жизни), "
+                    "gemini_webapi уже стёр его сам — пробую ещё раз со свежими cookies из .env."
+                )
+                continue
+            break
+        assert last_error is not None
+        raise last_error
 
     async def _probe_route(self) -> None:
         """Проверяет маршрут и при включённом DoH прогревает DNS-кэш curl."""
