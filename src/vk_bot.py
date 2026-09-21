@@ -1295,7 +1295,7 @@ def build_vk_bot(
             label = fallback if day is None else day.date_label
             return f"Расписание на {label}\n\nПар нет."
         lines = [f"Расписание на {day.date_label}", ""]
-        for lesson in day.lessons:
+        for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
         return "\n".join(lines)
 

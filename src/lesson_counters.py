@@ -195,18 +195,20 @@ async def build_teacher_schedule_snapshot(db: Database, teacher_name: str) -> Sc
                 if not teacher_matches(teacher_norm, lesson_teacher):
                     continue
                 label, lessons = days_by_date.setdefault(date_iso, (str(day.get("date_label") or date_iso), []))
-                subject = str(raw_lesson.get("subject") or "")
+                # В личном расписании препода поле "teacher" полезнее показывать как
+                # группу — сам себя по имени препод и так узнает, а вот с какой
+                # группой у него эта пара, без этого не понять.
                 lessons.append(
                     Lesson(
                         number=int(raw_lesson.get("number") or 0),
-                        subject=f"[{group_title}] {subject}" if group_title else subject,
-                        teacher=lesson_teacher,
+                        subject=str(raw_lesson.get("subject") or ""),
+                        teacher=group_title or lesson_teacher,
                         classroom=str(raw_lesson.get("classroom") or ""),
                     )
                 )
 
     days = [
-        DaySchedule(date_label=label, date_iso=date_iso, lessons=lessons)
+        DaySchedule(date_label=label, date_iso=date_iso, lessons=sorted(lessons, key=lambda item: item.number))
         for date_iso, (label, lessons) in sorted(days_by_date.items())
     ]
     return ScheduleSnapshot(group_name=teacher_name, fetched_at=datetime.now(), days=days)

@@ -166,7 +166,8 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         jobs.parser.parse_from_url.assert_not_called()
         self.assertTrue(snapshot_hash)
         self.assertEqual(len(snapshot.days), 1)
-        self.assertEqual(snapshot.days[0].lessons[0].subject, "[ИСП-25-1] Математика")
+        self.assertEqual(snapshot.days[0].lessons[0].subject, "Математика")
+        self.assertEqual(snapshot.days[0].lessons[0].teacher, "ИСП-25-1")
 
     def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
         """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
@@ -280,7 +281,8 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
 
         teacher_current = await self.db.get_latest_snapshot("current", source_key="teacher:5")
         self.assertIsNotNone(teacher_current)
-        self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["subject"], "[ИСП-25-1] Математика")
+        self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["subject"], "Математика")
+        self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["teacher"], "ИСП-25-1")
 
     async def test_unrelated_teacher_is_not_notified(self) -> None:
         from src.scheduler import ScheduleJobs
