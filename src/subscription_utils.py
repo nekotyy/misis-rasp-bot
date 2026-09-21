@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from src.group_catalog import GroupCatalog
-from src.schedule_search import SearchTarget
+
+if TYPE_CHECKING:
+    # Только для аннотаций типов: настоящий импорт создал бы цикл, т.к.
+    # schedule_search сам импортирует lesson_counters, который импортирует
+    # extract_numeric_id отсюда.
+    from src.schedule_search import SearchTarget
 
 
 def make_group_subscription(group_name: str, schedule_id: int | None) -> dict[str, str | int | None]:
@@ -20,7 +26,15 @@ def make_group_subscription(group_name: str, schedule_id: int | None) -> dict[st
 
 def make_teacher_subscription(target: SearchTarget) -> dict[str, str | int | None]:
     teacher_id = extract_numeric_id(target.url)
-    key = f"teacher:{teacher_id}" if teacher_id is not None else f"teacher:{target.url}"
+    if teacher_id is not None:
+        key = f"teacher:{teacher_id}"
+    elif target.url:
+        key = f"teacher:{target.url}"
+    else:
+        # Найден не на сайте (там ссылка есть всегда), а по ФИО среди уже известных
+        # групп — своего ID у него нет. Ключим по имени, как group-pending выше:
+        # иначе все такие подписки без сайта схлопнулись бы в один и тот же "teacher:".
+        key = f"teacher-pending:{GroupCatalog.normalize(target.title)}"
     return {
         "subscription_type": "teacher",
         "subscription_key": key,
