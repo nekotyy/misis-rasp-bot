@@ -198,29 +198,41 @@ def filter_days(snapshot: ScheduleSnapshot, days_count: int) -> list[DaySchedule
     return future_days[:days_count]
 
 
+def _offset_date_iso(offset: int) -> str:
+    return (datetime.now().date() + timedelta(days=offset)).isoformat()
+
+
 def get_day_by_offset(snapshot: ScheduleSnapshot, offset: int) -> DaySchedule | None:
-    days = filter_days(snapshot, offset + 1)
-    if len(days) <= offset:
-        return None
-    return days[offset]
+    """День, чья дата ровно сегодня+offset — а не offset-й по счёту день из имеющихся.
+
+    Если в снимке нет данных именно на этот календарный день (например, фото
+    для OCR не покрыло сегодняшний день, а покрыло только завтрашний), это
+    должно означать «нет данных на сегодня», а не подставлять ближайший
+    следующий день под чужим ярлыком.
+    """
+    target_date = _offset_date_iso(offset)
+    for day in snapshot.days:
+        if day.date_iso == target_date:
+            return day
+    return None
 
 
 def get_day_by_offset_from_content(content: dict, offset: int) -> DaySchedule | None:
-    today = datetime.now().date().isoformat()
-    future_days = [day for day in content.get("days", []) if day.get("date_iso", "") >= today]
-    if len(future_days) <= offset:
-        return None
-    day = future_days[offset]
-    return DaySchedule(
-        date_label=day["date_label"],
-        date_iso=day["date_iso"],
-        lessons=[
-            Lesson(
-                number=lesson["number"],
-                subject=lesson["subject"],
-                teacher=lesson["teacher"],
-                classroom=lesson["classroom"],
-            )
-            for lesson in day.get("lessons", [])
-        ],
-    )
+    target_date = _offset_date_iso(offset)
+    for day in content.get("days", []):
+        if day.get("date_iso", "") != target_date:
+            continue
+        return DaySchedule(
+            date_label=day["date_label"],
+            date_iso=day["date_iso"],
+            lessons=[
+                Lesson(
+                    number=lesson["number"],
+                    subject=lesson["subject"],
+                    teacher=lesson["teacher"],
+                    classroom=lesson["classroom"],
+                )
+                for lesson in day.get("lessons", [])
+            ],
+        )
+    return None
