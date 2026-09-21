@@ -131,6 +131,43 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
 
         worker.assert_not_awaited()
 
+    async def test_parse_source_teacher_never_hits_site(self) -> None:
+        """Синхронизация "подписки на препода" не должна ходить на сайт — только в БД по группам."""
+        from src.scheduler import ScheduleJobs
+
+        group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "current", "hash_a", group_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+
+        teacher_source = {
+            "source_type": "teacher",
+            "source_key": "teacher:5",
+            "source_title": "Иванов И.И.",
+            "source_url": "http://example.com/prep/5",
+            "schedule_id": None,
+            "group_name": None,
+        }
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.parser = MagicMock()
+        jobs.parser.parse_from_url = AsyncMock(side_effect=AssertionError("site must not be called for teacher sync"))
+
+        snapshot, snapshot_hash = await jobs._parse_source(teacher_source)
+
+        jobs.parser.parse_from_url.assert_not_called()
+        self.assertTrue(snapshot_hash)
+        self.assertEqual(len(snapshot.days), 1)
+        self.assertEqual(snapshot.days[0].lessons[0].subject, "[ИСП-25-1] Математика")
+
     def test_scheduler_configure_auto_daily_lesson_counter_jobs(self) -> None:
         """Проверяем, что задачи автоподсчета пар регистрируются как корутины с правильными kwargs."""
         from src.scheduler import ScheduleJobs

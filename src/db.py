@@ -1016,6 +1016,46 @@ class Database:
             "created_at": row[9],
         }
 
+    async def get_latest_group_snapshots(self, snapshot_type: str = "current") -> list[dict]:
+        """Последний снимок каждой группы (по source_key), независимо от подписчиков препода.
+
+        Используется, чтобы собрать личное расписание преподавателя из уже
+        известных группам данных (с сайта или из ручной/OCR загрузки), не
+        обращаясь к отдельной странице препода на сайте — так подписка на
+        препода продолжает работать, даже если сайт расписания недоступен.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT s.source_type, s.source_key, s.source_title, s.source_url, s.group_name, s.schedule_id,
+                       s.snapshot_hash, s.content_json, s.fetched_at, s.created_at
+                FROM schedule_snapshots AS s
+                INNER JOIN (
+                    SELECT source_key, MAX(id) AS max_id
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = ? AND source_type = 'group' AND source_key IS NOT NULL
+                    GROUP BY source_key
+                ) AS latest ON latest.max_id = s.id
+                """,
+                (snapshot_type,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "source_type": row[0],
+                "source_key": row[1],
+                "source_title": row[2],
+                "source_url": row[3],
+                "group_name": row[4],
+                "schedule_id": row[5],
+                "snapshot_hash": row[6],
+                "content": json.loads(row[7]),
+                "fetched_at": row[8],
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
+
     async def record_change(
         self,
         snapshot_hash: str,

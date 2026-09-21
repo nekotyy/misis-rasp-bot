@@ -14,7 +14,7 @@ from pathlib import Path
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.models import ScheduleSnapshot
+from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import ScheduleParser
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,47 @@ def teacher_matches(config_teacher_norm: str, lesson_teacher: str) -> bool:
     if config_parts and lesson_parts and config_parts[0] == lesson_parts[0]:
         return len(config_parts) == 1 or config_teacher_norm in lesson_teacher_norm
     return False
+
+
+async def build_teacher_schedule_snapshot(db: Database, teacher_name: str) -> ScheduleSnapshot:
+    """Собирает личное расписание препода из последних снимков всех групп в БД.
+
+    Не ходит на отдельную страницу препода на сайте: берет то, что уже есть по
+    группам (с сайта или из ручной/OCR загрузки), и находит в них пары этого
+    препода по ФИО (тем же нечетким сравнением, что и счетчики пар). Поэтому
+    подписка "на препода" продолжает работать и обновляться, даже когда сайт
+    расписания недоступен, лишь бы группы синхронизировались хоть откуда-то.
+    """
+    teacher_norm = normalize_lesson_text(teacher_name)
+    group_snapshots = await db.get_latest_group_snapshots("current")
+
+    days_by_date: dict[str, tuple[str, list[Lesson]]] = {}
+    for group_snapshot in group_snapshots:
+        group_title = str(group_snapshot.get("group_name") or group_snapshot.get("source_title") or "")
+        for day in group_snapshot["content"].get("days", []):
+            date_iso = str(day.get("date_iso") or "")
+            if not date_iso:
+                continue
+            for raw_lesson in day.get("lessons", []):
+                lesson_teacher = str(raw_lesson.get("teacher") or "")
+                if not teacher_matches(teacher_norm, lesson_teacher):
+                    continue
+                label, lessons = days_by_date.setdefault(date_iso, (str(day.get("date_label") or date_iso), []))
+                subject = str(raw_lesson.get("subject") or "")
+                lessons.append(
+                    Lesson(
+                        number=int(raw_lesson.get("number") or 0),
+                        subject=f"[{group_title}] {subject}" if group_title else subject,
+                        teacher=lesson_teacher,
+                        classroom=str(raw_lesson.get("classroom") or ""),
+                    )
+                )
+
+    days = [
+        DaySchedule(date_label=label, date_iso=date_iso, lessons=lessons)
+        for date_iso, (label, lessons) in sorted(days_by_date.items())
+    ]
+    return ScheduleSnapshot(group_name=teacher_name, fetched_at=datetime.now(), days=days)
 
 
 class LessonCounterService:

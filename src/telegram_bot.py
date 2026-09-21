@@ -32,7 +32,13 @@ from aiogram.types import (
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService, normalize_lesson_text, subject_matches, teacher_matches
+from src.lesson_counters import (
+    LessonCounterService,
+    build_teacher_schedule_snapshot,
+    normalize_lesson_text,
+    subject_matches,
+    teacher_matches,
+)
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
     OCR_STAGE_UPLOAD,
@@ -44,7 +50,7 @@ from src.ocr_import import (
     format_progress_bar,
 )
 from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
-from src.parser import ScheduleParser
+from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
@@ -1129,8 +1135,9 @@ def build_dispatcher(
         if snapshot is not None:
             return snapshot
         try:
-            if user.subscription_type == "teacher" and user.subscription_url:
-                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+            if user.subscription_type == "teacher" and user.subscription_title:
+                snapshot_obj = await build_teacher_schedule_snapshot(db, user.subscription_title)
+                snapshot_hash = compute_snapshot_hash(snapshot_obj)
             elif user.schedule_id is not None:
                 snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
             else:
@@ -1788,25 +1795,18 @@ def build_dispatcher(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
-            if source["source_type"] == "audience":
-                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
-                await db.save_snapshot(
-                    "current",
-                    snapshot_hash,
-                    snapshot,
-                    source["schedule_id"],
-                    source["group_name"],
-                    source_type=source["source_type"],
-                    source_key=source["source_key"],
-                    source_title=source["source_title"],
-                    source_url=source["source_url"],
-                )
-                rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "РїРµСЂРµРїР°СЂСЃРµРЅРѕ"))
+            try:
+                if source["source_type"] == "audience":
+                    snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+                elif source["source_type"] == "teacher":
+                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot_hash = compute_snapshot_hash(snapshot)
+                else:
+                    snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            except Exception as exc:
+                logger.warning("Admin refresh failed for source %s: %s", source["source_title"], exc)
+                rows.append((source["source_title"], "-", f"ошибка: {exc}"))
                 continue
-            if source["source_type"] == "teacher":
-                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
-            else:
-                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
             await db.save_snapshot(
                 "current",
                 snapshot_hash,
@@ -1828,25 +1828,18 @@ def build_dispatcher(
 
         rows: list[tuple[str, str, str]] = []
         for source in sources:
-            if source["source_type"] == "audience":
-                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
-                await db.save_snapshot(
-                    "daily_baseline",
-                    snapshot_hash,
-                    snapshot,
-                    source["schedule_id"],
-                    source["group_name"],
-                    source_type=source["source_type"],
-                    source_key=source["source_key"],
-                    source_title=source["source_title"],
-                    source_url=source["source_url"],
-                )
-                rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "СЌС‚Р°Р»РѕРЅ СЃРѕС…СЂР°РЅРµРЅ"))
+            try:
+                if source["source_type"] == "audience":
+                    snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
+                elif source["source_type"] == "teacher":
+                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot_hash = compute_snapshot_hash(snapshot)
+                else:
+                    snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
+            except Exception as exc:
+                logger.warning("Admin baseline save failed for source %s: %s", source["source_title"], exc)
+                rows.append((source["source_title"], "-", f"ошибка: {exc}"))
                 continue
-            if source["source_type"] == "teacher":
-                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
-            else:
-                snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
             await db.save_snapshot(
                 "daily_baseline",
                 snapshot_hash,
@@ -2124,7 +2117,10 @@ def build_dispatcher(
             await bot.send_message(chat_id, SEARCH_NOT_FOUND_TEXT)
             return False
         try:
-            snapshot_obj, _ = await parser.parse_from_url(target.url)
+            if target.kind == "teacher":
+                snapshot_obj = await build_teacher_schedule_snapshot(db, target.title)
+            else:
+                snapshot_obj, _ = await parser.parse_from_url(target.url)
         except httpx.HTTPError:
             await send_new_context_message(
                 bot,
