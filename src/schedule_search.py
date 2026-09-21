@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -10,9 +11,12 @@ from urllib.parse import urlsplit
 import httpx
 from bs4 import BeautifulSoup
 
+from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.http_retry import get_with_retry
 from src.text_normalize import LATIN_TO_CYRILLIC, normalize_dashes, strip_non_word_chars
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -30,6 +34,7 @@ class ScheduleSearchCatalog:
         timeout: float = 30.0,
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
+        db: Database | None = None,
     ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
@@ -37,6 +42,7 @@ class ScheduleSearchCatalog:
         self.timeout = timeout
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self.db = db
         self._prep_lock = asyncio.Lock()
         self._aud_lock = asyncio.Lock()
         self._preps_loaded = False
@@ -68,56 +74,107 @@ class ScheduleSearchCatalog:
         return self._find_partial(normalized, self._aud_items)
 
     async def _ensure_preps_loaded(self) -> None:
-        if self._preps_loaded:
+        if self._preps_loaded and self._prep_items:
             return
         async with self._prep_lock:
-            if self._preps_loaded:
+            if self._preps_loaded and self._prep_items:
                 return
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                response = await self._get_with_retry(client, f"{self.base_origin}/prep")
-                soup = BeautifulSoup(response.content, "html.parser")
-                for link in soup.select("a[href^='/raspprep/']"):
-                    title = link.get_text(" ", strip=True)
-                    href = link.get("href", "")
-                    if not title or not href:
-                        continue
-                    target = SearchTarget(
-                        kind="teacher",
-                        title=title,
-                        url=f"{self.base_origin}{href}",
-                    )
-                    for normalized_title in self._teacher_search_keys(title):
-                        if normalized_title in self._preps and self._preps[normalized_title].url != target.url:
-                            self._ambiguous_preps.add(normalized_title)
-                            self._preps.pop(normalized_title, None)
-                        elif normalized_title not in self._ambiguous_preps:
-                            self._preps[normalized_title] = target
-                        self._prep_items.append((normalized_title, target))
+            try:
+                pairs = await self._fetch_pairs("/prep", "a[href^='/raspprep/']")
+            except Exception as exc:
+                if not self._prep_items and self.db is not None:
+                    cached = await self.db.get_search_targets("teacher")
+                    if cached:
+                        self._populate_preps([(item["title"], item["url"]) for item in cached])
+                        logger.warning(
+                            "Не удалось загрузить список преподавателей с сайта (%s),"
+                            " использую сохранённый в БД снимок (%s записей).",
+                            exc,
+                            len(cached),
+                        )
+                        self._preps_loaded = True
+                        return
+                logger.warning("Не удалось загрузить список преподавателей с сайта: %s", exc)
                 self._preps_loaded = True
+                return
+            self._populate_preps(pairs)
+            self._preps_loaded = True
+            if self.db is not None:
+                await self._save_pairs_to_db("teacher", pairs)
+
+    def _populate_preps(self, pairs: list[tuple[str, str]]) -> None:
+        self._preps = {}
+        self._prep_items = []
+        self._ambiguous_preps = set()
+        for title, url in pairs:
+            target = SearchTarget(kind="teacher", title=title, url=url)
+            for normalized_title in self._teacher_search_keys(title):
+                if normalized_title in self._preps and self._preps[normalized_title].url != target.url:
+                    self._ambiguous_preps.add(normalized_title)
+                    self._preps.pop(normalized_title, None)
+                elif normalized_title not in self._ambiguous_preps:
+                    self._preps[normalized_title] = target
+                self._prep_items.append((normalized_title, target))
 
     async def _ensure_auds_loaded(self) -> None:
-        if self._auds_loaded:
+        if self._auds_loaded and self._aud_items:
             return
         async with self._aud_lock:
-            if self._auds_loaded:
+            if self._auds_loaded and self._aud_items:
                 return
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                response = await self._get_with_retry(client, f"{self.base_origin}/aud")
-                soup = BeautifulSoup(response.content, "html.parser")
-                for link in soup.select("a[href^='/raspAud/']"):
-                    title = link.get_text(" ", strip=True)
-                    href = link.get("href", "")
-                    if not title or not href:
-                        continue
-                    normalized_title = self.normalize(title)
-                    target = SearchTarget(
-                        kind="audience",
-                        title=title,
-                        url=f"{self.base_origin}{href}",
-                    )
-                    self._auds[normalized_title] = target
-                    self._aud_items.append((normalized_title, target))
+            try:
+                pairs = await self._fetch_pairs("/aud", "a[href^='/raspAud/']")
+            except Exception as exc:
+                if not self._aud_items and self.db is not None:
+                    cached = await self.db.get_search_targets("audience")
+                    if cached:
+                        self._populate_auds([(item["title"], item["url"]) for item in cached])
+                        logger.warning(
+                            "Не удалось загрузить список аудиторий с сайта (%s),"
+                            " использую сохранённый в БД снимок (%s записей).",
+                            exc,
+                            len(cached),
+                        )
+                        self._auds_loaded = True
+                        return
+                logger.warning("Не удалось загрузить список аудиторий с сайта: %s", exc)
                 self._auds_loaded = True
+                return
+            self._populate_auds(pairs)
+            self._auds_loaded = True
+            if self.db is not None:
+                await self._save_pairs_to_db("audience", pairs)
+
+    def _populate_auds(self, pairs: list[tuple[str, str]]) -> None:
+        self._auds = {}
+        self._aud_items = []
+        for title, url in pairs:
+            normalized_title = self.normalize(title)
+            target = SearchTarget(kind="audience", title=title, url=url)
+            self._auds[normalized_title] = target
+            self._aud_items.append((normalized_title, target))
+
+    async def _fetch_pairs(self, path: str, link_selector: str) -> list[tuple[str, str]]:
+        """Скачивает справочник (преподаватели/аудитории) и достаёт из него пары (название, ссылка)."""
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await self._get_with_retry(client, f"{self.base_origin}{path}")
+            soup = BeautifulSoup(response.content, "html.parser")
+            pairs: list[tuple[str, str]] = []
+            for link in soup.select(link_selector):
+                title = link.get_text(" ", strip=True)
+                href = link.get("href", "")
+                if not title or not href:
+                    continue
+                pairs.append((title, f"{self.base_origin}{href}"))
+            return pairs
+
+    async def _save_pairs_to_db(self, kind: str, pairs: list[tuple[str, str]]) -> None:
+        if self.db is None:
+            return
+        try:
+            await self.db.save_search_targets(kind, [{"title": title, "url": url} for title, url in pairs])
+        except Exception:
+            logger.warning("Не удалось сохранить справочник (%s) в БД.", kind, exc_info=True)
 
     async def _get_with_retry(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         return await get_with_retry(client, url, retries=self.request_retries, backoff_seconds=self.retry_backoff_seconds)

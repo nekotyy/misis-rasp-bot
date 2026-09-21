@@ -279,7 +279,7 @@ async def main() -> None:
 
     group_catalog = GroupCatalog(settings.schedule_url, db=db)
     await group_catalog.ensure_loaded()
-    search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog)
+    search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog, db=db)
     parser = ScheduleParser(settings.schedule_url)
     lesson_counter_service = LessonCounterService(db)
     if settings.lesson_counters_enabled:
