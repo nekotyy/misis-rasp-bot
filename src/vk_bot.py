@@ -39,7 +39,7 @@ from src.ocr_import import (
     format_ocr_summary_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
+from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError, compress_image_for_ocr
 from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -546,6 +546,7 @@ async def _download_vk_url(client: httpx.AsyncClient, url: str) -> tuple[bytes |
 
     if len(content) > MAX_OCR_IMAGE_BYTES:
         return None, "Файл слишком большой. Пришли фото поменьше (до 20 МБ)."
+    content = await asyncio.to_thread(compress_image_for_ocr, content)
     return content, ""
 
 

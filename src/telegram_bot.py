@@ -49,7 +49,7 @@ from src.ocr_import import (
     format_ocr_summary_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError
+from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError, compress_image_for_ocr
 from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -4207,7 +4207,9 @@ def build_dispatcher(
         try:
             file_info = await message.bot.get_file(file_id)
             buffer = await message.bot.download_file(file_info.file_path)
-            return buffer.read(), ""
+            image_bytes = buffer.read()
+            image_bytes = await asyncio.to_thread(compress_image_for_ocr, image_bytes)
+            return image_bytes, ""
         except (TelegramBadRequest, TelegramNetworkError, OSError) as exc:
             logger.warning("Не удалось скачать изображение для OCR: %s", exc)
             return None, f"Не удалось скачать изображение: {exc}"

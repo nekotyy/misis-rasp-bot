@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import importlib
+import io
 import json
 import logging
 import os
@@ -50,6 +51,8 @@ from gemini_webapi.exceptions import (
 from gemini_webapi.exceptions import (
     TimeoutError as GeminiTimeoutError,
 )
+from PIL import Image, ImageOps
+from PIL import UnidentifiedImageError as PilUnidentifiedImageError
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import compute_snapshot_hash
@@ -114,6 +117,12 @@ RECOGNITION_PROMPT = """\
 """
 
 MAX_OCR_IMAGES = 10
+# Gemini всё равно ужимает вложенную картинку внутри себя примерно до ~1500-1600px
+# по длинной стороне, поэтому телефонные фото на 3000-4000px+ только удлиняют
+# аплоад и генерацию, не улучшая распознавание. 2000px с запасом хватает, чтобы
+# таблица осталась читаемой.
+OCR_IMAGE_MAX_DIMENSION = 2000
+OCR_IMAGE_JPEG_QUALITY = 90
 OCR_GEM_NAME = "MISIS Schedule OCR"
 OCR_GEM_DESCRIPTION = "Распознавание расписания колледжа МИСИС с фотографий в строгий JSON."
 OCR_GEM_SYSTEM_PROMPT = """\
@@ -551,6 +560,40 @@ def _guess_image_extension(data: bytes) -> str:
     if data.startswith(b"BM"):
         return ".bmp"
     return ".jpg"
+
+
+def compress_image_for_ocr(
+    data: bytes,
+    *,
+    max_dimension: int = OCR_IMAGE_MAX_DIMENSION,
+    quality: int = OCR_IMAGE_JPEG_QUALITY,
+) -> bytes:
+    """Уменьшает фото перед отправкой в Gemini, если оно крупнее разумного для чтения таблицы.
+
+    Телефонные фото и файлы-документы легко доходят до 3000-4000px и нескольких
+    мегабайт, а Gemini всё равно масштабирует картинку внутри себя вниз — лишнее
+    разрешение только удлиняет аплоад и время ответа, не повышая качество
+    распознавания. Уже небольшие фото не трогаем, чтобы не терять их качество
+    просто так. При любой ошибке (битый файл, неподдерживаемый формат) отдаём
+    исходные байты как есть — сжатие не должно ронять OCR.
+    """
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image) or image
+            width, height = image.size
+            if max(width, height) <= max_dimension:
+                return data
+            scale = max_dimension / max(width, height)
+            new_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
+            resized = image.resize(new_size, Image.LANCZOS)
+            buffer = io.BytesIO()
+            resized.save(buffer, format="JPEG", quality=quality, optimize=True)
+            return buffer.getvalue()
+    except (PilUnidentifiedImageError, OSError, ValueError):
+        logger.warning("Не удалось сжать фото для OCR, отправляю как есть.", exc_info=True)
+        return data
 
 
 def _coerce_lesson_number(raw: object, fallback: int) -> int:
