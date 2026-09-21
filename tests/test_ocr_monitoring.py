@@ -691,6 +691,7 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         оставалась "session_active=да", а каждый следующий вызов падал с той же ошибкой.
         """
         from gemini_webapi.constants import AccountStatus
+
         from src.ocr_schedule import (
             OCR_GEM_DESCRIPTION,
             OCR_GEM_SYSTEM_PROMPT,
@@ -739,6 +740,7 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         она обязана сама сбросить клиента, не дожидаясь следующего фото пользователя.
         """
         from gemini_webapi.constants import AccountStatus
+
         from src.ocr_schedule import GeminiOcrEngine
 
         engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
