@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from urllib.parse import urlsplit
@@ -14,6 +15,7 @@ from bs4 import BeautifulSoup
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.http_retry import get_with_retry
+from src.lesson_counters import normalize_lesson_text, teacher_matches
 from src.text_normalize import LATIN_TO_CYRILLIC, normalize_dashes, strip_non_word_chars
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,9 @@ class ScheduleSearchCatalog:
         prep = self._find_partial(normalized, self._prep_items)
         if prep is not None:
             return prep
+        prep = await self._find_teacher_from_groups(query)
+        if prep is not None:
+            return prep
 
         await self._ensure_auds_loaded()
         aud = self._auds.get(normalized)
@@ -101,6 +106,46 @@ class ScheduleSearchCatalog:
             self._preps_loaded = True
             if self.db is not None:
                 await self._save_pairs_to_db("teacher", pairs)
+
+    async def _find_teacher_from_groups(self, raw_query: str) -> SearchTarget | None:
+        """Резервный поиск препода по ФИО, встречающимся в уже известных группах в БД.
+
+        Справочник `/prep` — это отдельная страница сайта, и он может быть недоступен
+        (сайт лежит, а свой кэш ещё не заполнен — свежий, только что после переезда на
+        БД) даже когда сами группы прекрасно синхронизируются (с сайта или из OCR).
+        Раз мы всё равно храним пары каждой группы и умеем находить среди них препода
+        по ФИО (см. build_teacher_schedule_snapshot), тем же способом можно найти его
+        и для регистрации — не только для уже существующей подписки.
+        """
+        if self.db is None:
+            return None
+        query_norm = normalize_lesson_text(raw_query)
+        if not query_norm:
+            return None
+
+        variants_by_name: dict[str, Counter[str]] = {}
+        for group_snapshot in await self.db.get_latest_group_snapshots("current"):
+            for day in group_snapshot["content"].get("days", []):
+                for lesson in day.get("lessons", []):
+                    raw_name = str(lesson.get("teacher") or "").strip()
+                    if not raw_name:
+                        continue
+                    normalized_name = normalize_lesson_text(raw_name)
+                    if not normalized_name:
+                        continue
+                    variants_by_name.setdefault(normalized_name, Counter())[raw_name] += 1
+
+        matches = {
+            normalized_name: variants.most_common(1)[0][0]
+            for normalized_name, variants in variants_by_name.items()
+            if teacher_matches(query_norm, variants.most_common(1)[0][0])
+        }
+        if len(matches) != 1:
+            # Пусто — не нашли; больше одного — неоднозначная фамилия, как и в /prep,
+            # лучше попросить уточнить, чем угадать не того человека.
+            return None
+        best_raw_name = next(iter(matches.values()))
+        return SearchTarget(kind="teacher", title=best_raw_name, url="")
 
     def _populate_preps(self, pairs: list[tuple[str, str]]) -> None:
         self._preps = {}
