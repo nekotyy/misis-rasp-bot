@@ -26,6 +26,8 @@ from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
     normalize_lesson_text,
+    resolve_group_preview_content,
+    snapshot_to_search_content,
     subject_matches,
     teacher_matches,
 )
@@ -1506,35 +1508,19 @@ def build_vk_bot(
             return False
         try:
             if target.kind == "teacher":
-                snapshot_obj = await build_teacher_schedule_snapshot(db, target.title)
+                content = snapshot_to_search_content(await build_teacher_schedule_snapshot(db, target.title))
+            elif target.kind == "group":
+                content = await resolve_group_preview_content(db, parser, target.url)
             else:
                 snapshot_obj, _ = await parser.parse_from_url(target.url)
+                content = snapshot_to_search_content(snapshot_obj)
         except httpx.HTTPError:
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))
             return False
         snapshot = {
             "title": target.title,
-            "content": {
-                "group_name": snapshot_obj.group_name,
-                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
-                "days": [
-                    {
-                        "date_label": day.date_label,
-                        "date_iso": day.date_iso,
-                        "lessons": [
-                            {
-                                "number": lesson.number,
-                                "subject": lesson.subject,
-                                "teacher": lesson.teacher,
-                                "classroom": lesson.classroom,
-                            }
-                            for lesson in day.lessons
-                        ],
-                    }
-                    for day in snapshot_obj.days
-                ],
-            },
+            "content": content,
         }
         search_results[peer_id] = snapshot
         peer_modes[peer_id] = "schedule_search_result"
