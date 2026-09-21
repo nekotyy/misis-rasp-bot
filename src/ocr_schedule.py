@@ -749,10 +749,36 @@ class GeminiOcrEngine:
             self.secure_1psid = values.get("GEMINI_SECURE_1PSID", self.secure_1psid)
             self.secure_1psidts = values.get("GEMINI_SECURE_1PSIDTS", self.secure_1psidts)
 
+    def _invalidate_session(self) -> None:
+        """Сбрасывает кэшированный клиент — следующий вызов переавторизуется с нуля.
+
+        Нужен не только при явном AuthError: `gemini_webapi` умеет молча перевести
+        аккаунт в UNAUTHENTICATED в фоне (heartbeat/auto-refresh получили reject-код
+        от Google) и после этого сам навсегда останавливает свои фоновые задачи
+        обновления кук. Без сброса `self._client` тут остаётся зомби — session_active
+        показывает "да", но каждый следующий запрос обречён падать одинаково.
+        """
+        if self._cookie_sync_task is not None:
+            self._cookie_sync_task.cancel()
+            self._cookie_sync_task = None
+        self._client = None
+
     async def _sync_cookies_forever(self, client: GeminiClient) -> None:
         try:
             while self._client is client:
                 await asyncio.sleep(COOKIE_SYNC_INTERVAL_SECONDS)
+                if self._client is not client:
+                    break
+                account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
+                if account_status != AccountStatus.AVAILABLE:
+                    logger.warning(
+                        "Сессия Gemini стала %s в фоне (без явной ошибки запроса) — сбрасываю "
+                        "клиент, чтобы следующий вызов переавторизовался.",
+                        getattr(account_status, "name", str(account_status)),
+                    )
+                    self._client = None
+                    self._cookie_sync_task = None
+                    break
                 try:
                     await self._persist_session_state(client)
                 except Exception:
@@ -840,10 +866,7 @@ class GeminiOcrEngine:
                         self._fallback_model,
                     )
             except AuthError as exc:
-                if self._cookie_sync_task is not None:
-                    self._cookie_sync_task.cancel()
-                    self._cookie_sync_task = None
-                self._client = None  # сессия протухла — следующий вызов авторизуется заново
+                self._invalidate_session()
                 raise OcrEngineError(f"Google разорвал сессию: {exc}. Попробуй ещё раз или обнови куки.") from exc
             except UsageLimitExceededError as exc:
                 raise OcrEngineError(f"Исчерпан лимит запросов к Gemini на сегодня: {exc}") from exc
@@ -852,6 +875,14 @@ class GeminiOcrEngine:
             except GeminiTimeoutError as exc:
                 raise OcrEngineError(f"Gemini не ответил вовремя: {exc}") from exc
             except GeminiError as exc:
+                # `_check_account_status(raise_error=True)` внутри generate_content поднимает
+                # именно GeminiError (не AuthError), когда аккаунт стал UNAUTHENTICATED в фоне
+                # (heartbeat/refresh gemini_webapi сам это обнаружил и заглушил себя). Без сброса
+                # клиента здесь он навсегда остаётся зомби: сессия числится активной, но каждый
+                # следующий запрос будет падать с той же ошибкой до ручного рестарта бота.
+                account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
+                if account_status != AccountStatus.AVAILABLE:
+                    self._invalidate_session()
                 raise OcrEngineError(f"Ошибка распознавания через Gemini: {exc}") from exc
             except (CurlError, OSError) as exc:
                 raise OcrEngineError(f"Сетевой сбой при обращении к Gemini: {exc}") from exc
