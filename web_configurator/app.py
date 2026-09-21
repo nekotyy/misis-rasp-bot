@@ -17,10 +17,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from src.config import Settings
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService, LessonCounterSyncResult, sync_lesson_counters_for_date
+from src.lesson_counters import (
+    LessonCounterService,
+    LessonCounterSyncResult,
+    build_teacher_schedule_snapshot,
+    sync_lesson_counters_for_date,
+)
 from src.message_broker import OutboundMessage, RabbitMQBroker
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST
-from src.parser import ScheduleParser
+from src.parser import ScheduleParser, compute_snapshot_hash
 from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
 from web_configurator.metrics import collect_metrics
 from web_configurator.security import (
@@ -894,8 +899,9 @@ async def _run_snapshot_action_for_all_active_sources(
     rows: list[tuple[str, str, str]] = []
     for source in sources:
         try:
-            if source["source_type"] == "teacher" and source["source_url"]:
-                snapshot, snapshot_hash = await parser.parse_from_url(str(source["source_url"]))
+            if source["source_type"] == "teacher":
+                snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                snapshot_hash = compute_snapshot_hash(snapshot)
             else:
                 snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
             await db.save_snapshot(

@@ -173,6 +173,16 @@ class Database:
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_group_name ON groups(group_name);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_schedule_id ON groups(schedule_id) WHERE schedule_id IS NOT NULL;
+
+                CREATE TABLE IF NOT EXISTS search_targets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_search_targets_kind_url ON search_targets(kind, url);
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -919,6 +929,35 @@ class Database:
             for row in rows
         ]
 
+    async def save_search_targets(self, kind: str, targets: list[dict]) -> None:
+        """Полностью заменяет кэш справочника (преподаватели/аудитории) для одного kind.
+
+        Как и с группами, сайт отдаёт список целиком при каждой загрузке — проще
+        снести старый набор своего kind и вставить новый, чем разбираться с
+        переименованиями и исчезновением отдельных записей.
+        """
+        now = datetime.now().isoformat()
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM search_targets WHERE kind = ?", (kind,))
+            await db.executemany(
+                "INSERT INTO search_targets (kind, title, url, updated_at) VALUES (?, ?, ?, ?)",
+                [(kind, target["title"], target["url"], now) for target in targets],
+            )
+            await db.commit()
+
+    async def get_search_targets(self, kind: str) -> list[dict]:
+        """Последний сохранённый в БД снимок справочника (преподаватели/аудитории) для kind."""
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                cursor = await db.execute(
+                    "SELECT title, url FROM search_targets WHERE kind = ?", (kind,)
+                )
+            except aiosqlite.OperationalError as exc:
+                logger.warning("Failed to read search_targets table (likely missing/mid-migration): %s", exc)
+                return []
+            rows = await cursor.fetchall()
+        return [{"title": row[0], "url": row[1]} for row in rows]
+
     async def add_pending_groups(self, group_names: list[str]) -> None:
         """Добавляет группы без schedule_id — например, увиденные на фото, а не на сайте.
 
@@ -1015,6 +1054,46 @@ class Database:
             "fetched_at": row[8],
             "created_at": row[9],
         }
+
+    async def get_latest_group_snapshots(self, snapshot_type: str = "current") -> list[dict]:
+        """Последний снимок каждой группы (по source_key), независимо от подписчиков препода.
+
+        Используется, чтобы собрать личное расписание преподавателя из уже
+        известных группам данных (с сайта или из ручной/OCR загрузки), не
+        обращаясь к отдельной странице препода на сайте — так подписка на
+        препода продолжает работать, даже если сайт расписания недоступен.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT s.source_type, s.source_key, s.source_title, s.source_url, s.group_name, s.schedule_id,
+                       s.snapshot_hash, s.content_json, s.fetched_at, s.created_at
+                FROM schedule_snapshots AS s
+                INNER JOIN (
+                    SELECT source_key, MAX(id) AS max_id
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = ? AND source_type = 'group' AND source_key IS NOT NULL
+                    GROUP BY source_key
+                ) AS latest ON latest.max_id = s.id
+                """,
+                (snapshot_type,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "source_type": row[0],
+                "source_key": row[1],
+                "source_title": row[2],
+                "source_url": row[3],
+                "group_name": row[4],
+                "schedule_id": row[5],
+                "snapshot_hash": row[6],
+                "content": json.loads(row[7]),
+                "fetched_at": row[8],
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
 
     async def record_change(
         self,

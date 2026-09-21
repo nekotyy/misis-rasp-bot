@@ -14,7 +14,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import LessonCounterService, sync_lesson_counters_for_date
+from src.lesson_counters import (
+    LessonCounterService,
+    build_teacher_schedule_snapshot,
+    sync_lesson_counters_for_date,
+)
 from src.message_broker import (
     AutoDailyLessonCounterJob,
     AutoDailyLessonCounterJobBroker,
@@ -477,7 +481,10 @@ class ScheduleJobs:
         await asyncio.sleep(delay)
 
     async def _parse_source(self, source: SourceRow):
-        if source["source_type"] in {"teacher", "audience"}:
+        if source["source_type"] == "teacher":
+            snapshot = await build_teacher_schedule_snapshot(self.db, str(source.get("source_title") or ""))
+            return snapshot, compute_snapshot_hash(snapshot)
+        if source["source_type"] == "audience":
             return await self.parser.parse_from_url(source["source_url"])
         return await self.parser.parse(source["schedule_id"])
 
