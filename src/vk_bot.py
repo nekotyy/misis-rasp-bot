@@ -1293,13 +1293,9 @@ def build_vk_bot(
         return rows
 
     def schedule_text(day, fallback: str) -> str:
-        if day is None or not day.lessons:
-            label = fallback if day is None else day.date_label
-            return f"Расписание на {label}\n\nПар нет."
-        lines = [f"Расписание на {day.date_label}", ""]
-        for lesson in sorted(day.lessons, key=lambda item: item.number):
-            lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
-        return "\n".join(lines)
+        if day is None:
+            return f"Расписание на {fallback}\n\nПар нет."
+        return ScheduleFormatter.format_day_plain(day)
 
     async def admin_status_text() -> str:
         return await build_vk_admin_status_text(db, settings, ocr_service)

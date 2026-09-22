@@ -101,7 +101,7 @@ class ScheduleFormatter:
         return "\n\n".join(blocks)
 
     @staticmethod
-    def format_search_snapshot(title: str, content: dict, days_count: int = 3) -> str:
+    def format_search_snapshot(title: str, content: dict, days_count: int = 3, *, html: bool = False) -> str:
         """Показывает не весь известный снимок, а только ближайшие `days_count` дней.
 
         У препода снимок собирается из всех его групп сразу (`build_teacher_schedule_snapshot`)
@@ -109,8 +109,14 @@ class ScheduleFormatter:
         со временем только растёт, потому что новые фото вливаются в старые (`merge_ocr_days`),
         а не заменяют их. Без ограничения предпросмотр при поиске превращался в "вообще все
         пары за всё время" вместо разумного окна на ближайшие дни.
+
+        `html=True` (Telegram) отдаёт тот же вид, что и обычное расписание (`format_day_card`):
+        жирным номер/кабинет/предмет/препод, значения экранированы — без этого текст,
+        пришедший с сайта или распознанный OCR, мог сломать разбор HTML и письмо вообще
+        не доходило до пользователя. `html=False` (VK) — как `format_day_plain`.
         """
-        lines = [f"Расписание для {title}", ""]
+        safe_title = escape(title) if html else title
+        lines = [f"Расписание для {safe_title}", ""]
         today = datetime.now().date().isoformat()
         days = sorted(
             (day for day in content.get("days", []) if str(day.get("date_iso") or "") >= today),
@@ -124,12 +130,18 @@ class ScheduleFormatter:
             added_any = True
             raw_date = day.get("date_label") or day.get("date_iso") or ""
             human_date = format_human_date(raw_date)
-            lines.append(human_date)
+            lines.append(escape(human_date) if html else human_date)
             for lesson in lessons:
-                lines.append(
-                    f"{lesson['number']} в {lesson['classroom']} "
-                    f"по {lesson['subject']} у {lesson['teacher']}"
-                )
+                if html:
+                    lines.append(
+                        f"<b>{lesson['number']}.</b> в <b>{escape(str(lesson['classroom']))}</b> "
+                        f"по <b>{escape(str(lesson['subject']))}</b> у <b>{escape(str(lesson['teacher']))}</b>"
+                    )
+                else:
+                    lines.append(
+                        f"{lesson['number']}. в {lesson['classroom']} "
+                        f"по {lesson['subject']} у {lesson['teacher']}"
+                    )
             lines.append("")
         if not added_any:
             lines.append("Пар нет.")
