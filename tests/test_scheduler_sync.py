@@ -284,6 +284,75 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["subject"], "Математика")
         self.assertEqual(teacher_current["content"]["days"][0]["lessons"][0]["teacher"], "ИСП-25-1")
 
+    async def test_teacher_gains_a_lesson_from_a_different_group_reaching_three_total(self) -> None:
+        """Точное подтверждение сценария из чата: у препода было 2 пары (в одной группе),
+
+        другой уже загруженной группе на тот же день добавили ещё одну его пару — стало 3.
+        Это работает и без фикса на "замену/удаление" из прошлого коммита: механизм с
+        самого начала сканирует НОВЫЙ снимок изменившейся группы и сразу находит там ФИО
+        препода — баланс со старым снимком нужен только для обратного случая (пара исчезла)."""
+        from src.scheduler import ScheduleJobs
+
+        # У Иванова уже 2 пары — обе в ИСП-25-1 (переопределяем однопарный снимок
+        # из общего asyncSetUp).
+        two_lesson_group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1", fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="Иванов И.И.", classroom="202"),
+                Lesson(number=2, subject="Химия", teacher="Иванов И.И.", classroom="203"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "current", "hash_isp2", two_lesson_group_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+        ivanov_two_lessons = ScheduleSnapshot(
+            group_name="Иванов И.И.", fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="ИСП-25-1", classroom="202"),
+                Lesson(number=2, subject="Химия", teacher="ИСП-25-1", classroom="203"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_teacher_two", ivanov_two_lessons, schedule_id=None, group_name="Иванов И.И.",
+            source_type="teacher", source_key="teacher:5", source_title="Иванов И.И.", source_url="http://example.com/prep/5",
+        )
+
+        # Другая, уже загруженная группа: на этот день у неё пока пусто, а теперь
+        # добавляется пара — и её тоже ведёт Иванов.
+        mto_source = {
+            "source_type": "group", "source_key": "group:102", "source_title": "МТО-25",
+            "source_url": "rasp:102", "schedule_id": 102, "group_name": "МТО-25",
+        }
+        empty_mto_snapshot = ScheduleSnapshot(group_name="МТО-25", fetched_at=datetime(2026, 9, 14, 8, 0, 0), days=[
+            DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[]),
+        ])
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_mto_old", empty_mto_snapshot, schedule_id=102, group_name="МТО-25",
+            source_type="group", source_key="group:102", source_title="МТО-25", source_url="rasp:102",
+        )
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+
+        new_mto_snapshot = ScheduleSnapshot(
+            group_name="МТО-25", fetched_at=datetime(2026, 9, 14, 9, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=3, subject="История", teacher="Иванов И.И.", classroom="404"),
+            ])],
+        )
+
+        await jobs.apply_snapshot(mto_source, new_mto_snapshot, "hash_mto_new")
+
+        notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
+        self.assertIn("teacher:5", notified_keys, "Иванов должен узнать о новой (третьей) паре из другой группы")
+
+        ivanov_current = await self.db.get_latest_snapshot("current", source_key="teacher:5")
+        lessons = ivanov_current["content"]["days"][0]["lessons"]
+        self.assertEqual(len(lessons), 3, "Итоговое расписание должно содержать все 3 пары — из обеих групп")
+        self.assertEqual(sorted(item["number"] for item in lessons), [1, 2, 3])
+
     async def test_unrelated_teacher_is_not_notified(self) -> None:
         from src.scheduler import ScheduleJobs
 
