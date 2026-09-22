@@ -4,12 +4,17 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.ocr_import import format_admin_gemini_status
+from src.ocr_schedule import SUMMARY_RECOGNITION_PROMPT
 from src.telegram_bot import (
     ADMIN_KEYBOARD,
     ADMIN_OCR_INPUT_KEYBOARD,
+    ADMIN_OCR_JSON_INPUT_KEYBOARD,
+    ADMIN_OCR_JSON_PREVIEW_KEYBOARD,
+    ADMIN_OCR_MENU_KEYBOARD,
     ADMIN_OCR_PREVIEW_KEYBOARD,
     ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
     ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD,
+    format_admin_ocr_json_prompt,
     format_admin_ocr_prompt,
     format_admin_ocr_summary_add_more_prompt,
     format_admin_ocr_summary_prompt,
@@ -17,6 +22,7 @@ from src.telegram_bot import (
 from src.vk_bot import (
     _best_vk_photo_url,
     _collect_vk_image_urls,
+    format_vk_ocr_json_prompt,
     format_vk_ocr_prompt,
     format_vk_ocr_summary_add_more_prompt,
     format_vk_ocr_summary_prompt,
@@ -93,6 +99,41 @@ class TelegramOcrSummaryKeyboardTests(unittest.TestCase):
         self.assertNotIn("Уже загружено", prompt)
 
 
+class TelegramOcrJsonImportTests(unittest.TestCase):
+    """Резервный путь: JSON, распознанный вручную другой нейросетью, минуя Gemini."""
+
+    def test_admin_keyboard_has_json_import_button(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        self.assertIn("admin:ocr_json_import", callbacks)
+
+    def test_ocr_menu_keyboard_has_all_three_modes(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_OCR_MENU_KEYBOARD.inline_keyboard for button in row]
+        self.assertEqual(
+            callbacks,
+            ["admin:ocr_import", "admin:ocr_summary_import", "admin:ocr_json_import"],
+        )
+
+    def test_input_keyboard_can_cancel(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_OCR_JSON_INPUT_KEYBOARD.inline_keyboard for button in row]
+        self.assertEqual(callbacks, ["admin:ocr_summary_cancel"])
+
+    def test_preview_keyboard_offers_both_apply_modes_but_no_add_more(self) -> None:
+        callbacks = [button.callback_data for row in ADMIN_OCR_JSON_PREVIEW_KEYBOARD.inline_keyboard for button in row]
+        self.assertEqual(
+            callbacks,
+            ["admin:ocr_summary_confirm", "admin:ocr_summary_confirm_silent", "admin:ocr_summary_cancel"],
+        )
+        self.assertNotIn("admin:ocr_summary_add_more", callbacks)
+
+    def test_prompt_includes_the_copyable_summary_prompt(self) -> None:
+        prompt = format_admin_ocr_json_prompt()
+        self.assertIn(SUMMARY_RECOGNITION_PROMPT, prompt)
+        self.assertIn("<code>", prompt)
+
+    def test_prompt_shows_error(self) -> None:
+        self.assertIn("Пустой JSON", format_admin_ocr_json_prompt("Пустой JSON."))
+
+
 class VkOcrHelpersTests(unittest.TestCase):
     def test_prompt_is_plain_text(self) -> None:
         prompt = format_vk_ocr_prompt()
@@ -108,6 +149,21 @@ class VkOcrHelpersTests(unittest.TestCase):
         prompt = format_vk_ocr_summary_add_more_prompt(3)
         self.assertNotIn("<b>", prompt)
         self.assertIn("3", prompt)
+
+    def test_json_prompt_is_plain_text_and_includes_the_copyable_prompt(self) -> None:
+        prompt = format_vk_ocr_json_prompt()
+        self.assertNotIn("<b>", prompt)
+        self.assertIn(SUMMARY_RECOGNITION_PROMPT, prompt)
+
+    def test_json_prompt_shows_error(self) -> None:
+        self.assertIn("Пустой JSON", format_vk_ocr_json_prompt("Пустой JSON."))
+
+    def test_admin_keyboard_has_json_import_button_within_vk_limits(self) -> None:
+        rows = vk_admin_keyboard_rows()
+        labels = {label for row in rows for label in row}
+        self.assertIn("Импорт OCR JSON", labels)
+        for row in rows:
+            self.assertLessEqual(len(row), 5)
 
     def test_best_photo_url_picks_largest(self) -> None:
         photo = MagicMock(

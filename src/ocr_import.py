@@ -514,6 +514,29 @@ class OcrScheduleImporter:
             ticker.cancel()
         logger.info("Распознавание сводного листа заняло %.1f с.", time.monotonic() - started)
 
+        draft = await self._build_summary_draft_from_text(raw_text, notify_stage=notify_stage)
+        await self._record_success("распознавание сводного фото", photo=True)
+        return draft
+
+    async def build_summary_draft_from_json(self, raw_text: str) -> OcrSummaryImportDraft:
+        """Собирает черновик сводного расписания из уже готового JSON, минуя Gemini целиком.
+
+        Для случаев, когда встроенный движок недоступен, перегружен или временно
+        заблокирован Google (429) — распознать фото можно вручную любой другой
+        нейросетью (тот же промт, `SUMMARY_RECOGNITION_PROMPT`) и прислать сюда
+        уже готовый результат. Дальше — тот же самый конвейер подбора источника
+        и слияния, что и у обычного сводного фото; не зависит от `availability()`
+        движка Gemini, поэтому работает даже когда OCR полностью недоступен.
+        """
+        if not raw_text.strip():
+            raise OcrEngineError("Пустой JSON.")
+
+        async def notify_stage(stage: str, percent: int) -> None:
+            return None
+
+        return await self._build_summary_draft_from_text(raw_text, notify_stage=notify_stage)
+
+    async def _build_summary_draft_from_text(self, raw_text: str, *, notify_stage) -> OcrSummaryImportDraft:
         await notify_stage(OCR_STAGE_PARSE, 70)
         result = self.parser.parse_summary_text(raw_text)
 
@@ -544,7 +567,6 @@ class OcrScheduleImporter:
             )
 
         await notify_stage(OCR_STAGE_PREVIEW, 95)
-        await self._record_success("распознавание сводного фото", photo=True)
         return OcrSummaryImportDraft(result=result, resolutions=resolutions, raw_text=raw_text)
 
     async def apply_summary(self, draft: OcrSummaryImportDraft, *, notify: bool = True) -> tuple[bool, str]:
@@ -557,23 +579,28 @@ class OcrScheduleImporter:
         applied = 0
         broadcasted = 0
         failed: list[str] = []
-        for resolution in draft.resolved:
-            try:
-                change_summary = await self.schedule_jobs.apply_manual_snapshot(
-                    resolution.source,
-                    resolution.merge.snapshot,
-                    notify=notify,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Не удалось применить расписание группы %s из сводного фото.", resolution.group_lessons.group_name
-                )
-                failed.append(f"{resolution.group_lessons.group_name}: {exc}")
-                continue
-            await self.register_pending_source(resolution.source)
-            applied += 1
-            if change_summary is not None:
-                broadcasted += 1
+        # Один и тот же препод легко ведёт сразу в нескольких группах с одного листа —
+        # без общего батча каждая применённая группа сразу же пересчитывала бы и слала
+        # его личное расписание заново, и подписчик получал бы серию уведомлений с
+        # растущим набором пар вместо одного финального (см. teacher_notify_batch).
+        async with self.schedule_jobs.teacher_notify_batch():
+            for resolution in draft.resolved:
+                try:
+                    change_summary = await self.schedule_jobs.apply_manual_snapshot(
+                        resolution.source,
+                        resolution.merge.snapshot,
+                        notify=notify,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Не удалось применить расписание группы %s из сводного фото.", resolution.group_lessons.group_name
+                    )
+                    failed.append(f"{resolution.group_lessons.group_name}: {exc}")
+                    continue
+                await self.register_pending_source(resolution.source)
+                applied += 1
+                if change_summary is not None:
+                    broadcasted += 1
 
         lines = [f"Обновлено групп: {applied} из {len(draft.resolved)}."]
         if applied:

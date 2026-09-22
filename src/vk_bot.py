@@ -41,7 +41,12 @@ from src.ocr_import import (
     format_ocr_summary_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError, compress_image_for_ocr
+from src.ocr_schedule import (
+    MAX_OCR_IMAGES,
+    SUMMARY_RECOGNITION_PROMPT,
+    OcrEngineError,
+    compress_image_for_ocr,
+)
 from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -109,7 +114,7 @@ def vk_admin_keyboard_rows() -> list[list[str]]:
         ["Последнее изменение", "Информация по группам"],
         ["Скачать БД", "Скачать пары"],
         ["Добавить пару", "Изменить пару"],
-        ["Импорт пар из JSON", "Расписание с фото", "Сводное расписание", "Управление Gemini"],
+        ["Импорт пар из JSON", "Расписание с фото", "Сводное расписание", "Импорт OCR JSON", "Управление Gemini"],
         ["Удалить пару", "Удалить пары"],
         ["Пользователи", "Разослать"],
         ["Тестовая рассылка", "Очистить БД"],
@@ -493,6 +498,30 @@ def format_vk_ocr_summary_add_more_prompt(queued_count: int) -> str:
     if queued_count:
         lines.append(f"Уже загружено фото: {queued_count}.")
     lines.append("Пришли ещё фото листа — распознаю их вместе с уже загруженными.")
+    return "\n".join(lines)
+
+
+def format_vk_ocr_json_prompt(error: str = "") -> str:
+    lines = ["Импорт готового JSON распознавания", ""]
+    if error:
+        lines.extend([error, ""])
+    lines.extend(
+        [
+            "Если встроенное распознавание (Gemini) недоступно, перегружено или временно "
+            "заблокировано — можно распознать фото любой другой нейросетью самому и прислать "
+            "сюда уже готовый результат.",
+            "",
+            "1. Сфотографируй лист(ы) сводного расписания (один день, много групп).",
+            "2. Пришли фото и этот промт любой нейросети с поддержкой картинок:",
+            "",
+            SUMMARY_RECOGNITION_PROMPT,
+            "",
+            "3. Скопируй её JSON-ответ и пришли его сюда — текстом или .json-файлом.",
+            "",
+            "После разбора покажу, для скольких групп нашёлся источник, и спрошу подтверждение — "
+            "ничего не сохранится и не разошлётся без него.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1914,7 +1943,15 @@ def build_vk_bot(
         if (
             user_is_admin(user_id)
             and peer_id < VK_CHAT_PEER_ID_THRESHOLD
-            and mode not in {"admin_ocr_input", "admin_ocr_preview", "admin_ocr_summary_input", "admin_ocr_summary_preview"}
+            and mode
+            not in {
+                "admin_ocr_input",
+                "admin_ocr_preview",
+                "admin_ocr_summary_input",
+                "admin_ocr_summary_preview",
+                "admin_ocr_json_input",
+                "admin_ocr_json_preview",
+            }
             and _has_image_attachment(message)
         ):
             available, availability_message = ocr_service.availability()
@@ -2142,6 +2179,101 @@ def build_vk_bot(
             peer_modes[peer_id] = "admin_ocr_summary_preview"
             keyboard = (
                 make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Добавить ещё фото"], ["Отменить"]])
+                if draft.can_apply
+                else make_keyboard([["Отменить"]])
+            )
+            await show_screen(
+                peer_id,
+                format_ocr_summary_preview(draft, html=False, max_length=VK_MESSAGE_LIMIT),
+                keyboard=keyboard,
+            )
+            return
+
+        if user_is_admin(user_id) and mode in {"admin_ocr_json_input", "admin_ocr_json_preview"}:
+            if text == "Отменить":
+                admin_ocr_summary_drafts.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                return
+
+            if mode == "admin_ocr_json_preview":
+                draft = admin_ocr_summary_drafts.get(peer_id)
+                if text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
+                    if draft is None:
+                        peer_modes[peer_id] = "admin_ocr_json_input"
+                        await show_screen(
+                            peer_id,
+                            "Данные распознавания устарели. Пришли JSON заново.",
+                            keyboard=make_keyboard([["Отменить"]]),
+                        )
+                        return
+                    applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
+                    if applied:
+                        admin_ocr_summary_drafts.pop(peer_id, None)
+                        peer_modes[peer_id] = "admin_menu"
+                        await show_screen(
+                            peer_id,
+                            f"Сводное расписание импортировано.\n\n{report}",
+                            keyboard=admin_keyboard(),
+                        )
+                        return
+                    await show_screen(
+                        peer_id,
+                        f"Импорт не выполнен.\n\n{report}",
+                        keyboard=make_keyboard([["Отменить"]]),
+                    )
+                    return
+
+            # Не зависит от Gemini: JSON уже распознан вручную другой нейросетью,
+            # весь смысл этого режима — работать даже когда OCR полностью недоступен.
+            raw_data = ""
+            if message.attachments:
+                doc = next((att.doc for att in message.attachments if att.doc), None)
+                if doc and doc.url:
+                    try:
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            resp = await client.get(doc.url)
+                            raw_data = resp.text
+                    except Exception as exc:
+                        await show_screen(
+                            peer_id,
+                            format_vk_ocr_json_prompt(f"Не удалось прочитать документ: {exc}\nПришли JSON-текст сообщением."),
+                            keyboard=make_keyboard([["Отменить"]]),
+                        )
+                        return
+            if not raw_data and text:
+                raw_data = text
+
+            if not raw_data:
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_json_prompt("Пришли JSON-файл или JSON-текст сообщением."),
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
+
+            try:
+                draft = await ocr_service.build_summary_draft_from_json(raw_data)
+            except OcrEngineError as exc:
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_json_prompt(f"Не удалось разобрать: {exc}"),
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
+            except Exception as exc:
+                logger.exception("Импорт готового JSON расписания упал (VK).")
+                await show_screen(
+                    peer_id,
+                    format_vk_ocr_json_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
+
+            admin_ocr_summary_drafts[peer_id] = draft
+            peer_modes[peer_id] = "admin_ocr_json_preview"
+            keyboard = (
+                make_keyboard([["Подтвердить и разослать"], ["Сохранить без рассылки"], ["Отменить"]])
                 if draft.can_apply
                 else make_keyboard([["Отменить"]])
             )
@@ -2827,6 +2959,14 @@ def build_vk_bot(
                 admin_ocr_summary_images.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_ocr_summary_input"
                 await show_screen(peer_id, format_vk_ocr_summary_prompt(), keyboard=make_keyboard([["Отменить"]]))
+                return
+            if text == "Импорт OCR JSON":
+                # В отличие от фото-режимов, не проверяем ocr_service.availability(): весь
+                # смысл этого режима — работать даже когда Gemini недоступен или забанен.
+                admin_ocr_summary_drafts.pop(peer_id, None)
+                admin_ocr_summary_images.pop(peer_id, None)
+                peer_modes[peer_id] = "admin_ocr_json_input"
+                await show_screen(peer_id, format_vk_ocr_json_prompt(), keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Импорт пар из JSON":
                 admin_import_lessons_drafts.pop(peer_id, None)

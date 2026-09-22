@@ -116,6 +116,8 @@ RECOGNITION_PROMPT = """\
 - Верни только JSON, без ```json и без комментариев до или после него.
 """
 
+GEMINI_WARMUP_PROMPT = "Ответь только одним словом «да», без пояснений."
+
 MAX_OCR_IMAGES = 10
 # Gemini всё равно ужимает вложенную картинку внутри себя примерно до ~1500-1600px
 # по длинной стороне, поэтому телефонные фото на 3000-4000px+ только удлиняют
@@ -893,8 +895,21 @@ class GeminiOcrEngine:
             raise
 
     async def warm_up(self) -> None:
-        """Заранее устанавливает сессию, чтобы первое фото не ждало авторизации."""
-        await self._ensure_client()
+        """Заранее устанавливает сессию И прогоняет через неё дешёвый тестовый запрос.
+
+        Одной авторизации (`_ensure_client`) недостаточно: сам конвейер генерации
+        (`generate_content`, стриминг ответа модели с внутренним watchdog gemini_webapi)
+        ни разу не прогонялся до первого настоящего фото. Если этим первым запросом
+        сразу оказывается что-то тяжёлое (сводное расписание на несколько фото, да ещё
+        и с повтором через более медленную Pro-модель после невалидного JSON от Flash),
+        он рискует попасть на холодный старт именно этого конвейера — а не только на
+        авторизацию — и запросто провалиться в watchdog/recovery библиотеки, который
+        сам по себе съедает пару минут ещё до всякой полезной работы. Текстовый пинг
+        без картинки прогоняет тот же generate_content заранее, в фоне, не на нервах
+        у того, кто в этот момент ждёт ответа от бота.
+        """
+        client = await self._ensure_client()
+        await self._generate_classifying_errors(client, GEMINI_WARMUP_PROMPT, [], self._resolved_model)
 
     def live_status(self) -> dict:
         """Снимок состояния аккаунта/сессии Gemini для панели мониторинга.
@@ -956,42 +971,20 @@ class GeminiOcrEngine:
                 with os.fdopen(fd, "wb") as tmp_file:
                     tmp_file.write(image_bytes)
                 tmp_paths.append(tmp_path)
-            try:
-                response = await self._generate_with_retry(
+            response = await self._generate_classifying_errors(
+                client,
+                prompt or RECOGNITION_PROMPT,
+                tmp_paths,
+                self._resolved_model,
+            )
+            if self._fallback_model is not None and not _is_json_response(response.text):
+                logger.warning("Flash вернул не-JSON для OCR, повторяю один раз через Gemini Pro.")
+                response = await self._generate_classifying_errors(
                     client,
                     prompt or RECOGNITION_PROMPT,
                     tmp_paths,
-                    self._resolved_model,
+                    self._fallback_model,
                 )
-                if self._fallback_model is not None and not _is_json_response(response.text):
-                    logger.warning("Flash вернул не-JSON для OCR, повторяю один раз через Gemini Pro.")
-                    response = await self._generate_with_retry(
-                        client,
-                        prompt or RECOGNITION_PROMPT,
-                        tmp_paths,
-                        self._fallback_model,
-                    )
-            except AuthError as exc:
-                self._invalidate_session()
-                raise OcrEngineError(f"Google разорвал сессию: {exc}. Попробуй ещё раз или обнови куки.") from exc
-            except UsageLimitExceededError as exc:
-                raise OcrEngineError(f"Исчерпан лимит запросов к Gemini на сегодня: {exc}") from exc
-            except TemporarilyBlockedError as exc:
-                raise OcrEngineError(f"Аккаунт Google временно заблокирован для запросов к Gemini: {exc}") from exc
-            except GeminiTimeoutError as exc:
-                raise OcrEngineError(f"Gemini не ответил вовремя: {exc}") from exc
-            except GeminiError as exc:
-                # `_check_account_status(raise_error=True)` внутри generate_content поднимает
-                # именно GeminiError (не AuthError), когда аккаунт стал UNAUTHENTICATED в фоне
-                # (heartbeat/refresh gemini_webapi сам это обнаружил и заглушил себя). Без сброса
-                # клиента здесь он навсегда остаётся зомби: сессия числится активной, но каждый
-                # следующий запрос будет падать с той же ошибкой до ручного рестарта бота.
-                account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
-                if account_status != AccountStatus.AVAILABLE:
-                    self._invalidate_session()
-                raise OcrEngineError(f"Ошибка распознавания через Gemini: {exc}") from exc
-            except (CurlError, OSError) as exc:
-                raise OcrEngineError(f"Сетевой сбой при обращении к Gemini: {exc}") from exc
         finally:
             for tmp_path in tmp_paths:
                 try:
@@ -999,6 +992,37 @@ class GeminiOcrEngine:
                 except OSError:
                     logger.debug("Не удалось удалить временный файл %s.", tmp_path, exc_info=True)
         return response.text
+
+    async def _generate_classifying_errors(self, client: GeminiClient, prompt: str, files: list[str], model):
+        """Общий разбор ошибок вокруг `_generate_with_retry` для `recognize` и `warm_up`.
+
+        Раньше это было продублировано внутри `recognize` целиком; вынесено сюда, чтобы
+        прогрев (`warm_up`) мог гонять настоящий `generate_content` с той же классификацией
+        сбоев (протухшая сессия/лимит/бан/таймаут), а не только собственный обработчик.
+        """
+        try:
+            return await self._generate_with_retry(client, prompt, files, model)
+        except AuthError as exc:
+            self._invalidate_session()
+            raise OcrEngineError(f"Google разорвал сессию: {exc}. Попробуй ещё раз или обнови куки.") from exc
+        except UsageLimitExceededError as exc:
+            raise OcrEngineError(f"Исчерпан лимит запросов к Gemini на сегодня: {exc}") from exc
+        except TemporarilyBlockedError as exc:
+            raise OcrEngineError(f"Аккаунт Google временно заблокирован для запросов к Gemini: {exc}") from exc
+        except GeminiTimeoutError as exc:
+            raise OcrEngineError(f"Gemini не ответил вовремя: {exc}") from exc
+        except GeminiError as exc:
+            # `_check_account_status(raise_error=True)` внутри generate_content поднимает
+            # именно GeminiError (не AuthError), когда аккаунт стал UNAUTHENTICATED в фоне
+            # (heartbeat/refresh gemini_webapi сам это обнаружил и заглушил себя). Без сброса
+            # клиента здесь он навсегда остаётся зомби: сессия числится активной, но каждый
+            # следующий запрос будет падать с той же ошибкой до ручного рестарта бота.
+            account_status = getattr(client, "account_status", AccountStatus.AVAILABLE)
+            if account_status != AccountStatus.AVAILABLE:
+                self._invalidate_session()
+            raise OcrEngineError(f"Ошибка распознавания через Gemini: {exc}") from exc
+        except (CurlError, OSError) as exc:
+            raise OcrEngineError(f"Сетевой сбой при обращении к Gemini: {exc}") from exc
 
     async def _generate_with_retry(self, client: GeminiClient, prompt: str, files: list[str], model):
         """Повторяет только кратковременные сетевые сбои, не расходуя квоту при 429/гео."""

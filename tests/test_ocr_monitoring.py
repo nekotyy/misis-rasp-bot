@@ -590,6 +590,98 @@ class GeminiEngineRecognizeTests(unittest.IsolatedAsyncioTestCase):
         for path in paths:
             self.assertFalse(os.path.exists(path), "Временные файлы должны удаляться после запроса")
 
+    async def test_warm_up_performs_a_real_generate_content_call(self) -> None:
+        """Регресс: прогрев раньше ограничивался авторизацией и ни разу не прогонял
+
+        сам конвейер генерации до первого настоящего фото — из-за этого именно первый
+        (часто самый тяжёлый, сводный) запрос рисковал попасть на холодный старт
+        watchdog/recovery gemini_webapi и не укладывался в таймаут."""
+        from unittest.mock import patch
+
+        from src.ocr_schedule import (
+            GEMINI_WARMUP_PROMPT,
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+        )
+
+        captured: dict[str, object] = {}
+
+        class FakeGeminiClient:
+            async def init(self, **kwargs) -> None:
+                return None
+
+            def resolve_model(self, name):
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem", prompt=OCR_GEM_SYSTEM_PROMPT, description=OCR_GEM_DESCRIPTION
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
+                captured["prompt"] = prompt
+                captured["files"] = files
+                captured["model"] = model
+                return MagicMock(text="да")
+
+        with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            await engine.warm_up()
+
+        self.assertEqual(captured["prompt"], GEMINI_WARMUP_PROMPT)
+        self.assertEqual(captured["files"], [])
+        self.assertEqual(captured["model"], "resolved-flash")
+
+    async def test_warm_up_raises_classified_error_when_generation_fails(self) -> None:
+        """Ошибка генерации при прогреве должна проходить через ту же классификацию,
+
+        что и обычное распознавание, а не тонуть как сырое исключение библиотеки."""
+        from unittest.mock import patch
+
+        from gemini_webapi.exceptions import AuthError
+
+        from src.ocr_schedule import (
+            OCR_GEM_DESCRIPTION,
+            OCR_GEM_SYSTEM_PROMPT,
+            GeminiOcrEngine,
+            OcrEngineError,
+        )
+
+        class FakeGeminiClient:
+            async def init(self, **kwargs) -> None:
+                return None
+
+            def resolve_model(self, name):
+                return "resolved-flash"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem", prompt=OCR_GEM_SYSTEM_PROMPT, description=OCR_GEM_DESCRIPTION
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+            async def generate_content(self, prompt, files=None, model=None, gem=None, temporary=False):
+                raise AuthError("session expired")
+
+        with patch("src.ocr_schedule.GeminiClient", return_value=FakeGeminiClient()):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b")
+            engine._probe_route = AsyncMock()
+            with self.assertRaises(OcrEngineError):
+                await engine.warm_up()
+
     def test_update_env_file_replaces_secrets_and_preserves_other_settings(self) -> None:
         import tempfile
 
