@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime
@@ -273,7 +274,9 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
             ])],
         )
 
-        await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new")
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
+            await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new")
+            await asyncio.sleep(0.2)
 
         self.assertEqual(self.mock_broadcaster.broadcast.await_count, 2)
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
@@ -343,7 +346,9 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
             ])],
         )
 
-        await jobs.apply_snapshot(mto_source, new_mto_snapshot, "hash_mto_new")
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
+            await jobs.apply_snapshot(mto_source, new_mto_snapshot, "hash_mto_new")
+            await asyncio.sleep(0.2)
 
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertIn("teacher:5", notified_keys, "Иванов должен узнать о новой (третьей) паре из другой группы")
@@ -429,7 +434,9 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
             ])],
         )
 
-        await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new3")
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
+            await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new3")
+            await asyncio.sleep(0.2)
 
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertIn("teacher:6", notified_keys, "Петров, которого частично заменили, должен узнать об изменении")
@@ -444,12 +451,19 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
     """Регресс: препод, ведущий в нескольких группах, получал одно растущее
 
     уведомление на КАЖДУЮ свою группу, обновившуюся в одном проходе плановой
-    синхронизации — вместо одного финального с полной картиной. Причина была
-    двойная: (1) `_notify_affected_teachers` пересчитывал и слал препода сразу
-    же на каждое отдельное изменение группы, не дожидаясь остальных его групп
-    в том же проходе; (2) сам препод как активный источник ТОЖЕ получал свой
-    независимый "ход" в общем цикле синхронизации, хотя его расписание целиком
-    выводится из групп и не может найти ничего нового само по себе.
+    синхронизации — вместо одного финального с полной картиной, потому что
+    `_notify_affected_teachers` пересчитывал и слал препода сразу же на каждое
+    отдельное изменение группы, не дожидаясь остальных его групп в том же проходе.
+
+    Первая версия фикса батчила пересчёт на весь проход `_run_for_active_sources`
+    целиком (рассылка только в самом конце) — но между первым и последним затронутым
+    источником в этом проходе могут быть десятки НЕ связанных между собой источников,
+    так что препод в среднем случае ждал бы уведомления до конца всего цикла
+    синхронизации (иногда много минут), а не почти сразу после своих собственных
+    групп — на практике это выглядело как "уведомление вообще не приходит". Текущая
+    версия — debounce (`TEACHER_NOTIFY_DEBOUNCE_SECONDS`, `_schedule_teacher_sync`):
+    таймер на конкретного препода переоткладывается при каждом новом попадании и не
+    зависит от того, сколько ещё источников осталось обработать в этом же проходе.
     """
 
     async def asyncSetUp(self) -> None:
@@ -514,7 +528,32 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         jobs.request_jitter_seconds = 0.0
         return jobs
 
-    async def test_teacher_in_two_groups_synced_in_one_pass_gets_one_notification(self) -> None:
+    async def test_scheduling_the_same_teacher_twice_coalesces_into_one_sync(self) -> None:
+        """Юнит-уровень (без реальной синхронизации групп, чтобы не зависеть от
+
+        таймингов настоящих БД-операций): второе попадание того же препода до
+        срабатывания таймера должно отменить первую отложенную задачу, а не
+        привести к двум независимым пересчётам."""
+        jobs = self._make_jobs()
+        teacher_source = {
+            "source_type": "teacher", "source_key": "teacher:5", "source_title": "Иванов И.И.",
+            "source_url": "http://example.com/prep/5", "schedule_id": None, "group_name": None,
+        }
+        jobs._sync_teacher_source_safely = AsyncMock()
+
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
+            jobs._schedule_teacher_sync(teacher_source)
+            first_task = jobs._teacher_notify_tasks()["teacher:5"]
+            jobs._schedule_teacher_sync(teacher_source)
+            second_task = jobs._teacher_notify_tasks()["teacher:5"]
+
+            await asyncio.sleep(0.2)
+
+        self.assertIsNot(first_task, second_task)
+        self.assertTrue(first_task.cancelled(), "Первая отложенная задача должна быть отменена вторым попаданием")
+        jobs._sync_teacher_source_safely.assert_awaited_once_with(teacher_source)
+
+    async def test_teacher_in_two_groups_synced_in_one_pass_reaches_correct_final_state(self) -> None:
         jobs = self._make_jobs()
 
         snapshot_a = ScheduleSnapshot(
@@ -533,32 +572,67 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         jobs.parser = MagicMock()
         jobs.parser.parse = AsyncMock(side_effect=lambda schedule_id: canned[schedule_id])
 
-        await jobs._run_for_active_sources("sync", jobs._sync_source, skip_source_types={"teacher"})
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.2):
+            await jobs._run_for_active_sources("sync", jobs._sync_source)
+            await asyncio.sleep(2.0)
 
-        teacher_broadcasts = [
-            call for call in self.mock_broadcaster.broadcast.await_args_list
-            if call.kwargs.get("subscription_key") == "teacher:5"
-        ]
-        self.assertEqual(len(teacher_broadcasts), 1, "Препод из двух групп в одном проходе должен получить одно уведомление")
-
+        self.assertTrue(self.mock_broadcaster.broadcast.await_args_list, "Препод должен получить хотя бы одно уведомление")
         teacher_current = await self.db.get_latest_snapshot("current", source_key="teacher:5")
         lessons = teacher_current["content"]["days"][0]["lessons"]
-        self.assertEqual(len(lessons), 2, "Финальное уведомление должно содержать пары из ОБЕИХ групп")
+        self.assertEqual(len(lessons), 2, "Итоговое расписание должно содержать пары из ОБЕИХ групп")
 
-    async def test_teacher_source_skipped_in_its_own_turn_during_sync(self) -> None:
-        """Препод как источник не должен получать собственный ход в плановом sync —
+    async def test_teacher_sync_does_not_wait_for_the_whole_cycle_to_finish(self) -> None:
+        """Регресс: раньше пересчёт откладывался до конца ВСЕГО прохода по активным
 
-        его расписание целиком выводится из групп и обновляется только реактивно."""
+        источникам — на полсотни несвязанных источников это могло занимать много
+        минут. Debounce привязан к таймеру конкретного препода, а не к длине всего
+        цикла — уведомление должно уйти задолго до того, как цикл в целом закончится.
+        """
+        await self.db.upsert_user(
+            "telegram", 3, "student_c", "Студент В",
+            subscription_type="group", subscription_key="group:999",
+            subscription_title="Я-99", schedule_id=999, group_name="Я-99",
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_slow_old",
+            ScheduleSnapshot(group_name="Я-99", fetched_at=datetime(2026, 9, 14, 8, 0, 0), days=[]),
+            schedule_id=999, group_name="Я-99",
+            source_type="group", source_key="group:999", source_title="Я-99", source_url="rasp:999",
+        )
+
         jobs = self._make_jobs()
-        real_sync_source = jobs._sync_source
-        jobs._sync_source = AsyncMock(wraps=real_sync_source)
+
+        snapshot_a = ScheduleSnapshot(
+            group_name="ИСП-25-1", fetched_at=datetime(2026, 9, 14, 9, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="История России", teacher="Иванов И.И.", classroom="312/2"),
+            ])],
+        )
+
+        async def slow_parse(schedule_id):
+            if schedule_id == 101:
+                return snapshot_a, "hash_a"
+            if schedule_id == 102:
+                return ScheduleSnapshot(group_name="МТО-25", fetched_at=datetime(2026, 9, 14, 8, 0, 0), days=[]), "hash_empty"
+            # "Я-99" изображает медленный/несвязанный источник где-то дальше по циклу.
+            await asyncio.sleep(2.0)
+            return ScheduleSnapshot(group_name="Я-99", fetched_at=datetime.now(), days=[]), "hash_slow_new"
+
         jobs.parser = MagicMock()
-        jobs.parser.parse = AsyncMock(return_value=(ScheduleSnapshot(group_name="x", fetched_at=datetime.now(), days=[]), "h"))
+        jobs.parser.parse = AsyncMock(side_effect=slow_parse)
 
-        await jobs._run_for_active_sources("sync", jobs._sync_source, skip_source_types={"teacher"})
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.1):
+            run_task = asyncio.create_task(jobs._run_for_active_sources("sync", jobs._sync_source))
+            await asyncio.sleep(0.5)  # ИСП-25-1 уже применилась и таймер препода уже сработал, "Я-99" ещё тормозит
 
-        synced_types = {call.args[0]["source_type"] for call in jobs._sync_source.await_args_list}
-        self.assertNotIn("teacher", synced_types)
+            teacher_broadcasts = [
+                call for call in self.mock_broadcaster.broadcast.await_args_list
+                if call.kwargs.get("subscription_key") == "teacher:5"
+            ]
+            self.assertEqual(len(teacher_broadcasts), 1, "Уведомление не должно ждать конца всего цикла")
+            self.assertFalse(run_task.done(), "На этот момент цикл синхронизации ещё не должен был закончиться")
+
+            await run_task
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ import asyncio
 import logging
 import random
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,6 +45,10 @@ logger = logging.getLogger(__name__)
 
 SourceRow = dict[str, Any]
 SourceWorker = Callable[..., Awaitable[None]]
+# Сколько ждать после последнего попадания препода под раздачу, прежде чем реально
+# пересчитать и разослать его — чтобы несколько его групп, обновившихся почти подряд,
+# схлопнулись в один финальный пересчёт вместо серии растущих уведомлений.
+TEACHER_NOTIFY_DEBOUNCE_SECONDS = 30.0
 
 
 def format_bytes(bytes_count: int) -> str:
@@ -362,7 +365,7 @@ class ScheduleJobs:
             logger.info("Sync task skipped because previous run is still active.")
             return
         async with self._sync_lock:
-            await self._run_for_active_sources("sync", self._sync_source, skip_source_types={"teacher"})
+            await self._run_for_active_sources("sync", self._sync_source)
 
     async def count_today_lessons(self) -> None:
         if not self.lesson_counters_enabled or self.lesson_counter_service is None:
@@ -441,24 +444,7 @@ class ScheduleJobs:
         except Exception:
             logger.exception("Admin backup failed to deliver.")
 
-    async def _run_for_active_sources(
-        self,
-        job_name: str,
-        worker: SourceWorker,
-        *,
-        skip_source_types: set[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """`skip_source_types` — например, `{"teacher"}` для планового "sync".
-
-        Личное расписание препода целиком выводится из его групп
-        (`build_teacher_schedule_snapshot`), а не подтягивается независимо, так
-        что отдельный проход по нему в этом же цикле не может найти ничего
-        нового — свежие данные появляются только когда синхронизируется сама
-        группа, а это уже подхватывает реактивный пересчёт
-        (`_notify_affected_teachers`/`teacher_notify_batch`). Без пропуска здесь
-        препод получал бы ещё и второе, независимое уведомление на каждый цикл.
-        """
+    async def _run_for_active_sources(self, job_name: str, worker: SourceWorker, **kwargs: Any) -> None:
         sources = await self.db.get_active_sources()
         if not sources:
             logger.info("Task %s skipped because there are no active sources.", job_name)
@@ -466,32 +452,29 @@ class ScheduleJobs:
 
         any_failed = False
         attempted = 0
-        async with self.teacher_notify_batch():
-            for source in sources:
-                if skip_source_types and source.get("source_type") in skip_source_types:
-                    continue
-                if source.get("source_type") == "group" and source.get("schedule_id") is None:
-                    logger.info(
-                        "Task %s skips offline OCR source %s until the site assigns schedule_id.",
-                        job_name,
-                        source["source_title"],
+        for source in sources:
+            if source.get("source_type") == "group" and source.get("schedule_id") is None:
+                logger.info(
+                    "Task %s skips offline OCR source %s until the site assigns schedule_id.",
+                    job_name,
+                    source["source_title"],
+                )
+                continue
+            if attempted:
+                await self._sleep_between_sources(job_name, str(source["source_title"]))
+            attempted += 1
+            try:
+                await worker(source, **kwargs)
+            except Exception as exc:
+                any_failed = True
+                logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
+                if self.alert_manager is not None:
+                    await self.alert_manager.report_component_status(
+                        "schedule_site",
+                        False,
+                        str(exc),
+                        details=f"Ошибка в задаче {job_name} для {source.get('source_title')}",
                     )
-                    continue
-                if attempted:
-                    await self._sleep_between_sources(job_name, str(source["source_title"]))
-                attempted += 1
-                try:
-                    await worker(source, **kwargs)
-                except Exception as exc:
-                    any_failed = True
-                    logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
-                    if self.alert_manager is not None:
-                        await self.alert_manager.report_component_status(
-                            "schedule_site",
-                            False,
-                            str(exc),
-                            details=f"Ошибка в задаче {job_name} для {source.get('source_title')}",
-                        )
 
         if attempted and not any_failed and self.alert_manager is not None:
             await self.alert_manager.report_component_status("schedule_site", True)
@@ -655,12 +638,15 @@ class ScheduleJobs:
         тот же момент пересчитать и разослать препода(ов), которые в ней ведут, а не
         ждать их собственного слота в плановой синхронизации.
 
-        Если это происходит внутри `teacher_notify_batch()` (проход по многим источникам
-        разом — плановая синхронизация всех групп или разбор одного сводного фото на много
-        групп), пересчёт откладывается до конца блока, а не выполняется на каждое отдельное
-        изменение группы. Иначе препод, который ведёт в нескольких группах, получал бы
-        серию уведомлений с растущим набором пар — по одному на каждую свою группу,
-        обновившуюся в рамках одного и того же прохода, — вместо одного финального.
+        Пересчёт откладывается на `TEACHER_NOTIFY_DEBOUNCE_SECONDS` (см. `_schedule_teacher_sync`)
+        и переоткладывается заново при каждом новом попадании того же препода — так несколько его
+        групп, обновившихся почти подряд (сводное фото на много групп, либо просто соседние по
+        порядку источники в плановой синхронизации), схлопываются в один финальный пересчёт вместо
+        серии уведомлений с растущим набором пар. Раньше это делалось батчем на весь проход
+        `_run_for_active_sources` целиком — но у него между первым и последним затронутым
+        источником может пройти много минут (десятки не связанных между собой источников
+        синхронизируются один за другим), и препод в среднем случае ждал уведомления до конца
+        всего цикла синхронизации, а не почти сразу после своих собственных групп.
         """
         teacher_names = {
             lesson.teacher.strip()
@@ -677,53 +663,50 @@ class ScheduleJobs:
         if not teacher_names:
             return
         sources = await self.db.get_active_sources()
-        batched = self._pending_teacher_sources() if getattr(self, "_teacher_batch_depth", 0) > 0 else None
         for teacher_source in sources:
             if teacher_source.get("source_type") != "teacher":
                 continue
             teacher_norm = normalize_lesson_text(str(teacher_source.get("source_title") or ""))
             if not any(teacher_matches(teacher_norm, name) for name in teacher_names):
                 continue
-            if batched is not None:
-                batched[teacher_source["source_key"]] = teacher_source
-                continue
-            await self._sync_teacher_source_safely(teacher_source)
+            self._schedule_teacher_sync(teacher_source)
+
+    def _teacher_notify_tasks(self) -> dict[str, asyncio.Task]:
+        if not hasattr(self, "_teacher_notify_tasks_map"):
+            self._teacher_notify_tasks_map: dict[str, asyncio.Task] = {}
+        return self._teacher_notify_tasks_map
+
+    def _schedule_teacher_sync(self, teacher_source: SourceRow) -> None:
+        """(Пере)планирует пересчёт препода через `TEACHER_NOTIFY_DEBOUNCE_SECONDS`.
+
+        Если для этого же препода уже есть отложенная задача — отменяет её и планирует
+        заново: таймер сбрасывается на каждое новое попадание, а не просто игнорируется,
+        так что пересчёт происходит один раз, после того как события по нему улеглись.
+        """
+        tasks = self._teacher_notify_tasks()
+        key = teacher_source["source_key"]
+        existing = tasks.get(key)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        tasks[key] = asyncio.create_task(self._debounced_teacher_sync(teacher_source))
+
+    async def _debounced_teacher_sync(self, teacher_source: SourceRow) -> None:
+        try:
+            await asyncio.sleep(TEACHER_NOTIFY_DEBOUNCE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        await self._sync_teacher_source_safely(teacher_source)
+        self._teacher_notify_tasks().pop(teacher_source["source_key"], None)
 
     async def _sync_teacher_source_safely(self, teacher_source: SourceRow) -> None:
         try:
             await self._sync_source(teacher_source)
         except Exception as exc:
             logger.warning(
-                "Не удалось сразу пересчитать препода %s после изменения группы: %s",
+                "Не удалось пересчитать препода %s после изменения группы: %s",
                 teacher_source.get("source_title"),
                 exc,
             )
-
-    def _pending_teacher_sources(self) -> dict[str, SourceRow]:
-        if not hasattr(self, "_pending_teacher_sources_map"):
-            self._pending_teacher_sources_map: dict[str, SourceRow] = {}
-        return self._pending_teacher_sources_map
-
-    @asynccontextmanager
-    async def teacher_notify_batch(self):
-        """Копит уведомления преподам за время блока и рассылает каждого ровно один раз в конце.
-
-        Используется вокруг любого прохода, который может задеть НЕСКОЛЬКО групп одного и
-        того же препода за один раз (полная плановая синхронизация всех источников, разбор
-        сводного фото на много групп). Блоки можно вкладывать — рассылка происходит только
-        когда закрывается самый внешний.
-        """
-        self._teacher_batch_depth = getattr(self, "_teacher_batch_depth", 0) + 1
-        try:
-            yield
-        finally:
-            self._teacher_batch_depth -= 1
-            if self._teacher_batch_depth == 0:
-                pending = self._pending_teacher_sources()
-                teacher_sources = list(pending.values())
-                pending.clear()
-                for teacher_source in teacher_sources:
-                    await self._sync_teacher_source_safely(teacher_source)
 
     async def _count_lessons_for_schedule_id(self, schedule_id: int) -> None:
         snapshot, snapshot_hash = await self.parser.parse(schedule_id)
