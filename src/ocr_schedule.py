@@ -665,6 +665,7 @@ class GeminiOcrEngine:
         async with self._lock:
             if self._client is not None:
                 return self._client
+            await self._refresh_credentials_from_env_file()
             available, message = self.availability()
             if not available:
                 raise OcrEngineError(message)
@@ -734,6 +735,37 @@ class GeminiOcrEngine:
             break
         assert last_error is not None
         raise last_error
+
+    async def _refresh_credentials_from_env_file(self) -> None:
+        """Перечитывает cookies из примонтированного `.env`, а не только из окружения процесса.
+
+        `GEMINI_SECURE_1PSID`/`PSIDTS` в окружении процесса — это снимок на момент
+        СОЗДАНИЯ контейнера (docker-compose кладёт их туда один раз из `env_file:`
+        при `up`/пересоздании). При этом `_persist_session_state` уже во время
+        работы переписывает свежие повёрнутые cookies прямо в файл на диске
+        (`GEMINI_ENV_PATH`, тот же самый примонтированный `.env`), а не в окружение.
+        Пока процесс жив, свежее значение и так есть в памяти (see `self.secure_1psid`),
+        но при простом рестарте контейнера (`restart: unless-stopped`, `docker
+        restart`, перезагрузка хоста) окружение не пересоздаётся и остаётся старым —
+        а свежее значение всё это время лежит на диске. Без этого чтения рестарт
+        обречён пытаться зайти с уже отозванной Google версией cookie, хотя рабочая
+        лежит рядом в примонтированном файле.
+        """
+        if self.env_path is None:
+            return
+        try:
+            values = await asyncio.to_thread(
+                read_env_values, self.env_path, ("GEMINI_SECURE_1PSID", "GEMINI_SECURE_1PSIDTS")
+            )
+        except OSError:
+            logger.warning("Не удалось прочитать %s для обновления Gemini cookies.", self.env_path, exc_info=True)
+            return
+        fresh_1psid = values.get("GEMINI_SECURE_1PSID", "").strip()
+        fresh_1psidts = values.get("GEMINI_SECURE_1PSIDTS", "").strip()
+        if fresh_1psid:
+            self.secure_1psid = fresh_1psid
+        if fresh_1psidts:
+            self.secure_1psidts = fresh_1psidts
 
     async def _probe_route(self) -> None:
         """Проверяет маршрут и при включённом DoH прогревает DNS-кэш curl."""
@@ -1026,6 +1058,19 @@ def _auth_cookie_values(client: GeminiClient) -> dict[str, str]:
     for cookie in client.cookies.jar:
         if cookie.name in env_names and cookie.value:
             result[env_names[cookie.name]] = cookie.value
+    return result
+
+
+def read_env_values(path: Path, keys: Iterable[str]) -> dict[str, str]:
+    """Читает текущие значения заданных ключей прямо из `.env` на диске (не из окружения процесса)."""
+    wanted = set(keys)
+    result: dict[str, str] = {}
+    if not path.exists():
+        return result
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Z][A-Z0-9_]*)=(.*)$", line)
+        if match and match.group(1) in wanted:
+            result[match.group(1)] = match.group(2)
     return result
 
 
