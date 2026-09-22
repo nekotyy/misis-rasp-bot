@@ -12,7 +12,7 @@ from src.ocr_import import (
     build_ocr_importer,
     format_ocr_summary_preview,
 )
-from src.ocr_schedule import SUMMARY_RECOGNITION_PROMPT, OcrScheduleParser
+from src.ocr_schedule import SUMMARY_RECOGNITION_PROMPT, OcrEngineError, OcrScheduleParser
 
 SAMPLE_SUMMARY = json.dumps(
     {
@@ -282,6 +282,57 @@ class FormatSummaryPreviewTests(unittest.IsolatedAsyncioTestCase):
 
         preview = format_ocr_summary_preview(draft, html=True)
         self.assertIn("<b>", preview)
+
+
+class BuildSummaryDraftFromJsonTests(unittest.IsolatedAsyncioTestCase):
+    """JSON, распознанный вручную другой нейросетью (не Gemini), должен пройти
+
+    через тот же конвейер подбора источника и слияния, что и обычное сводное
+    фото — и, в отличие от него, не должен зависеть от доступности движка."""
+
+    async def test_parses_without_touching_the_engine(self) -> None:
+        engine = FakeEngine()
+        engine.recognize = AsyncMock(side_effect=AssertionError("не должен звать Gemini"))
+        importer = make_importer(engine=engine)
+
+        draft = await importer.build_summary_draft_from_json(SAMPLE_SUMMARY)
+
+        self.assertEqual(len(draft.result.groups), 2)
+        self.assertTrue(draft.can_apply)
+
+    async def test_works_even_when_engine_unavailable(self) -> None:
+        engine = FakeEngine()
+        engine.availability = MagicMock(return_value=(False, "куки не заданы"))
+        importer = make_importer(engine=engine)
+
+        draft = await importer.build_summary_draft_from_json(SAMPLE_SUMMARY)
+
+        self.assertTrue(draft.can_apply)
+
+    async def test_empty_text_raises(self) -> None:
+        importer = make_importer()
+
+        with self.assertRaises(OcrEngineError):
+            await importer.build_summary_draft_from_json("   ")
+
+    async def test_invalid_json_surfaces_as_parse_error_not_exception(self) -> None:
+        importer = make_importer()
+
+        draft = await importer.build_summary_draft_from_json("это не json")
+
+        self.assertFalse(draft.can_apply)
+        self.assertTrue(draft.result.errors)
+
+    async def test_apply_summary_works_on_a_json_sourced_draft(self) -> None:
+        jobs = MagicMock()
+        jobs.apply_manual_snapshot = AsyncMock(return_value=None)
+        importer = make_importer(jobs=jobs)
+
+        draft = await importer.build_summary_draft_from_json(SAMPLE_SUMMARY)
+        applied, report = await importer.apply_summary(draft)
+
+        self.assertTrue(applied)
+        self.assertIn("2 из 2", report)
 
 
 class BuildOcrImporterHasSummaryModeTests(unittest.TestCase):

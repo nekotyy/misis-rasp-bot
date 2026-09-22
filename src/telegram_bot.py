@@ -51,7 +51,12 @@ from src.ocr_import import (
     format_ocr_summary_preview,
     format_progress_bar,
 )
-from src.ocr_schedule import MAX_OCR_IMAGES, OcrEngineError, compress_image_for_ocr
+from src.ocr_schedule import (
+    MAX_OCR_IMAGES,
+    SUMMARY_RECOGNITION_PROMPT,
+    OcrEngineError,
+    compress_image_for_ocr,
+)
 from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -371,6 +376,9 @@ ADMIN_KEYBOARD = InlineKeyboardMarkup(
             InlineKeyboardButton(text="Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
         ],
         [
+            InlineKeyboardButton(text="Импорт OCR JSON", callback_data="admin:ocr_json_import"),
+        ],
+        [
             InlineKeyboardButton(text="Управление Gemini", callback_data="admin:gemini_status"),
         ],
         [
@@ -659,6 +667,31 @@ ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+ADMIN_OCR_JSON_INPUT_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:ocr_summary_cancel")],
+    ]
+)
+
+# Те же admin:ocr_summary_confirm* — предпросмотр и применение не отличают,
+# пришёл ли черновик из фото или из готового JSON. Без "Добавить ещё фото":
+# для JSON нет смысла копить несколько присланных кусков, весь лист — один JSON.
+ADMIN_OCR_JSON_PREVIEW_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить и разослать", callback_data="admin:ocr_summary_confirm")],
+        [InlineKeyboardButton(text="Сохранить без рассылки", callback_data="admin:ocr_summary_confirm_silent")],
+        [InlineKeyboardButton(text="Отменить", callback_data="admin:ocr_summary_cancel")],
+    ]
+)
+
+ADMIN_OCR_MENU_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Расписание с фото (OCR)", callback_data="admin:ocr_import")],
+        [InlineKeyboardButton(text="Сводное расписание (все группы)", callback_data="admin:ocr_summary_import")],
+        [InlineKeyboardButton(text="Импорт OCR JSON", callback_data="admin:ocr_json_import")],
+    ]
+)
+
 def is_ocr_photo_candidate(chat_type: str, is_admin: bool) -> bool:
     """Нужно ли распознавать присланную картинку.
 
@@ -717,6 +750,30 @@ def format_admin_ocr_summary_add_more_prompt(queued_count: int) -> str:
     lines.extend(
         [
             "Пришли ещё <b>фото</b> листа (можно несколько или альбомом) — распознаю их вместе с уже загруженными.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_admin_ocr_json_prompt(error: str = "") -> str:
+    lines = ["<b>Импорт готового JSON распознавания</b>", ""]
+    if error:
+        lines.extend([escape(error), ""])
+    lines.extend(
+        [
+            "Если встроенное распознавание (Gemini) недоступно, перегружено или временно "
+            "заблокировано — можно распознать фото любой другой нейросетью самому и прислать "
+            "сюда уже готовый результат.",
+            "",
+            "1. Сфотографируй лист(ы) сводного расписания (один день, много групп).",
+            "2. Пришли фото и этот промт любой нейросети с поддержкой картинок:",
+            "",
+            f"<code>{escape(SUMMARY_RECOGNITION_PROMPT, quote=False)}</code>",
+            "",
+            "3. Скопируй её JSON-ответ и пришли его сюда — текстом или .json-файлом.",
+            "",
+            "После разбора покажу, для скольких групп нашёлся источник, и спрошу подтверждение — "
+            "ничего не сохранится и не разошлётся без него.",
         ]
     )
     return "\n".join(lines)
@@ -949,6 +1006,10 @@ def build_dispatcher(
     # добавленные через «Добавить ещё фото», чтобы Gemini свёл все страницы
     # листа в один снимок, а не только последнюю присланную пачку.
     admin_ocr_summary_images: dict[int, list[bytes]] = {}
+    # JSON, распознанный не встроенным Gemini, а вручную — другой нейросетью
+    # (см. "Импорт OCR JSON"). Черновик кладётся в тот же admin_ocr_summary_drafts:
+    # предпросмотр/подтверждение/отмена дальше не отличают, откуда он взялся.
+    awaiting_admin_ocr_json: set[int] = set()
     admin_ocr_album_buffers: dict[str, list[Message]] = {}
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
@@ -2669,6 +2730,22 @@ def build_dispatcher(
         keyboard = ADMIN_KEYBOARD if user_is_full_admin(message.from_user.id) else ADMIN_KEYBOARD_LIMITED
         await send_new_context_message(message.bot, message.chat.id, "admin", format_admin_panel(), keyboard)
 
+    @dispatcher.message(Command("ocr"))
+    async def handle_ocr_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.chat.type != "private":
+            return
+        if not user_is_full_admin(message.from_user.id if message.from_user else None):
+            await send_new_context_message(message.bot, message.chat.id, "admin", "Команда доступна только администратору.")
+            return
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "admin_ocr",
+            "<b>Импорт расписания с фото</b>\n\nВыбери режим:",
+            reply_markup=ADMIN_OCR_MENU_KEYBOARD,
+        )
+
     @dispatcher.message(Command("group_setup"))
     async def handle_group_setup_command(message: Message) -> None:
         await register_message_user(message)
@@ -3077,6 +3154,7 @@ def build_dispatcher(
             "lesson_delete_confirm", "lesson_delete_one_confirm", "import_lessons", "import_lessons_confirm", "import_lessons_cancel", "cleandb",
             "ocr_import", "ocr_confirm", "ocr_confirm_silent", "ocr_cancel",
             "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel", "ocr_summary_add_more",
+            "ocr_json_import",
             "gemini_status",
         }:
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
@@ -3379,8 +3457,26 @@ def build_dispatcher(
             )
             await safe_callback_answer(callback)
             return
+        if action == "ocr_json_import":
+            # В отличие от фото-режимов, не проверяем ocr_service.availability(): весь смысл
+            # этого режима — работать даже когда Gemini недоступен, перегружен или забанен.
+            awaiting_admin_ocr_json.add(callback.from_user.id)
+            awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
+            awaiting_admin_ocr_photo.discard(callback.from_user.id)
+            admin_ocr_summary_drafts.pop(callback.from_user.id, None)
+            admin_ocr_summary_images.pop(callback.from_user.id, None)
+            await send_new_context_message(
+                callback.bot,
+                callback.message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_json_prompt(),
+                reply_markup=ADMIN_OCR_JSON_INPUT_KEYBOARD,
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "ocr_summary_cancel":
             awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
+            awaiting_admin_ocr_json.discard(callback.from_user.id)
             admin_ocr_summary_drafts.pop(callback.from_user.id, None)
             admin_ocr_summary_images.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
@@ -3895,6 +3991,12 @@ def build_dispatcher(
         if not is_ocr_photo_candidate(message.chat.type, user_is_admin(message.from_user.id)):
             return
 
+        if message.from_user.id in awaiting_admin_ocr_json:
+            # Иначе документ (JSON-файл) перехватило бы распознавание фото ниже
+            # и отбраковало бы как "не картинку".
+            await handle_admin_ocr_json_document(message)
+            return
+
         # Сводный режим требует явного нажатия кнопки: это более заметное по
         # последствиям действие (сразу много групп разом), в отличие от обычного
         # режима оно не должно включаться само по первому присланному фото.
@@ -4175,6 +4277,76 @@ def build_dispatcher(
             preview,
             reply_markup=ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD if draft.can_apply else ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
         )
+
+    async def process_admin_ocr_json(message: Message, raw_data: str) -> None:
+        """Разбирает JSON, распознанный вручную (не Gemini), в тот же черновик сводного листа.
+
+        Не зависит от ocr_service.availability() — этим и ценен как запасной путь,
+        когда встроенный OCR недоступен, перегружен или временно забанен Google (429).
+        """
+        if message.from_user is None:
+            return
+        if not raw_data.strip():
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_json_prompt("Пришли JSON-файл или JSON-текст сообщением."),
+                reply_markup=ADMIN_OCR_JSON_INPUT_KEYBOARD,
+            )
+            return
+
+        try:
+            draft = await ocr_service.build_summary_draft_from_json(raw_data)
+        except OcrEngineError as exc:
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_json_prompt(f"Не удалось разобрать: {exc}"),
+                reply_markup=ADMIN_OCR_JSON_INPUT_KEYBOARD,
+            )
+            return
+        except Exception as exc:
+            logger.exception("Импорт готового JSON расписания упал.")
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_json_prompt(f"Внутренняя ошибка: {type(exc).__name__}: {exc}"),
+                reply_markup=ADMIN_OCR_JSON_INPUT_KEYBOARD,
+            )
+            return
+
+        awaiting_admin_ocr_json.discard(message.from_user.id)
+        admin_ocr_summary_drafts[message.from_user.id] = draft
+        preview = format_ocr_summary_preview(draft, html=True, max_length=TELEGRAM_MESSAGE_LIMIT)
+        await send_new_context_message(
+            message.bot,
+            message.chat.id,
+            "admin_ocr",
+            preview,
+            reply_markup=ADMIN_OCR_JSON_PREVIEW_KEYBOARD if draft.can_apply else ADMIN_OCR_JSON_INPUT_KEYBOARD,
+        )
+
+    async def handle_admin_ocr_json_document(message: Message) -> None:
+        if message.document is None:
+            await process_admin_ocr_json(message, "")
+            return
+        try:
+            file_info = await message.bot.get_file(message.document.file_id)
+            file_bytes = await message.bot.download_file(file_info.file_path)
+            raw_data = file_bytes.read().decode("utf-8")
+        except Exception as exc:
+            await send_new_context_message(
+                message.bot,
+                message.chat.id,
+                "admin_ocr",
+                format_admin_ocr_json_prompt(f"Не удалось прочитать документ: {exc}\nПришли JSON-текст сообщением."),
+                reply_markup=ADMIN_OCR_JSON_INPUT_KEYBOARD,
+            )
+            return
+        await process_admin_ocr_json(message, raw_data)
 
     async def download_admin_image(message: Message) -> tuple[bytes | None, str]:
         file_id = ""
@@ -4565,6 +4737,12 @@ def build_dispatcher(
             awaiting_custom_donate_stars.discard(message.from_user.id)
             await clear_context_messages(message.bot, message.chat.id, "donate")
             await send_stars_invoice(message.bot, message.chat.id, message.from_user.id, stars)
+            return
+
+        if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_ocr_json:
+            # Документ (.json-файл) сюда не долетает — его перехватывает F.document
+            # выше (handle_admin_ocr_photo); здесь только текстовая вставка JSON.
+            await process_admin_ocr_json(message, (message.text or "").strip())
             return
 
         if user_is_admin(message.from_user.id) and message.from_user.id in awaiting_admin_import_lessons:
