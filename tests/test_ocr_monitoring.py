@@ -1109,3 +1109,98 @@ class StaleCookieCacheRetryTests(unittest.IsolatedAsyncioTestCase):
                 await engine._ensure_client()
 
         self.assertEqual(fake_client_cls.calls, 1, "Негативные статусы, кроме протухшего кэша, повторять не нужно")
+
+
+class RestartPicksUpRotatedCookiesFromEnvFileTests(unittest.IsolatedAsyncioTestCase):
+    """Регресс: cookies ротируются и пишутся в .env исправно, но при рестарте контейнера
+
+    (не пересоздании — `restart: unless-stopped`/`docker restart`/перезагрузка хоста)
+    docker-compose не перечитывает `env_file:`, и новый процесс стартует со старыми
+    cookies из окружения, хотя на диске в примонтированном .env уже лежат свежие,
+    записанные предыдущим прогоном процесса. Раньше `GeminiOcrEngine` в этом случае
+    навсегда пытался зайти отозванной Google версией cookie."""
+
+    @staticmethod
+    def _make_fake_client_class() -> tuple[type, list]:
+        from gemini_webapi.constants import AccountStatus
+
+        from src.ocr_schedule import OCR_GEM_DESCRIPTION, OCR_GEM_SYSTEM_PROMPT
+
+        seen_credentials: list[tuple[str, str]] = []
+
+        class FakeGeminiClient:
+            def __init__(self, secure_1psid, secure_1psidts, *args, **kwargs) -> None:
+                seen_credentials.append((secure_1psid, secure_1psidts))
+                self.account_status = AccountStatus.AVAILABLE
+
+            async def init(self, **kwargs) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+            def resolve_model(self, name):
+                return f"resolved-{name}"
+
+            async def fetch_gems(self):
+                jar = MagicMock()
+                jar.get = MagicMock(
+                    side_effect=lambda **kwargs: MagicMock(
+                        id="ocr-gem", prompt=OCR_GEM_SYSTEM_PROMPT, description=OCR_GEM_DESCRIPTION
+                    )
+                    if kwargs.get("name")
+                    else None
+                )
+                return jar
+
+        return FakeGeminiClient, seen_credentials
+
+    async def test_stale_env_var_cookies_are_replaced_by_the_ones_persisted_on_disk(self) -> None:
+        import tempfile
+
+        from src.ocr_schedule import GeminiOcrEngine
+
+        fake_client_cls, seen_credentials = self._make_fake_client_class()
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = pathlib.Path(directory) / ".env"
+            # Новый процесс поднялся со старыми cookies из окружения контейнера
+            # (снимок на момент создания), но на диске .env уже успели повернуть.
+            env_path.write_text(
+                "GEMINI_SECURE_1PSID=rotated-1psid\nGEMINI_SECURE_1PSIDTS=rotated-1psidts\n",
+                encoding="utf-8",
+            )
+
+            with patch("src.ocr_schedule.GeminiClient", fake_client_cls):
+                engine = GeminiOcrEngine(secure_1psid="stale-1psid", secure_1psidts="stale-1psidts", env_path=env_path)
+                engine._probe_route = AsyncMock()
+                engine._persist_session_state = AsyncMock()
+                await engine._ensure_client()
+
+        self.assertEqual(seen_credentials, [("rotated-1psid", "rotated-1psidts")])
+
+    async def test_missing_env_file_keeps_constructor_credentials(self) -> None:
+        from src.ocr_schedule import GeminiOcrEngine
+
+        fake_client_cls, seen_credentials = self._make_fake_client_class()
+
+        with patch("src.ocr_schedule.GeminiClient", fake_client_cls):
+            engine = GeminiOcrEngine(secure_1psid="a", secure_1psidts="b", env_path=pathlib.Path("/nonexistent/.env"))
+            engine._probe_route = AsyncMock()
+            engine._persist_session_state = AsyncMock()
+            await engine._ensure_client()
+
+        self.assertEqual(seen_credentials, [("a", "b")])
+
+    def test_read_env_values_ignores_unrequested_keys(self) -> None:
+        import tempfile
+
+        from src.ocr_schedule import read_env_values
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = pathlib.Path(directory) / ".env"
+            env_path.write_text("OCR_ENABLED=true\nGEMINI_SECURE_1PSID=abc\n", encoding="utf-8")
+
+            values = read_env_values(env_path, ("GEMINI_SECURE_1PSID", "GEMINI_SECURE_1PSIDTS"))
+
+        self.assertEqual(values, {"GEMINI_SECURE_1PSID": "abc"})
