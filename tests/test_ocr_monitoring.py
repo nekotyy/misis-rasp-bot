@@ -26,7 +26,12 @@ from src.ocr_import import (
     OcrScheduleImporter,
     format_progress_bar,
 )
-from src.ocr_schedule import GeminiOcrEngine, OcrEngineError, classify_gemini_failure
+from src.ocr_schedule import (
+    GEMINI_TRANSIENT_RETRY_DELAYS,
+    GeminiOcrEngine,
+    OcrEngineError,
+    classify_gemini_failure,
+)
 from src.system_status import COMPONENT_TITLES, check_ocr_status
 
 RECOGNIZED_TEXT = json.dumps(
@@ -153,6 +158,57 @@ class GeminiRouteProbeTests(unittest.IsolatedAsyncioTestCase):
             await engine._probe_route()
 
         session.close.assert_awaited_once()
+
+    async def test_probe_retries_transient_network_reset_and_then_succeeds(self) -> None:
+        """Регресс: единичный "Connection reset by peer" ронял прогрев/распознавание
+
+        целиком, хотя обычно следующая попытка через пару секунд проходит нормально."""
+        from curl_cffi.requests.exceptions import CurlError
+
+        good_response = MagicMock(status_code=200, primary_ip="87.228.47.202")
+        session = MagicMock(
+            get=AsyncMock(side_effect=[CurlError("Recv failure: Connection reset by peer"), good_response]),
+            close=AsyncMock(),
+        )
+        engine = GeminiOcrEngine(doh_url="https://xbox-dns.ru/dns-query")
+
+        with patch("src.ocr_schedule.CurlAsyncSession", return_value=session), patch("asyncio.sleep", AsyncMock()):
+            await engine._probe_route()
+
+        self.assertEqual(session.get.await_count, 2)
+        self.assertEqual(engine.diagnostics()["remote_ip"], "87.228.47.202")
+
+    async def test_probe_gives_up_after_all_retries_still_reset(self) -> None:
+        from curl_cffi.requests.exceptions import CurlError
+
+        session = MagicMock(
+            get=AsyncMock(side_effect=CurlError("Recv failure: Connection reset by peer")),
+            close=AsyncMock(),
+        )
+        engine = GeminiOcrEngine(doh_url="https://xbox-dns.ru/dns-query")
+
+        with (
+            patch("src.ocr_schedule.CurlAsyncSession", return_value=session),
+            patch("asyncio.sleep", AsyncMock()),
+            self.assertRaises(OcrEngineError),
+        ):
+            await engine._probe_route()
+
+        self.assertEqual(session.get.await_count, len(GEMINI_TRANSIENT_RETRY_DELAYS) + 1)
+
+    async def test_probe_does_not_retry_ip_block(self) -> None:
+        """429 — уже классифицированная временная блокировка IP, долбить её повтором нельзя."""
+        response = MagicMock(status_code=429, primary_ip="87.228.47.194")
+        session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="https://xbox-dns.ru/dns-query")
+
+        with (
+            patch("src.ocr_schedule.CurlAsyncSession", return_value=session),
+            self.assertRaises(OcrEngineError),
+        ):
+            await engine._probe_route()
+
+        self.assertEqual(session.get.await_count, 1, "429 не повторяется")
 
 
 def make_importer(*, engine: FakeEngine | None = None, alerts: MagicMock | None = None, enabled: bool = True):
