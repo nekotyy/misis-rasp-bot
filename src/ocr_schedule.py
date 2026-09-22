@@ -770,6 +770,39 @@ class GeminiOcrEngine:
             self.secure_1psidts = fresh_1psidts
 
     async def _probe_route(self) -> None:
+        """Проверяет маршрут, повторяя кратковременные сетевые сбои (сброс соединения,
+
+        DNS/DoH и т.п.) так же, как `_generate_with_retry` — той же классификацией и
+        теми же паузами (`GEMINI_TRANSIENT_RETRY_DELAYS`). Без этого один случайный
+        "Connection reset by peer" валил прогрев/распознавание целиком, хотя обычно
+        следующая попытка через пару секунд проходит нормально.
+        """
+        last_error: OcrEngineError | None = None
+        attempts = len(GEMINI_TRANSIENT_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                await self._probe_route_once()
+                return
+            except OcrEngineError as exc:
+                failure = classify_gemini_failure(exc)
+                can_retry = failure.code in {"network", "timeout", "dns"}
+                if not can_retry or attempt >= len(GEMINI_TRANSIENT_RETRY_DELAYS):
+                    raise
+                last_error = exc
+                delay = GEMINI_TRANSIENT_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "gemini_route_retry reason=%s attempt=%s/%s delay=%.0fs error=%s",
+                    failure.code,
+                    attempt + 2,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
+
+    async def _probe_route_once(self) -> None:
         """Проверяет маршрут и при включённом DoH прогревает DNS-кэш curl."""
         session_options = {"proxy": self.proxy}
         if self.doh_url:

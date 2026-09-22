@@ -580,27 +580,27 @@ class OcrScheduleImporter:
         broadcasted = 0
         failed: list[str] = []
         # Один и тот же препод легко ведёт сразу в нескольких группах с одного листа —
-        # без общего батча каждая применённая группа сразу же пересчитывала бы и слала
-        # его личное расписание заново, и подписчик получал бы серию уведомлений с
-        # растущим набором пар вместо одного финального (см. teacher_notify_batch).
-        async with self.schedule_jobs.teacher_notify_batch():
-            for resolution in draft.resolved:
-                try:
-                    change_summary = await self.schedule_jobs.apply_manual_snapshot(
-                        resolution.source,
-                        resolution.merge.snapshot,
-                        notify=notify,
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Не удалось применить расписание группы %s из сводного фото.", resolution.group_lessons.group_name
-                    )
-                    failed.append(f"{resolution.group_lessons.group_name}: {exc}")
-                    continue
-                await self.register_pending_source(resolution.source)
-                applied += 1
-                if change_summary is not None:
-                    broadcasted += 1
+        # каждая применённая группа реактивно ставит его пересчёт в очередь на
+        # TEACHER_NOTIFY_DEBOUNCE_SECONDS (см. ScheduleJobs._schedule_teacher_sync),
+        # и таймер сбрасывается на каждое новое попадание, так что за время этого
+        # цикла (без задержек между группами) накопится ровно один финальный пересчёт.
+        for resolution in draft.resolved:
+            try:
+                change_summary = await self.schedule_jobs.apply_manual_snapshot(
+                    resolution.source,
+                    resolution.merge.snapshot,
+                    notify=notify,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Не удалось применить расписание группы %s из сводного фото.", resolution.group_lessons.group_name
+                )
+                failed.append(f"{resolution.group_lessons.group_name}: {exc}")
+                continue
+            await self.register_pending_source(resolution.source)
+            applied += 1
+            if change_summary is not None:
+                broadcasted += 1
 
         lines = [f"Обновлено групп: {applied} из {len(draft.resolved)}."]
         if applied:

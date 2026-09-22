@@ -641,6 +641,10 @@ def build_vk_bot(
     # Фото, накопленные для текущего сводного распознавания — «Добавить ещё
     # фото» дозаписывает сюда новые страницы листа вместо замены прежних.
     admin_ocr_summary_images: dict[int, list[bytes]] = {}
+    # Защита от повторного тапа "Подтвердить": между чтением черновика и его
+    # удалением есть await (сам apply/apply_summary), и без этой блокировки
+    # два быстрых подряд тапа могли применить один и тот же черновик дважды.
+    admin_ocr_apply_locks: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db)
@@ -1969,33 +1973,39 @@ def build_vk_bot(
                 await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
                 return
 
-            if mode == "admin_ocr_preview":
+            if mode == "admin_ocr_preview" and text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
+                if peer_id in admin_ocr_apply_locks:
+                    await show_screen(peer_id, "Уже сохраняю расписание, подожди...")
+                    return
                 draft = admin_ocr_drafts.get(peer_id)
-                if text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
-                    if draft is None:
-                        peer_modes[peer_id] = "admin_ocr_input"
-                        await show_screen(
-                            peer_id,
-                            "Данные распознавания устарели. Пришли фото заново.",
-                            keyboard=make_keyboard([["Отменить"]]),
-                        )
-                        return
-                    applied, report = await ocr_service.apply(draft, notify=text == "Подтвердить и разослать")
-                    if applied:
-                        admin_ocr_drafts.pop(peer_id, None)
-                        peer_modes[peer_id] = "admin_menu"
-                        await show_screen(
-                            peer_id,
-                            f"Расписание с фото импортировано.\n\n{report}",
-                            keyboard=admin_keyboard(),
-                        )
-                        return
+                if draft is None:
+                    peer_modes[peer_id] = "admin_ocr_input"
                     await show_screen(
                         peer_id,
-                        f"Импорт не выполнен.\n\n{report}",
+                        "Данные распознавания устарели. Пришли фото заново.",
                         keyboard=make_keyboard([["Отменить"]]),
                     )
                     return
+                admin_ocr_apply_locks.add(peer_id)
+                try:
+                    applied, report = await ocr_service.apply(draft, notify=text == "Подтвердить и разослать")
+                finally:
+                    admin_ocr_apply_locks.discard(peer_id)
+                if applied:
+                    admin_ocr_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(
+                        peer_id,
+                        f"Расписание с фото импортировано.\n\n{report}",
+                        keyboard=admin_keyboard(),
+                    )
+                    return
+                await show_screen(
+                    peer_id,
+                    f"Импорт не выполнен.\n\n{report}",
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
 
             images, download_error = await download_vk_images(message)
             if images is None:
@@ -2067,8 +2077,11 @@ def build_vk_bot(
                 return
 
             if mode == "admin_ocr_summary_preview":
-                draft = admin_ocr_summary_drafts.get(peer_id)
                 if text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
+                    if peer_id in admin_ocr_apply_locks:
+                        await show_screen(peer_id, "Уже сохраняю расписание, подожди...")
+                        return
+                    draft = admin_ocr_summary_drafts.get(peer_id)
                     if draft is None:
                         peer_modes[peer_id] = "admin_ocr_summary_input"
                         await show_screen(
@@ -2077,7 +2090,11 @@ def build_vk_bot(
                             keyboard=make_keyboard([["Отменить"]]),
                         )
                         return
-                    applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
+                    admin_ocr_apply_locks.add(peer_id)
+                    try:
+                        applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
+                    finally:
+                        admin_ocr_apply_locks.discard(peer_id)
                     if applied:
                         admin_ocr_summary_drafts.pop(peer_id, None)
                         admin_ocr_summary_images.pop(peer_id, None)
@@ -2196,33 +2213,39 @@ def build_vk_bot(
                 await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
                 return
 
-            if mode == "admin_ocr_json_preview":
+            if mode == "admin_ocr_json_preview" and text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
+                if peer_id in admin_ocr_apply_locks:
+                    await show_screen(peer_id, "Уже сохраняю расписание, подожди...")
+                    return
                 draft = admin_ocr_summary_drafts.get(peer_id)
-                if text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
-                    if draft is None:
-                        peer_modes[peer_id] = "admin_ocr_json_input"
-                        await show_screen(
-                            peer_id,
-                            "Данные распознавания устарели. Пришли JSON заново.",
-                            keyboard=make_keyboard([["Отменить"]]),
-                        )
-                        return
-                    applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
-                    if applied:
-                        admin_ocr_summary_drafts.pop(peer_id, None)
-                        peer_modes[peer_id] = "admin_menu"
-                        await show_screen(
-                            peer_id,
-                            f"Сводное расписание импортировано.\n\n{report}",
-                            keyboard=admin_keyboard(),
-                        )
-                        return
+                if draft is None:
+                    peer_modes[peer_id] = "admin_ocr_json_input"
                     await show_screen(
                         peer_id,
-                        f"Импорт не выполнен.\n\n{report}",
+                        "Данные распознавания устарели. Пришли JSON заново.",
                         keyboard=make_keyboard([["Отменить"]]),
                     )
                     return
+                admin_ocr_apply_locks.add(peer_id)
+                try:
+                    applied, report = await ocr_service.apply_summary(draft, notify=text == "Подтвердить и разослать")
+                finally:
+                    admin_ocr_apply_locks.discard(peer_id)
+                if applied:
+                    admin_ocr_summary_drafts.pop(peer_id, None)
+                    peer_modes[peer_id] = "admin_menu"
+                    await show_screen(
+                        peer_id,
+                        f"Сводное расписание импортировано.\n\n{report}",
+                        keyboard=admin_keyboard(),
+                    )
+                    return
+                await show_screen(
+                    peer_id,
+                    f"Импорт не выполнен.\n\n{report}",
+                    keyboard=make_keyboard([["Отменить"]]),
+                )
+                return
 
             # Не зависит от Gemini: JSON уже распознан вручную другой нейросетью,
             # весь смысл этого режима — работать даже когда OCR полностью недоступен.
