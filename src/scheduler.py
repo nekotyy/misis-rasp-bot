@@ -635,13 +635,19 @@ class ScheduleJobs:
         await save("daily_baseline")
         if source["source_type"] == "group":
             try:
-                await self._notify_affected_teachers(snapshot)
+                await self._notify_affected_teachers(snapshot, baseline)
             except Exception:
                 logger.exception("Не удалось пересчитать подписки на преподов после изменения группы %s.", source["source_title"])
         return change_summary
 
-    async def _notify_affected_teachers(self, group_snapshot: ScheduleSnapshot) -> None:
+    async def _notify_affected_teachers(self, group_snapshot: ScheduleSnapshot, previous_baseline: dict | None = None) -> None:
         """Сразу пересчитывает и, если нужно, уведомляет подписки "на препода" этой группы.
+
+        Смотрит на ФИО не только в НОВОМ снимке, но и в `previous_baseline` (состояние
+        группы до изменения) — иначе препод, которого заменили другим на уже загруженный
+        день (замена/перестановка), просто исчез бы из нового снимка и никогда не узнал
+        бы, что его пара пропала: он не входит в новый список ФИО, хотя его личное
+        расписание из-за этого изменения тоже реально меняется.
 
         Личное расписание препода собирается из групп (`build_teacher_schedule_snapshot`),
         а не с отдельной страницы сайта — так что как только у группы что-то поменялось
@@ -662,6 +668,12 @@ class ScheduleJobs:
             for lesson in day.lessons
             if lesson.teacher.strip()
         }
+        if previous_baseline is not None:
+            for day in previous_baseline.get("content", {}).get("days", []):
+                for lesson in day.get("lessons", []):
+                    name = str(lesson.get("teacher") or "").strip()
+                    if name:
+                        teacher_names.add(name)
         if not teacher_names:
             return
         sources = await self.db.get_active_sources()

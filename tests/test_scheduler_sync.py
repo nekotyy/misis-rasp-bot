@@ -305,6 +305,71 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertEqual(notified_keys, {"group:101"})
 
+    async def test_teacher_replaced_on_an_already_loaded_day_still_gets_notified(self) -> None:
+        """Регресс: замену препода на уже загруженный день (например, повторным фото/OCR)
+
+        видел только новый снимок группы — а препод, которого заменили, из него уже пропал,
+        так что раньше его личное расписание вообще не пересчитывалось и он не узнавал,
+        что его пары больше нет, хотя это тоже реальное изменение из-за той же группы."""
+        from src.scheduler import ScheduleJobs
+
+        await self.db.upsert_user(
+            "telegram", 43, "prep2", "Петров П.П.",
+            subscription_type="teacher", subscription_key="teacher:6",
+            subscription_title="Петров П.П.", subscription_url="http://example.com/prep/6",
+        )
+        old_petrov_snapshot = ScheduleSnapshot(
+            group_name="Петров П.П.", fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="ИСП-25-1", classroom="202"),
+                Lesson(number=2, subject="Химия", teacher="ИСП-25-1", classroom="203"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_petrov_old", old_petrov_snapshot, schedule_id=None, group_name="Петров П.П.",
+            source_type="teacher", source_key="teacher:6", source_title="Петров П.П.", source_url="http://example.com/prep/6",
+        )
+        # Группа изначально вела 2 пары в этот день, обе у Петрова (baseline/current уже
+        # содержат обе — переопределяем то, что положил общий asyncSetUp с одной парой).
+        two_lesson_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1", fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="Петров П.П.", classroom="202"),
+                Lesson(number=2, subject="Химия", teacher="Петров П.П.", classroom="203"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "daily_baseline", "hash_old2", two_lesson_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+        await self.db.save_snapshot(
+            "current", "hash_old2", two_lesson_snapshot, schedule_id=101, group_name="ИСП-25-1",
+            source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
+        )
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+
+        # Замена: пара №1 теперь у Сидорова, пара №2 у Петрова осталась как была.
+        new_group_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1", fetched_at=datetime(2026, 9, 14, 9, 0, 0),
+            days=[DaySchedule(date_label="Сегодня", date_iso=self.today_iso, lessons=[
+                Lesson(number=1, subject="Физика", teacher="Сидоров С.С.", classroom="202"),
+                Lesson(number=2, subject="Химия", teacher="Петров П.П.", classroom="203"),
+            ])],
+        )
+
+        await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new3")
+
+        notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
+        self.assertIn("teacher:6", notified_keys, "Петров, которого частично заменили, должен узнать об изменении")
+
+        petrov_current = await self.db.get_latest_snapshot("current", source_key="teacher:6")
+        lessons = petrov_current["content"]["days"][0]["lessons"]
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]["subject"], "Химия")
+
 
 class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
     """Регресс: препод, ведущий в нескольких группах, получал одно растущее

@@ -1010,6 +1010,11 @@ def build_dispatcher(
     # (см. "Импорт OCR JSON"). Черновик кладётся в тот же admin_ocr_summary_drafts:
     # предпросмотр/подтверждение/отмена дальше не отличают, откуда он взялся.
     awaiting_admin_ocr_json: set[int] = set()
+    # Защита от повторного тапа "Подтвердить": между чтением черновика и его
+    # удалением есть await (сам apply/apply_summary), и без этой блокировки
+    # два быстрых подряд тапа могли применить один и тот же черновик дважды —
+    # обе рассылки в это окно ещё видят черновик на месте.
+    admin_ocr_apply_locks: set[int] = set()
     admin_ocr_album_buffers: dict[str, list[Message]] = {}
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
@@ -3405,16 +3410,24 @@ def build_dispatcher(
             await safe_callback_answer(callback, "Импорт с фото отменён")
             return
         if action in {"ocr_confirm", "ocr_confirm_silent"}:
-            draft = admin_ocr_drafts.get(callback.from_user.id)
+            user_id = callback.from_user.id
+            if user_id in admin_ocr_apply_locks:
+                await safe_callback_answer(callback, "Уже сохраняю расписание, подожди...", show_alert=True)
+                return
+            draft = admin_ocr_drafts.get(user_id)
             if draft is None:
                 await safe_callback_answer(callback, "Данные распознавания устарели. Пришли фото заново.", show_alert=True)
                 return
-            notify = action == "ocr_confirm"
-            await safe_callback_answer(callback, "Сохраняю расписание...")
-            applied, report = await ocr_service.apply(draft, notify=notify)
-            if applied:
-                awaiting_admin_ocr_photo.discard(callback.from_user.id)
-                admin_ocr_drafts.pop(callback.from_user.id, None)
+            admin_ocr_apply_locks.add(user_id)
+            try:
+                notify = action == "ocr_confirm"
+                await safe_callback_answer(callback, "Сохраняю расписание...")
+                applied, report = await ocr_service.apply(draft, notify=notify)
+                if applied:
+                    awaiting_admin_ocr_photo.discard(user_id)
+                    admin_ocr_drafts.pop(user_id, None)
+            finally:
+                admin_ocr_apply_locks.discard(user_id)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
             prefix = "<b>Расписание с фото импортировано</b>" if applied else "<b>Импорт не выполнен</b>"
             await send_new_context_message(
@@ -3490,17 +3503,25 @@ def build_dispatcher(
             await safe_callback_answer(callback, "Импорт сводного расписания отменён")
             return
         if action in {"ocr_summary_confirm", "ocr_summary_confirm_silent"}:
-            draft = admin_ocr_summary_drafts.get(callback.from_user.id)
+            user_id = callback.from_user.id
+            if user_id in admin_ocr_apply_locks:
+                await safe_callback_answer(callback, "Уже сохраняю расписание, подожди...", show_alert=True)
+                return
+            draft = admin_ocr_summary_drafts.get(user_id)
             if draft is None:
                 await safe_callback_answer(callback, "Данные распознавания устарели. Пришли фото заново.", show_alert=True)
                 return
-            notify = action == "ocr_summary_confirm"
-            await safe_callback_answer(callback, "Сохраняю расписание...")
-            applied, report = await ocr_service.apply_summary(draft, notify=notify)
-            if applied:
-                awaiting_admin_ocr_summary_photo.discard(callback.from_user.id)
-                admin_ocr_summary_drafts.pop(callback.from_user.id, None)
-                admin_ocr_summary_images.pop(callback.from_user.id, None)
+            admin_ocr_apply_locks.add(user_id)
+            try:
+                notify = action == "ocr_summary_confirm"
+                await safe_callback_answer(callback, "Сохраняю расписание...")
+                applied, report = await ocr_service.apply_summary(draft, notify=notify)
+                if applied:
+                    awaiting_admin_ocr_summary_photo.discard(user_id)
+                    admin_ocr_summary_drafts.pop(user_id, None)
+                    admin_ocr_summary_images.pop(user_id, None)
+            finally:
+                admin_ocr_apply_locks.discard(user_id)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_ocr")
             prefix = "<b>Сводное расписание импортировано</b>" if applied else "<b>Импорт не выполнен</b>"
             await send_new_context_message(
