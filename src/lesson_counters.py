@@ -12,6 +12,8 @@ from datetime import datetime
 from html import escape
 from pathlib import Path
 
+import httpx
+
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
@@ -32,6 +34,19 @@ class LessonCounterSyncResult:
         return not (self.processed or self.skipped_already_done or self.failed)
 
 
+def _lesson_pairs_from_content(content: dict, target_date_iso: str) -> list[tuple[str, str]]:
+    day_item = next(
+        (day for day in content.get("days", []) if day.get("date_iso") == target_date_iso),
+        None,
+    )
+    if day_item is None:
+        return []
+    return [
+        (str(lesson.get("subject") or "").strip(), str(lesson.get("teacher") or "").strip())
+        for lesson in day_item.get("lessons", [])
+    ]
+
+
 async def _fetch_day_lesson_pairs(
     db: Database,
     parser: ScheduleParser,
@@ -41,12 +56,29 @@ async def _fetch_day_lesson_pairs(
 ) -> list[tuple[str, str]]:
     """(subject, teacher) на нужную дату для одного источника.
 
-    Группа с schedule_id спрашивается напрямую с сайта (как и раньше). Группа без него —
-    только через OCR (source_key вида "group-pending:<имя>") — берётся из последнего
-    сохранённого в БД снимка: у неё нет schedule_id, чтобы вообще что-то спросить у сайта.
+    Группа с schedule_id сначала спрашивается напрямую с сайта — это самые свежие данные.
+    Если сайт недоступен (частое явление — 502 держится часами), падаем на последний снимок
+    в БД: его постоянно обновляет фоновый общий синк расписания (ScheduleJobs), независимо от
+    подсчёта пар, так что кэш почти всегда свежий даже когда сайт лежит именно в момент этого
+    вызова. Если и кэша нет вообще — тогда сайт правда единственный источник, ошибка пробрасывается.
+
+    Группа без schedule_id — только через OCR (source_key вида "group-pending:<имя>") — берётся
+    из последнего сохранённого в БД снимка сразу, без похода на сайт: у неё нет schedule_id,
+    чтобы вообще что-то спросить.
     """
     if schedule_id is not None:
-        snapshot, _ = await parser.parse(schedule_id)
+        try:
+            snapshot, _ = await parser.parse(schedule_id)
+        except httpx.HTTPError as exc:
+            cached = await db.get_latest_snapshot("current", schedule_id=schedule_id)
+            if cached is None:
+                raise
+            logger.warning(
+                "Lesson counter: site unavailable for schedule_id=%s (%s), using last cached snapshot instead",
+                schedule_id,
+                exc,
+            )
+            return _lesson_pairs_from_content(cached["content"], target_date_iso)
         day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
         if day_item is None:
             return []
@@ -56,16 +88,7 @@ async def _fetch_day_lesson_pairs(
         cached = await db.get_latest_snapshot("current", source_key=source_key)
         if cached is None:
             return []
-        day_item = next(
-            (day for day in cached["content"].get("days", []) if day.get("date_iso") == target_date_iso),
-            None,
-        )
-        if day_item is None:
-            return []
-        return [
-            (str(lesson.get("subject") or "").strip(), str(lesson.get("teacher") or "").strip())
-            for lesson in day_item.get("lessons", [])
-        ]
+        return _lesson_pairs_from_content(cached["content"], target_date_iso)
 
     return []
 

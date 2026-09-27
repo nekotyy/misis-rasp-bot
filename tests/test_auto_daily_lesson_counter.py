@@ -1,7 +1,10 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+import httpx
 
 from src.db import Database
 from src.lesson_counters import LessonCounterService, sync_lesson_counters_for_date
@@ -178,8 +181,6 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
         target_date = "2026-09-15"
         self.mock_parser.parse = AsyncMock(side_effect=AssertionError("у группы без schedule_id нет сайта, спрашивать не у кого"))
 
-        from datetime import datetime
-
         ocr_snapshot = ScheduleSnapshot(
             group_name="РУП-26-1",
             fetched_at=datetime.now(),
@@ -213,6 +214,71 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
         text = await self.service.format_counters_text(group_name="РУП-26-1", html=True)
         self.assertIn("Основы права", text)
         self.assertIn("Прошло - 1, всего - ##?", text)
+
+    async def test_site_down_falls_back_to_cached_snapshot_for_schedule_id_group(self):
+        """Регресс: сайт колледжа регулярно лежит часами (502) — раньше это просто гасило
+
+        подсчёт для группы на весь день без единой попытки взять уже известное расписание
+        из кэша БД, хотя фоновый общий синк обновляет этот кэш независимо от подсчёта пар.
+        Теперь при ошибке сайта используется последний сохранённый снимок вместо провала."""
+        target_date = "2026-09-16"
+        self.mock_parser.parse = AsyncMock(side_effect=httpx.HTTPError("502 Bad Gateway"))
+
+        cached_snapshot = ScheduleSnapshot(
+            group_name="ИСП-25-1",
+            fetched_at=datetime.now(),
+            days=[
+                DaySchedule(
+                    date_iso=target_date,
+                    date_label="16.09",
+                    lessons=[Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301")],
+                )
+            ],
+        )
+        await self.db.save_snapshot(
+            "current",
+            "cached-hash-1",
+            cached_snapshot,
+            schedule_id=600,
+            group_name="ИСП-25-1",
+            source_type="group",
+            source_key="group:600",
+            source_title="ИСП-25-1",
+            source_url="rasp:600",
+        )
+
+        import json
+        self.json_path.write_text(
+            json.dumps({"groups": [{"schedule_id": 600, "group_name": "ИСП-25-1", "subjects": []}]}),
+            encoding="utf-8",
+        )
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertIn("ИСП-25-1", result.processed)
+        self.assertEqual(result.failed, [])
+        text = await self.service.format_counters_text(group_name="ИСП-25-1", html=True)
+        self.assertIn("Математика", text)
+        self.assertIn("Прошло - 1, всего - ##?", text)
+
+    async def test_site_down_and_no_cache_still_fails_gracefully(self):
+        """Если сайт лежит И кэша по этой группе тоже никогда не было — считать правда неоткуда,
+
+        группа должна попасть в failed, а не уронить обработку остальных групп."""
+        target_date = "2026-09-17"
+        self.mock_parser.parse = AsyncMock(side_effect=httpx.HTTPError("502 Bad Gateway"))
+
+        import json
+        self.json_path.write_text(
+            json.dumps({"groups": [{"schedule_id": 601, "group_name": "ИСП-25-2", "subjects": []}]}),
+            encoding="utf-8",
+        )
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertEqual(result.processed, [])
+        self.assertEqual(len(result.failed), 1)
+        self.assertEqual(result.failed[0][0], "ИСП-25-2")
 
     def test_reset_group_counters(self):
         self.service.auto_increment_or_create_subject_in_json(
