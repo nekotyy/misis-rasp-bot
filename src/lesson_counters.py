@@ -42,15 +42,27 @@ async def sync_lesson_counters_for_date(
 
     Общий код для планового запуска (ScheduleJobs.handle_auto_daily_lesson_counter_job) и
     ручной принудительной синхронизации из веб-дашборда — оба идут по одному и тому же списку
-    групп (из JSON-конфига счетчиков, а не по списку подписчиков) и через одну и ту же защиту
-    от дублей: daily_lesson_counter_logs с UNIQUE(target_date_iso, group_name) гарантирует, что
-    пара за конкретный день учитывается для группы ровно один раз, сколько бы раз этот вызов ни
-    повторили (по расписанию и вручную, дважды подряд и т.д.).
+    групп и через одну и ту же защиту от дублей: daily_lesson_counter_logs с
+    UNIQUE(target_date_iso, group_name) гарантирует, что пара за конкретный день учитывается
+    для группы ровно один раз, сколько бы раз этот вызов ни повторили (по расписанию и вручную,
+    дважды подряд и т.д.).
+
+    Список групп — это уже настроенные в JSON-конфиге счетчиков (в т.ч. без единого подписчика)
+    плюс все группы из каталога сайта (`groups`), у которых сайт назначил schedule_id, но
+    которых в конфиге ещё нет. Для новой группы auto_increment_or_create_subject_in_json сам
+    создаёт запись группы и предметов при первом же найденном занятии — руками заводить JSON
+    для каждой новой группы больше не нужно.
     """
     result = LessonCounterSyncResult()
-    group_sources = lesson_counter_service.configured_groups()
+    group_sources = {source["schedule_id"]: source for source in lesson_counter_service.configured_groups()}
 
-    for source in group_sources:
+    for catalog_group in await db.get_all_groups():
+        schedule_id = catalog_group.get("schedule_id")
+        if schedule_id is None or schedule_id in group_sources:
+            continue
+        group_sources[schedule_id] = {"schedule_id": schedule_id, "group_name": catalog_group["group_name"]}
+
+    for source in group_sources.values():
         schedule_id = source["schedule_id"]
         group_name = source["group_name"]
 
