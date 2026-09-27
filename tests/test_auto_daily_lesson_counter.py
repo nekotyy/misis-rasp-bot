@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from src.db import Database
-from src.lesson_counters import LessonCounterService
+from src.lesson_counters import LessonCounterService, sync_lesson_counters_for_date
 from src.message_broker import AutoDailyLessonCounterJob
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.scheduler import ScheduleJobs
@@ -80,6 +80,93 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
         # Values MUST NOT increase on second run
         self.assertIn("Прошло - 2, всего - ##?", text_after_second_run)
         self.assertIn("Прошло - 1, всего - ##?", text_after_second_run)
+
+    async def test_group_missing_from_json_but_present_in_site_catalog_is_auto_added(self):
+        """Регресс: группа без единой записи в lesson_counters.json (в т.ч. появившаяся уже
+
+        после написания конфига) раньше вообще не попадала в подсчёт — sync шёл только по
+        JSON. Теперь она берётся из каталога сайта (таблица groups) и заводится сама."""
+        target_date = "2026-09-10"
+        lessons = [Lesson(number=1, subject="Химия", teacher="Сидоров С.С.", classroom="105")]
+        day = DaySchedule(date_label="10.09", date_iso=target_date, lessons=lessons)
+        snapshot = ScheduleSnapshot(group_name="МТО-25", fetched_at=MagicMock(), days=[day])
+        self.mock_parser.parse = AsyncMock(return_value=(snapshot, "hash456"))
+
+        await self.db.save_groups([
+            {
+                "schedule_id": 610,
+                "group_name": "МТО-25",
+                "department_id": 1,
+                "department_code": "IT",
+                "department_name": "ИТ",
+                "url": "http://asu.sf-misis.ru/rasp/610",
+            }
+        ])
+
+        # JSON-конфиг пустой — группа МТО-25 в нём не настроена вообще.
+        import json
+        self.json_path.write_text(json.dumps({"groups": []}), encoding="utf-8")
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertIn("МТО-25", result.processed)
+        text = await self.service.format_counters_text(group_name="МТО-25", html=True)
+        self.assertIn("Химия", text)
+        self.assertIn("Прошло - 1, всего - ##?", text)
+
+    async def test_group_in_both_json_and_catalog_is_processed_once(self):
+        """Группа, уже настроенная в JSON, не должна задваиваться из-за совпадения в каталоге сайта."""
+        target_date = "2026-09-11"
+        lessons = [Lesson(number=1, subject="Химия", teacher="Сидоров С.С.", classroom="105")]
+        day = DaySchedule(date_label="11.09", date_iso=target_date, lessons=lessons)
+        snapshot = ScheduleSnapshot(group_name="МТО-25", fetched_at=MagicMock(), days=[day])
+        self.mock_parser.parse = AsyncMock(return_value=(snapshot, "hash789"))
+
+        await self.db.save_groups([
+            {
+                "schedule_id": 610,
+                "group_name": "МТО-25 (сайт)",
+                "department_id": 1,
+                "department_code": "IT",
+                "department_name": "ИТ",
+                "url": "http://asu.sf-misis.ru/rasp/610",
+            }
+        ])
+        import json
+        self.json_path.write_text(
+            json.dumps({"groups": [{"schedule_id": 610, "group_name": "МТО-25", "subjects": []}]}),
+            encoding="utf-8",
+        )
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertEqual(result.processed.count("МТО-25"), 1)
+        self.mock_parser.parse.assert_awaited_once()
+
+    async def test_catalog_group_without_schedule_id_is_skipped(self):
+        """Группы без schedule_id (сайт его ещё не назначил, OCR-only) не подхватываются
+
+        автообнаружением — для них нет способа запросить расписание с сайта."""
+        target_date = "2026-09-12"
+        self.mock_parser.parse = AsyncMock(side_effect=AssertionError("не должен вызываться"))
+
+        await self.db.save_groups([
+            {
+                "schedule_id": None,
+                "group_name": "РУП-26-1",
+                "department_id": 1,
+                "department_code": "IT",
+                "department_name": "ИТ",
+                "url": "http://asu.sf-misis.ru/rasp/610",
+            }
+        ])
+        import json
+        self.json_path.write_text(json.dumps({"groups": []}), encoding="utf-8")
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertEqual(result.processed, [])
+        self.mock_parser.parse.assert_not_awaited()
 
     def test_reset_group_counters(self):
         self.service.auto_increment_or_create_subject_in_json(
