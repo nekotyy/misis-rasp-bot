@@ -27,7 +27,7 @@ def get_bot_version() -> str:
                 stripped = line.strip()
                 if stripped.startswith("version ="):
                     return stripped.split("=", 1)[1].strip(" \"'")
-    return "1.4.0"
+    return "1.5.0"
 
 
 BOT_VERSION = get_bot_version()

@@ -1319,7 +1319,7 @@ def can(user: WebUser, permission: str) -> bool:
 
 
 def filter_metrics_for_user(metrics: dict, user: WebUser) -> dict:
-    filtered = {"uptime_seconds": metrics["uptime_seconds"], "bot_version": metrics.get("bot_version", "1.4.0")}
+    filtered = {"uptime_seconds": metrics["uptime_seconds"], "bot_version": metrics.get("bot_version", "1.5.0")}
     if can(user, "stats_overview"):
         filtered["users"] = metrics["users"]
         filtered["extra"] = metrics["extra"]
