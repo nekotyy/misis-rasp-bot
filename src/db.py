@@ -906,6 +906,31 @@ class Database:
             )
             await db.commit()
 
+    async def get_pending_group_sources(self) -> list[dict]:
+        """Группы без назначенного сайтом schedule_id (OCR-only, group-pending:*), для
+
+        которых уже есть хоть один сохранённый снимок расписания. У таких групп нет
+        отдельного каталога вроде таблицы groups — единственный сигнал об их
+        существовании — то, что для них когда-либо сохраняли snapshot_type='current'."""
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT source_key, group_name
+                FROM schedule_snapshots
+                WHERE id IN (
+                    SELECT MAX(id)
+                    FROM schedule_snapshots
+                    WHERE snapshot_type = 'current'
+                      AND source_type = 'group'
+                      AND schedule_id IS NULL
+                      AND source_key IS NOT NULL
+                    GROUP BY source_key
+                )
+                """
+            )
+            rows = await cursor.fetchall()
+        return [{"source_key": row[0], "group_name": row[1]} for row in rows if row[1]]
+
     async def get_all_groups(self) -> list[dict]:
         """Список групп, сохранённый при последней успешной загрузке с сайта."""
         async with aiosqlite.connect(self.path) as db:
