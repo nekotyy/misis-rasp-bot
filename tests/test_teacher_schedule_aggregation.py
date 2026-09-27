@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 from src.db import Database
 from src.lesson_counters import (
     build_teacher_schedule_snapshot,
+    resolve_audience_preview_content,
     resolve_group_preview_content,
     snapshot_to_search_content,
 )
@@ -281,6 +282,55 @@ class TestResolveGroupPreviewContent(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(content["group_name"], "ИСП-25-1")
         self.assertEqual(content["days"][0]["lessons"][0]["classroom"], "301")
+
+
+class TestResolveAudiencePreviewContent(unittest.IsolatedAsyncioTestCase):
+    """Регресс: предпросмотр чужой аудитории при поиске всегда шёл на сайт, даже если по
+
+    этой же аудитории уже есть подписчики и свежий снимок в БД (обновляемый фоновым общим
+    синком) — асимметрия с группами, у которых кэш уже проверялся первым."""
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self._tmp.name) / "test.db")
+        await self.db.initialize()
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_uses_db_snapshot_and_never_touches_site_when_available(self) -> None:
+        snapshot = ScheduleSnapshot(
+            group_name="ФОК",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[
+                Lesson(number=1, subject="Физика", teacher="Петров П.П.", classroom="ФОК"),
+            ])],
+        )
+        await self.db.save_snapshot(
+            "current", "hash_a", snapshot, schedule_id=None, group_name="ФОК",
+            source_type="audience", source_key="audience:900", source_title="ФОК", source_url="http://test/aud/900",
+        )
+        parser = MagicMock()
+        parser.parse_from_url = AsyncMock(side_effect=AssertionError("site must not be called when DB has a snapshot"))
+
+        content = await resolve_audience_preview_content(self.db, parser, "http://test/aud/900")
+
+        parser.parse_from_url.assert_not_called()
+        self.assertEqual(content["days"][0]["lessons"][0]["subject"], "Физика")
+
+    async def test_falls_back_to_site_when_no_snapshot_saved_yet(self) -> None:
+        snapshot = ScheduleSnapshot(
+            group_name="Спортзал",
+            fetched_at=datetime(2026, 9, 14, 8, 0, 0),
+            days=[DaySchedule(date_label="14 сентября", date_iso="2026-09-14", lessons=[])],
+        )
+        parser = MagicMock()
+        parser.parse_from_url = AsyncMock(return_value=(snapshot, "hash_live"))
+
+        content = await resolve_audience_preview_content(self.db, parser, "http://test/aud/901")
+
+        parser.parse_from_url.assert_awaited_once_with("http://test/aud/901")
+        self.assertEqual(content["group_name"], "Спортзал")
 
 
 if __name__ == "__main__":

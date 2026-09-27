@@ -354,6 +354,23 @@ async def resolve_group_preview_content(db: Database, parser: ScheduleParser, gr
     return snapshot_to_search_content(snapshot_obj)
 
 
+async def resolve_audience_preview_content(db: Database, parser: ScheduleParser, audience_url: str) -> dict:
+    """Расписание аудитории для беглого предпросмотра при поиске (не своя подписка).
+
+    Тот же паттерн, что и у resolve_group_preview_content выше, только ключ кэша —
+    "audience:<id>"/"audience:<url>", как у make_audience_subscription: если на эту
+    аудиторию уже есть хоть один подписчик, её снимок регулярно обновляет фоновый общий
+    синк, и предпросмотр может взять его даже при недоступном сайте.
+    """
+    audience_id = extract_numeric_id(audience_url)
+    source_key = f"audience:{audience_id}" if audience_id is not None else f"audience:{audience_url}"
+    stored = await db.get_latest_snapshot("current", source_key=source_key)
+    if stored is not None:
+        return stored["content"]
+    snapshot_obj, _ = await parser.parse_from_url(audience_url)
+    return snapshot_to_search_content(snapshot_obj)
+
+
 class LessonCounterService:
     def __init__(self, db: Database, lesson_counters_path: Path | None = None) -> None:
         self.db = db

@@ -36,6 +36,7 @@ from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
     normalize_lesson_text,
+    resolve_audience_preview_content,
     resolve_group_preview_content,
     snapshot_to_search_content,
     subject_matches,
@@ -1832,30 +1833,6 @@ def build_dispatcher(
             )
         return "\n".join(lines)
 
-    async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
-        groups = await db.get_active_groups()
-        if not groups:
-            return []
-
-        rows: list[tuple[str, str, str]] = []
-        for group in groups:
-            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
-            await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
-        return rows
-
-    async def save_baseline_for_all_active_groups() -> list[tuple[str, str, str]]:
-        groups = await db.get_active_groups()
-        if not groups:
-            return []
-
-        rows: list[tuple[str, str, str]] = []
-        for group in groups:
-            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
-            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
-        return rows
-
     async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
         sources = await db.get_active_sources()
         if not sources:
@@ -2190,8 +2167,7 @@ def build_dispatcher(
             elif target.kind == "group":
                 content = await resolve_group_preview_content(db, parser, target.url)
             else:
-                snapshot_obj, _ = await parser.parse_from_url(target.url)
-                content = snapshot_to_search_content(snapshot_obj)
+                content = await resolve_audience_preview_content(db, parser, target.url)
         except httpx.HTTPError:
             await send_new_context_message(
                 bot,
