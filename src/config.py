@@ -38,7 +38,6 @@ class Settings:
     admin_vk_id: int | None
     rabbitmq_url: str
     rabbitmq_queue: str
-    lesson_counters_queue: str
     db_cleanup_queue: str
     auto_daily_lesson_counter_queue: str
     rabbitmq_prefetch_count: int
@@ -85,7 +84,6 @@ class Settings:
             admin_vk_id=int(admin_vk_id_raw) if admin_vk_id_raw else None,
             rabbitmq_url=os.getenv("RABBITMQ_URL", "").strip(),
             rabbitmq_queue=os.getenv("RABBITMQ_QUEUE", "misis_notifications").strip(),
-            lesson_counters_queue=os.getenv("LESSON_COUNTERS_QUEUE", "misis_lesson_counters").strip(),
             db_cleanup_queue=os.getenv("DB_CLEANUP_QUEUE", "misis_db_cleanup").strip(),
             auto_daily_lesson_counter_queue=os.getenv("AUTO_DAILY_LESSON_COUNTER_QUEUE", "misis_auto_daily_lesson_counter").strip(),
             rabbitmq_prefetch_count=int(os.getenv("RABBITMQ_PREFETCH_COUNT", "20").strip()),

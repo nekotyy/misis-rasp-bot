@@ -1486,42 +1486,6 @@ class Database:
             for row in rows
         ]
 
-    async def record_lesson_counter_event(
-        self,
-        *,
-        counter_id: int,
-        schedule_id: int | None,
-        date_iso: str,
-        lesson_number: int,
-        subject: str,
-        teacher: str,
-        classroom: str,
-    ) -> bool:
-        now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
-            cursor = await db.execute(
-                """
-                INSERT OR IGNORE INTO lesson_counter_events (
-                    counter_id, schedule_id, date_iso, lesson_number, subject, teacher, classroom, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (counter_id, schedule_id, date_iso, lesson_number, subject, teacher, classroom, now),
-            )
-            inserted = cursor.rowcount > 0
-            if inserted:
-                await db.execute(
-                    """
-                    UPDATE lesson_counters
-                    SET passed_count = passed_count + 1,
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now, counter_id),
-                )
-            await db.commit()
-        return inserted
-
     async def delete_lesson_counters_not_in(self, keys: set[tuple[int | None, str, str]]) -> int:
         existing = await self.list_lesson_counters()
         ids_to_delete = [

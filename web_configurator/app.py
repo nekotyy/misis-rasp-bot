@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlparse
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -398,10 +399,11 @@ async def save_lessons_json(
     try:
         raw_payload = parse_json_payload(payload)
         fresh_settings = Settings.from_env()
-        group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
+        db = Database(fresh_settings.database_path)
+        group_catalog = GroupCatalog(fresh_settings.schedule_url, db=db)
         await group_catalog.ensure_loaded()
         parser = ScheduleParser(Settings.from_env().schedule_url)
-        normalized, problems = await validate_lesson_config(raw_payload, group_catalog=group_catalog, parser=parser)
+        normalized, problems = await validate_lesson_config(raw_payload, group_catalog=group_catalog, parser=parser, db=db)
         saved = False
         forced = mode == "save_force"
         if mode == "save" and not any(problem["level"] == "error" for problem in problems):
@@ -490,7 +492,12 @@ async def upsert_lesson_subject(
 
 
 async def save_lesson_payload_with_validation(payload: dict[str, Any], user: WebUser, force: str) -> Response:
-    normalized, problems = await validate_payload_for_save(payload)
+    try:
+        normalized, problems = await validate_payload_for_save(payload)
+    except httpx.HTTPError:
+        logger.warning("Lesson editor: сайт расписания недоступен и кэша по группе нет — валидация невозможна.")
+        report = "<div class='alert bad'>Сайт расписания сейчас недоступен, а кэш по этой группе пуст — проверить дисциплину не получилось. Попробуйте еще раз позже.</div>"
+        return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=report), user))
     has_errors = any(problem["level"] == "error" for problem in problems)
     if has_errors and force != "1":
         return HTMLResponse(layout("Счетчики пар", lessons_manager_html(payload, report=problems_html(problems, False)), user))
@@ -834,10 +841,11 @@ def safe_int(value: object, default: int = -1) -> int:
 
 async def validate_payload_for_save(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     fresh_settings = Settings.from_env()
-    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
+    db = Database(fresh_settings.database_path)
+    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=db)
     await group_catalog.ensure_loaded()
     parser = ScheduleParser(fresh_settings.schedule_url)
-    return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser)
+    return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser, db=db)
 
 
 async def get_db() -> Database:

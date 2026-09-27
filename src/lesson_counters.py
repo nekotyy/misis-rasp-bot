@@ -425,10 +425,6 @@ class LessonCounterService:
         if deleted:
             logger.info("Lesson counters: removed %s counter(s) missing from JSON config.", deleted)
 
-    async def configured_schedule_ids(self) -> list[int]:
-        counters = await self.db.list_lesson_counters()
-        return sorted({int(counter["schedule_id"]) for counter in counters if counter["schedule_id"] is not None})
-
     def configured_groups(self) -> list[dict]:
         """Группы с настроенными счетчиками пар прямо из JSON-конфига (а не из БД, которая — лишь
         снимок на момент последнего старта бота). Именно эти группы реально показываются пользователям
@@ -491,41 +487,6 @@ class LessonCounterService:
             "passed": max(0, passed),
             "total": max(0, total),
         }
-
-    async def count_today_for_snapshot(self, schedule_id: int | None, snapshot: ScheduleSnapshot) -> int:
-        if schedule_id is None:
-            return 0
-
-        counters = await self.db.list_lesson_counters(schedule_id)
-        if not counters:
-            return 0
-
-        today_iso = datetime.now().date().isoformat()
-        today = next((day for day in snapshot.days if day.date_iso == today_iso), None)
-        if today is None or not today.lessons:
-            return 0
-
-        added = 0
-        for lesson in today.lessons:
-            for counter in counters:
-                if not subject_matches(counter["subject_norm"], lesson.subject):
-                    continue
-                if not teacher_matches(counter["teacher_norm"], lesson.teacher):
-                    continue
-                if await self.db.record_lesson_counter_event(
-                    counter_id=counter["id"],
-                    schedule_id=schedule_id,
-                    date_iso=today.date_iso,
-                    lesson_number=lesson.number,
-                    subject=lesson.subject,
-                    teacher=lesson.teacher,
-                    classroom=lesson.classroom,
-                ):
-                    added += 1
-                break
-        if added:
-            logger.info("Lesson counters: added %s lesson(s) for schedule_id=%s.", added, schedule_id)
-        return added
 
     async def format_counters_text(
         self,

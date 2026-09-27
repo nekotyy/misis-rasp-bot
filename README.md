@@ -371,7 +371,6 @@ docker compose up -d --build --remove-orphans
 
 - `RABBITMQ_URL` — адрес подключения.
 - `RABBITMQ_QUEUE` — очередь уведомлений.
-- `LESSON_COUNTERS_QUEUE` — очередь задач подсчета пар.
 - `RABBITMQ_PREFETCH_COUNT` — prefetch для consumer.
 
 ### Счетчики пар
@@ -812,7 +811,7 @@ JSON от Gemini обычно чистый, но всё равно проход�
 В проекте используются две основные очереди:
 
 - `RABBITMQ_QUEUE` — пользовательские уведомления;
-- `LESSON_COUNTERS_QUEUE` — задачи подсчета пар.
+- `AUTO_DAILY_LESSON_COUNTER_QUEUE` — задачи подсчета пар.
 
 ### Producer
 

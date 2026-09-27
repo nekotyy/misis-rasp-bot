@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+import httpx
+
+from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import normalize_lesson_text, subject_matches, teacher_matches
 from src.parser import ScheduleParser
@@ -84,6 +87,7 @@ async def validate_lesson_config(
     *,
     group_catalog: GroupCatalog,
     parser: ScheduleParser,
+    db: Database | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     groups = payload.get("groups", [])
     if not isinstance(groups, list):
@@ -109,7 +113,7 @@ async def validate_lesson_config(
             problems.append({"level": "error", "message": f"{group_name}: subjects должен быть списком."})
             continue
 
-        schedule_subjects, schedule_teachers = await _load_group_subjects(parser, schedule_id)
+        schedule_subjects, schedule_teachers = await _load_group_subjects(parser, schedule_id, db)
         normalized_subjects: list[dict[str, Any]] = []
         for subject_index, subject_item in enumerate(subjects):
             if not isinstance(subject_item, dict):
@@ -168,15 +172,40 @@ async def _resolve_schedule_id(item: dict[str, Any], group_catalog: GroupCatalog
     return group.schedule_id if group else None
 
 
-async def _load_group_subjects(parser: ScheduleParser, schedule_id: int) -> tuple[dict[str, str], dict[str, set[str]]]:
-    snapshot, _ = await parser.parse(schedule_id)
+async def _load_group_subjects(
+    parser: ScheduleParser,
+    schedule_id: int,
+    db: Database | None = None,
+) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Список дисциплин/преподавателей группы из её текущего расписания.
+
+    Сайт колледжа регулярно лежит часами (502) — если прямой запрос падает, а db передан,
+    подставляется последний снимок, который независимо от этой формы поддерживает в
+    актуальном состоянии фоновый общий синк расписания (ScheduleJobs). Без него (db is None)
+    ошибка сайта пробрасывается как и раньше.
+    """
+    days: list[Any]
+    try:
+        snapshot, _ = await parser.parse(schedule_id)
+        days = [{"lessons": [{"subject": lesson.subject, "teacher": lesson.teacher} for lesson in day.lessons]} for day in snapshot.days]
+    except httpx.HTTPError:
+        if db is None:
+            raise
+        cached = await db.get_latest_snapshot("current", schedule_id=schedule_id)
+        if cached is None:
+            raise
+        logger.warning("Lesson editor: site unavailable for schedule_id=%s, using last cached snapshot instead", schedule_id)
+        days = cached["content"].get("days", [])
+
     subjects: dict[str, str] = {}
     teachers_by_subject: dict[str, set[str]] = {}
-    for day in snapshot.days:
-        for lesson in day.lessons:
-            subject_norm = normalize_lesson_text(lesson.subject)
-            subjects.setdefault(subject_norm, lesson.subject)
-            teachers_by_subject.setdefault(subject_norm, set()).add(lesson.teacher)
+    for day in days:
+        for lesson in day.get("lessons", []):
+            subject = str(lesson.get("subject") or "")
+            teacher = str(lesson.get("teacher") or "")
+            subject_norm = normalize_lesson_text(subject)
+            subjects.setdefault(subject_norm, subject)
+            teachers_by_subject.setdefault(subject_norm, set()).add(teacher)
     return subjects, teachers_by_subject
 
 
