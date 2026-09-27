@@ -26,6 +26,7 @@ from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
     normalize_lesson_text,
+    resolve_audience_preview_content,
     resolve_group_preview_content,
     snapshot_to_search_content,
     subject_matches,
@@ -1301,30 +1302,6 @@ def build_vk_bot(
             lines.append(f"{index}. {g_name} — {u_count} подп. (Личных: {p_count}{chat_info}).")
         return "\n".join(lines)
 
-    async def refresh_all_active_groups() -> list[tuple[str, str, str]]:
-        groups = await db.get_active_groups()
-        if not groups:
-            return []
-
-        rows: list[tuple[str, str, str]] = []
-        for group in groups:
-            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
-            await db.save_snapshot("current", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
-        return rows
-
-    async def save_baseline_for_all_active_groups() -> list[tuple[str, str, str]]:
-        groups = await db.get_active_groups()
-        if not groups:
-            return []
-
-        rows: list[tuple[str, str, str]] = []
-        for group in groups:
-            snapshot, snapshot_hash = await parser.parse(group["schedule_id"])
-            await db.save_snapshot("daily_baseline", snapshot_hash, snapshot, group["schedule_id"], group["group_name"])
-            rows.append((group["group_name"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "эталон сохранен"))
-        return rows
-
     def schedule_text(day, fallback: str) -> str:
         if day is None:
             return f"Расписание на {fallback}\n\nПар нет."
@@ -1390,17 +1367,6 @@ def build_vk_bot(
         await db.set_user_group("vk", user_id, group.group_name, group.schedule_id)
         await show_main_menu(peer_id, user_id)
         return True
-
-    async def get_or_fetch_snapshot(user_id: int) -> dict | None:
-        user = await db.get_user("vk", user_id)
-        if user is None or user.schedule_id is None:
-            return None
-        snapshot = await db.get_latest_snapshot("current", user.schedule_id)
-        if snapshot is not None:
-            return snapshot
-        snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-        await db.save_snapshot("current", snapshot_hash, snapshot_obj, user.schedule_id, user.group_name or snapshot_obj.group_name)
-        return await db.get_latest_snapshot("current", user.schedule_id)
 
     async def ensure_subscription_selected(peer_id: int, user_id: int) -> bool:
         user = await db.get_user("vk", user_id)
@@ -1541,8 +1507,7 @@ def build_vk_bot(
             elif target.kind == "group":
                 content = await resolve_group_preview_content(db, parser, target.url)
             else:
-                snapshot_obj, _ = await parser.parse_from_url(target.url)
-                content = snapshot_to_search_content(snapshot_obj)
+                content = await resolve_audience_preview_content(db, parser, target.url)
         except httpx.HTTPError:
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))

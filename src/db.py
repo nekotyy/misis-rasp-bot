@@ -787,10 +787,6 @@ class Database:
         )
         return [user for user in users if user.homework_notifications_enabled]
 
-    async def get_active_groups(self) -> list[dict]:
-        groups = await self.get_active_sources()
-        return [group for group in groups if group["source_type"] == "group"]
-
     async def get_group_user_stats(self) -> list[dict[str, int | str]]:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute(
