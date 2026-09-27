@@ -32,6 +32,44 @@ class LessonCounterSyncResult:
         return not (self.processed or self.skipped_already_done or self.failed)
 
 
+async def _fetch_day_lesson_pairs(
+    db: Database,
+    parser: ScheduleParser,
+    schedule_id: int | None,
+    source_key: str | None,
+    target_date_iso: str,
+) -> list[tuple[str, str]]:
+    """(subject, teacher) на нужную дату для одного источника.
+
+    Группа с schedule_id спрашивается напрямую с сайта (как и раньше). Группа без него —
+    только через OCR (source_key вида "group-pending:<имя>") — берётся из последнего
+    сохранённого в БД снимка: у неё нет schedule_id, чтобы вообще что-то спросить у сайта.
+    """
+    if schedule_id is not None:
+        snapshot, _ = await parser.parse(schedule_id)
+        day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
+        if day_item is None:
+            return []
+        return [(lesson.subject.strip(), lesson.teacher.strip()) for lesson in day_item.lessons]
+
+    if source_key is not None:
+        cached = await db.get_latest_snapshot("current", source_key=source_key)
+        if cached is None:
+            return []
+        day_item = next(
+            (day for day in cached["content"].get("days", []) if day.get("date_iso") == target_date_iso),
+            None,
+        )
+        if day_item is None:
+            return []
+        return [
+            (str(lesson.get("subject") or "").strip(), str(lesson.get("teacher") or "").strip())
+            for lesson in day_item.get("lessons", [])
+        ]
+
+    return []
+
+
 async def sync_lesson_counters_for_date(
     db: Database,
     parser: ScheduleParser,
@@ -47,23 +85,44 @@ async def sync_lesson_counters_for_date(
     для группы ровно один раз, сколько бы раз этот вызов ни повторили (по расписанию и вручную,
     дважды подряд и т.д.).
 
-    Список групп — это уже настроенные в JSON-конфиге счетчиков (в т.ч. без единого подписчика)
-    плюс все группы из каталога сайта (`groups`), у которых сайт назначил schedule_id, но
-    которых в конфиге ещё нет. Для новой группы auto_increment_or_create_subject_in_json сам
-    создаёт запись группы и предметов при первом же найденном занятии — руками заводить JSON
-    для каждой новой группы больше не нужно.
+    Список групп — это уже настроенные в JSON-конфиге счетчиков (в т.ч. без единого подписчика),
+    плюс все группы из каталога сайта (`groups`) с назначенным schedule_id, плюс OCR-only группы
+    без schedule_id (`group-pending:*`), для которых уже есть сохранённый снимок — всё, чего нет
+    в конфиге. Для новой группы auto_increment_or_create_subject_in_json сам создаёт запись
+    группы и предметов при первом же найденном занятии — руками заводить JSON для каждой новой
+    группы больше не нужно.
+
+    Дедуп источников — по schedule_id, если он есть (JSON и каталог сайта могут по-разному
+    называть одну и ту же группу, но schedule_id у неё один), иначе по source_key. Даже если
+    один и тот же group_name всё же попал в обработку из двух источников с разными ключами
+    (например, группа была OCR-only и только что получила schedule_id) — задвоенный подсчёт
+    исключён отдельно: daily_lesson_counter_logs помечает группу обработанной по имени сразу
+    после первого успешного источника, и повторный источник для того же имени и даты просто
+    пропускается через is_daily_counter_processed ниже.
     """
     result = LessonCounterSyncResult()
-    group_sources = {source["schedule_id"]: source for source in lesson_counter_service.configured_groups()}
+    group_sources: dict[tuple[str, object], dict] = {}
+
+    def register(entry: dict) -> None:
+        schedule_id = entry.get("schedule_id")
+        key = ("sid", schedule_id) if schedule_id is not None else ("key", entry.get("source_key") or entry["group_name"])
+        group_sources.setdefault(key, entry)
+
+    for source in lesson_counter_service.configured_groups():
+        register(source)
 
     for catalog_group in await db.get_all_groups():
         schedule_id = catalog_group.get("schedule_id")
-        if schedule_id is None or schedule_id in group_sources:
+        if schedule_id is None:
             continue
-        group_sources[schedule_id] = {"schedule_id": schedule_id, "group_name": catalog_group["group_name"]}
+        register({"schedule_id": schedule_id, "group_name": catalog_group["group_name"]})
+
+    for pending in await db.get_pending_group_sources():
+        register({"schedule_id": None, "group_name": pending["group_name"], "source_key": pending["source_key"]})
 
     for source in group_sources.values():
-        schedule_id = source["schedule_id"]
+        schedule_id = source.get("schedule_id")
+        source_key = source.get("source_key")
         group_name = source["group_name"]
 
         if await db.is_daily_counter_processed(target_date_iso, group_name):
@@ -71,14 +130,11 @@ async def sync_lesson_counters_for_date(
             continue
 
         try:
-            snapshot, _ = await parser.parse(schedule_id)
-            day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
+            lesson_pairs = await _fetch_day_lesson_pairs(db, parser, schedule_id, source_key, target_date_iso)
 
-            if day_item is not None and day_item.lessons:
+            if lesson_pairs:
                 counts: dict[tuple[str, str], int] = defaultdict(int)
-                for lesson in day_item.lessons:
-                    subj = lesson.subject.strip()
-                    teach = lesson.teacher.strip()
+                for subj, teach in lesson_pairs:
                     if subj:
                         counts[(subj, teach)] += 1
 

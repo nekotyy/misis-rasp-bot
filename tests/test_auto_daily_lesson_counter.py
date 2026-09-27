@@ -143,10 +143,10 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.processed.count("МТО-25"), 1)
         self.mock_parser.parse.assert_awaited_once()
 
-    async def test_catalog_group_without_schedule_id_is_skipped(self):
-        """Группы без schedule_id (сайт его ещё не назначил, OCR-only) не подхватываются
+    async def test_catalog_group_without_schedule_id_or_ocr_snapshot_is_skipped(self):
+        """Группа без schedule_id (сайт его ещё не назначил) И без единого OCR-снимка
 
-        автообнаружением — для них нет способа запросить расписание с сайта."""
+        не подхватывается автообнаружением — спросить расписание для неё вообще неоткуда."""
         target_date = "2026-09-12"
         self.mock_parser.parse = AsyncMock(side_effect=AssertionError("не должен вызываться"))
 
@@ -167,6 +167,52 @@ class AutoDailyLessonCounterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.processed, [])
         self.mock_parser.parse.assert_not_awaited()
+
+    async def test_ocr_only_group_is_counted_from_cached_snapshot_not_live_fetch(self):
+        """Регресс: у РУП-26-1 (и похожих групп без schedule_id, расписание которых приходит
+
+        только через OCR-фото) счётчик молчал ("Список дисциплин пока не настроен"), потому
+        что sync вообще не знал про такие группы. Теперь source_key вида "group-pending:*"
+        с сохранённым снимком в БД тоже подхватывается — без единого обращения к сайту,
+        которого для такой группы всё равно нет."""
+        target_date = "2026-09-15"
+        self.mock_parser.parse = AsyncMock(side_effect=AssertionError("у группы без schedule_id нет сайта, спрашивать не у кого"))
+
+        from datetime import datetime
+
+        ocr_snapshot = ScheduleSnapshot(
+            group_name="РУП-26-1",
+            fetched_at=datetime.now(),
+            days=[
+                DaySchedule(
+                    date_iso=target_date,
+                    date_label="15.09",
+                    lessons=[Lesson(number=1, subject="Основы права", teacher="Сидорова А.А.", classroom="301")],
+                )
+            ],
+        )
+        await self.db.save_snapshot(
+            "current",
+            "ocr-hash-1",
+            ocr_snapshot,
+            schedule_id=None,
+            group_name="РУП-26-1",
+            source_type="group",
+            source_key="group-pending:руп-26-1",
+            source_title="РУП-26-1",
+            source_url="",
+        )
+
+        import json as json_module
+        self.json_path.write_text(json_module.dumps({"groups": []}), encoding="utf-8")
+
+        result = await sync_lesson_counters_for_date(self.db, self.mock_parser, self.service, target_date)
+
+        self.assertIn("РУП-26-1", result.processed)
+        self.mock_parser.parse.assert_not_awaited()
+        text = await self.service.format_counters_text(group_name="РУП-26-1", html=True)
+        self.assertIn("Основы права", text)
+        self.assertIn("Прошло - 1, всего - ##?", text)
 
     def test_reset_group_counters(self):
         self.service.auto_increment_or_create_subject_in_json(
