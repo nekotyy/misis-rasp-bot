@@ -182,7 +182,6 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         jobs.save_daily_baseline = AsyncMock()
         jobs.save_daily_baseline_fallback = AsyncMock()
         jobs.sync_current_snapshot = AsyncMock()
-        jobs.count_today_lessons = AsyncMock()
         jobs.enqueue_or_run_auto_daily_lesson_counter = AsyncMock()
         jobs.enqueue_or_run_db_cleanup = AsyncMock()
         jobs.group_catalog = None

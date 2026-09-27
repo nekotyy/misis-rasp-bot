@@ -24,14 +24,6 @@ class OutboundMessage:
 
 
 @dataclass(slots=True)
-class LessonCounterJob:
-    schedule_id: int
-    attempt: int = 1
-    max_attempts: int = 8
-    job_id: str | None = None
-
-
-@dataclass(slots=True)
 class DatabaseCleanupJob:
     days: int = 90
     attempt: int = 1
@@ -48,7 +40,6 @@ class AutoDailyLessonCounterJob:
 
 
 Sender = Callable[[OutboundMessage], Awaitable[None]]
-LessonCounterHandler = Callable[[LessonCounterJob], Awaitable[None]]
 DatabaseCleanupHandler = Callable[[DatabaseCleanupJob], Awaitable[None]]
 AutoDailyLessonCounterHandler = Callable[[AutoDailyLessonCounterJob], Awaitable[None]]
 
@@ -200,18 +191,6 @@ class RabbitMQBroker(_QueueJobBroker):
 
     async def start_consumer(self, sender: Sender) -> None:
         await super().start_consumer(sender)
-
-
-class LessonCounterJobBroker(_QueueJobBroker):
-    payload_type = LessonCounterJob
-    id_field = "job_id"
-    label = "lesson counter job"
-
-    def __init__(self, url: str, queue_name: str, prefetch_count: int = 5) -> None:
-        super().__init__(url, queue_name, prefetch_count)
-
-    async def start_consumer(self, handler: LessonCounterHandler) -> None:
-        await super().start_consumer(handler)
 
 
 class DatabaseCleanupJobBroker(_QueueJobBroker):

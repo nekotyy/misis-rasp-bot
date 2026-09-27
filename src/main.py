@@ -20,7 +20,6 @@ from src.lesson_counters import LessonCounterService
 from src.message_broker import (
     AutoDailyLessonCounterJobBroker,
     DatabaseCleanupJobBroker,
-    LessonCounterJobBroker,
     RabbitMQBroker,
 )
 from src.notifier import Broadcaster
@@ -290,11 +289,6 @@ async def main() -> None:
         queue_name=settings.rabbitmq_queue,
         prefetch_count=settings.rabbitmq_prefetch_count,
     )
-    lesson_counter_broker = LessonCounterJobBroker(
-        url=settings.rabbitmq_url,
-        queue_name=settings.lesson_counters_queue,
-        prefetch_count=1,
-    )
     db_cleanup_broker = DatabaseCleanupJobBroker(
         url=settings.rabbitmq_url,
         queue_name=settings.db_cleanup_queue,
@@ -326,7 +320,6 @@ async def main() -> None:
         request_jitter_seconds=settings.schedule_request_jitter_seconds,
         lesson_counters_enabled=settings.lesson_counters_enabled,
         lesson_counter_service=lesson_counter_service,
-        lesson_counter_broker=lesson_counter_broker,
         db_cleanup_broker=db_cleanup_broker,
         auto_daily_lesson_counter_broker=auto_daily_lesson_counter_broker,
         admin_backup_enabled=bool(settings.admin_telegram_id),
@@ -377,11 +370,6 @@ async def main() -> None:
     except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
         await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска consumer RabbitMQ")
-    try:
-        await jobs.start_lesson_counter_consumer()
-    except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
-        logging.exception("Lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
-        await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска lesson_counter consumer RabbitMQ")
     try:
         await jobs.start_db_cleanup_consumer()
     except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
