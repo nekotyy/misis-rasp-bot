@@ -2874,6 +2874,32 @@ def build_vk_bot(
             await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
             return
 
+        if text == "Расписание звонков":
+            await show_bells_schedule(peer_id)
+            return
+
+        if text in {"Расписание на сегодня", "Расписание на завтра", "Расписание на 2 дня"}:
+            # Кнопки клавиатуры расписания раньше работали только при mode ==
+            # "schedule_menu", а peer_modes живёт лишь в памяти процесса — после
+            # перезапуска бота старая клавиатура у пользователя переставала
+            # работать (нажатие тихо уходило в главное меню без единой ошибки).
+            snapshot = await get_or_fetch_subscription_snapshot(user_id)
+            if snapshot is None:
+                await show_screen(peer_id, "Не удалось получить расписание для твоей группы.", keyboard=schedule_keyboard())
+                return
+            offset, label = {
+                "Расписание на сегодня": (0, "сегодня"),
+                "Расписание на завтра": (1, "завтра"),
+                "Расписание на 2 дня": (2, "2 дня"),
+            }[text]
+            peer_modes[peer_id] = "schedule_menu"
+            await show_screen(
+                peer_id,
+                schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label),
+                keyboard=schedule_keyboard(),
+            )
+            return
+
         if text == "Найти расписание":
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text())
@@ -2882,24 +2908,6 @@ def build_vk_bot(
         if mode == "audience_select":
             await handle_audience_input(peer_id, user_id, text)
             return
-
-        if mode == "schedule_menu":
-            if text == "Расписание звонков":
-                await show_bells_schedule(peer_id)
-                return
-            snapshot = await get_or_fetch_subscription_snapshot(user_id)
-            if snapshot is None:
-                await show_screen(peer_id, "Не удалось получить расписание для твоей группы.", keyboard=schedule_keyboard())
-                return
-            if text == "Расписание на сегодня":
-                await show_screen(peer_id, schedule_text(get_day_by_offset_from_content(snapshot["content"], 0), "сегодня"), keyboard=schedule_keyboard())
-                return
-            if text == "Расписание на завтра":
-                await show_screen(peer_id, schedule_text(get_day_by_offset_from_content(snapshot["content"], 1), "завтра"), keyboard=schedule_keyboard())
-                return
-            if text == "Расписание на 2 дня":
-                await show_screen(peer_id, schedule_text(get_day_by_offset_from_content(snapshot["content"], 2), "2 дня"), keyboard=schedule_keyboard())
-                return
 
         if mode == "schedule_search":
             await perform_schedule_search(peer_id, text)
