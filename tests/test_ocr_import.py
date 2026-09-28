@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.ocr_import import OcrScheduleImporter, build_ocr_importer, format_ocr_preview
-from src.ocr_schedule import OcrEngineError
+from src.ocr_schedule import OcrEngineError, OcrScheduleParser
 
 RECOGNIZED_JSON = json.dumps(
     {
@@ -499,6 +499,56 @@ class ManualSnapshotPipelineTests(unittest.IsolatedAsyncioTestCase):
         args = jobs.apply_snapshot.await_args
         self.assertEqual(args.args[2], compute_snapshot_hash(snapshot))
         self.assertFalse(args.kwargs["notify"])
+
+
+class SingleGroupDuplicateLessonTests(unittest.TestCase):
+    """Тот же баг с подгруппами, что и в сводном режиме (test_ocr_summary.py), но для
+
+    обычного OCR-фото одной группы на много дней (_score_and_correct)."""
+
+    def setUp(self) -> None:
+        self.parser = OcrScheduleParser()
+
+    def test_exact_duplicate_lesson_keeps_first(self) -> None:
+        payload = json.dumps(
+            {
+                "group_name": "МЧМ-23",
+                "days": [
+                    {
+                        "date_iso": "2026-09-07",
+                        "lessons": [
+                            {"number": 1, "subject": "Физика", "teacher": "Петров П.П.", "classroom": "202"},
+                            {"number": 1, "subject": "физика", "teacher": "петров п.п.", "classroom": "202"},
+                        ],
+                    }
+                ],
+            }
+        )
+        result = self.parser.parse_text(payload)
+        self.assertEqual(len(result.snapshot.days[0].lessons), 1)
+
+    def test_same_number_different_teacher_keeps_both_as_subgroups(self) -> None:
+        """Регресс: МЧМ-23, пара 5 — Подкопаева М.Г. и Гришина С.С. одновременно в "Полигон 1"
+
+        (разные подгруппы, аудитория просто совпала) — раньше вторая запись дропалась."""
+        payload = json.dumps(
+            {
+                "group_name": "МЧМ-23",
+                "days": [
+                    {
+                        "date_iso": "2026-09-07",
+                        "lessons": [
+                            {"number": 5, "subject": "МДК.03.01 Тех. иссл. деят.", "teacher": "Подкопаева М.Г.", "classroom": "Полигон 1"},
+                            {"number": 5, "subject": "МДК.03.01 Тех. иссл. деят.", "teacher": "Гришина С.С.", "classroom": "Полигон 1"},
+                        ],
+                    }
+                ],
+            }
+        )
+        result = self.parser.parse_text(payload)
+        lessons = result.snapshot.days[0].lessons
+        self.assertEqual(len(lessons), 2)
+        self.assertEqual({lesson.teacher for lesson in lessons}, {"Подкопаева М.Г.", "Гришина С.С."})
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@ from gemini_webapi.exceptions import (
 from PIL import Image, ImageOps
 from PIL import UnidentifiedImageError as PilUnidentifiedImageError
 
+from src.lesson_counters import normalize_lesson_text
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import compute_snapshot_hash
 from src.schedule_service import format_human_date
@@ -1386,6 +1387,7 @@ class OcrScheduleParser:
 
             lessons: list[Lesson] = []
             seen_numbers: set[int] = set()
+            seen_lesson_keys: set[tuple[int, str, str]] = set()
             raw_lessons = raw_group.get("lessons")
             for position, raw_lesson in enumerate(raw_lessons if isinstance(raw_lessons, list) else [], start=1):
                 if not isinstance(raw_lesson, dict):
@@ -1402,12 +1404,23 @@ class OcrScheduleParser:
                     )
                     skipped_lines.append(f"{group_name} пара {number}: без дисциплины")
                     continue
-                if number in seen_numbers:
+                lesson_key = (number, normalize_lesson_text(subject), normalize_lesson_text(teacher))
+                if lesson_key in seen_lesson_keys:
                     issues.append(
                         OcrIssue("warning", f"{group_name}: пара {number} встретилась дважды — оставлен первый вариант.")
                     )
                     continue
+                if number in seen_numbers:
+                    # Другой предмет и/или препод на том же номере — подгруппы, а не дубль
+                    # OCR (см. аналогичную логику в _score_and_correct выше). Сохраняем обе записи.
+                    issues.append(
+                        OcrIssue(
+                            "warning",
+                            f"{group_name}: пара {number}: несколько преподавателей в одном слоте — похоже на подгруппы, сохранены оба варианта.",
+                        )
+                    )
                 seen_numbers.add(number)
+                seen_lesson_keys.add(lesson_key)
 
                 score_parts = [1.0]
                 if len(subject) < MIN_SUBJECT_LENGTH:
@@ -1499,8 +1512,18 @@ class OcrScheduleParser:
             )
             score_parts.append(0.4)
 
-        existing = next((item for item in day.lessons if item.number == number), None)
-        if existing is not None:
+        subject_norm = normalize_lesson_text(subject)
+        teacher_norm = normalize_lesson_text(teacher)
+        same_number = [item for item in day.lessons if item.number == number]
+        exact_duplicate = next(
+            (
+                item
+                for item in same_number
+                if normalize_lesson_text(item.subject) == subject_norm and normalize_lesson_text(item.teacher) == teacher_norm
+            ),
+            None,
+        )
+        if exact_duplicate is not None:
             issues.append(
                 OcrIssue(
                     "warning",
@@ -1510,6 +1533,21 @@ class OcrScheduleParser:
                 )
             )
             return sum(score_parts) / len(score_parts)
+
+        if same_number:
+            # Другой предмет и/или препод на том же номере — не дубль OCR, а подгруппы
+            # (несколько преподов/аудиторий на одну пару, как в реальном расписании сайта:
+            # см. ScheduleComparator в schedule_service.py). Сохраняем оба варианта, но
+            # предупреждаем — уровень "warning", чтобы это реально попало в предпросмотр
+            # админу (OcrIssue поддерживает только error/warning, "info" там был бы не виден).
+            issues.append(
+                OcrIssue(
+                    "warning",
+                    f"Пара {number} на {format_human_date(day.date_label)}: несколько преподавателей в одном слоте — похоже на подгруппы, сохранены оба варианта.",
+                    day.date_iso,
+                    number,
+                )
+            )
 
         day.lessons.append(Lesson(number=number, subject=subject, teacher=teacher, classroom=classroom))
         return sum(score_parts) / len(score_parts)

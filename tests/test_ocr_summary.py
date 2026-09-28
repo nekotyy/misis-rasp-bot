@@ -103,7 +103,10 @@ class ParseSummaryTextTests(unittest.TestCase):
         self.assertEqual(result.groups[0].lessons[0].subject, "А")
         self.assertTrue(any("несколько раз" in issue.message for issue in result.warnings))
 
-    def test_duplicate_lesson_number_within_group_keeps_first(self) -> None:
+    def test_exact_duplicate_lesson_within_group_keeps_first(self) -> None:
+        """Настоящий дубль — Gemini дважды распознал одну и ту же строку (тот же предмет
+
+        и препод). Второй экземпляр — шум, а не подгруппа, его отбрасываем."""
         payload = json.dumps(
             {
                 "date_iso": "2026-09-07",
@@ -111,8 +114,8 @@ class ParseSummaryTextTests(unittest.TestCase):
                     {
                         "group_name": "МТО-26",
                         "lessons": [
-                            {"number": 1, "subject": "Первая", "teacher": "", "classroom": ""},
-                            {"number": 1, "subject": "Вторая", "teacher": "", "classroom": ""},
+                            {"number": 1, "subject": "Первая", "teacher": "Иванов И.И.", "classroom": "101"},
+                            {"number": 1, "subject": "первая", "teacher": "иванов и.и.", "classroom": "101"},
                         ],
                     }
                 ],
@@ -121,6 +124,30 @@ class ParseSummaryTextTests(unittest.TestCase):
         result = self.parser.parse_summary_text(payload)
         self.assertEqual(len(result.groups[0].lessons), 1)
         self.assertEqual(result.groups[0].lessons[0].subject, "Первая")
+
+    def test_same_number_different_teacher_keeps_both_as_subgroups(self) -> None:
+        """Регресс: пара с тем же номером, но другим предметом/преподом — не дубль OCR,
+
+        а параллельные подгруппы (реальный кейс: МТО-24, пара 1 — Барсова А.А. в 102-й и
+        Подкопаева Н.В. в 411-й одновременно). Раньше валидатор дропал вторую запись."""
+        payload = json.dumps(
+            {
+                "date_iso": "2026-09-07",
+                "groups": [
+                    {
+                        "group_name": "МТО-24",
+                        "lessons": [
+                            {"number": 1, "subject": "МДК.01.02. Осущ.пуск.раб.обор.", "teacher": "Барсова А.А.", "classroom": "102"},
+                            {"number": 1, "subject": "МДК.01.02. Осущ.пуск.раб.обор.", "teacher": "Подкопаева Н.В.", "classroom": "411"},
+                        ],
+                    }
+                ],
+            }
+        )
+        result = self.parser.parse_summary_text(payload)
+        self.assertEqual(len(result.groups[0].lessons), 2)
+        teachers = {lesson.teacher for lesson in result.groups[0].lessons}
+        self.assertEqual(teachers, {"Барсова А.А.", "Подкопаева Н.В."})
 
     def test_lesson_without_subject_is_skipped(self) -> None:
         payload = json.dumps(
