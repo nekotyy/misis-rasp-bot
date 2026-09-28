@@ -109,6 +109,21 @@ class ParserAndCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(GroupCatalog.normalize("Y-24-1"), "у-24-1")
         self.assertEqual(GroupCatalog.normalize("y-24-1"), "у-24-1")
 
+    def test_site_root_url_strips_rasp_prefix_and_id(self):
+        """/rasp сам по себе 404 на сайте — проверка живости должна ходить на корень."""
+        self.assertEqual(
+            ScheduleParser(schedule_url="http://asu.sf-misis.ru/rasp/600").site_root_url,
+            "http://asu.sf-misis.ru/",
+        )
+        self.assertEqual(
+            ScheduleParser(schedule_url="http://asu.sf-misis.ru/rasp/").site_root_url,
+            "http://asu.sf-misis.ru/",
+        )
+        self.assertEqual(
+            ScheduleParser(schedule_url="http://asu.sf-misis.ru/rasp").site_root_url,
+            "http://asu.sf-misis.ru/",
+        )
+
 
 SAMPLE_GROUP = GroupInfo(
     department_id=1,

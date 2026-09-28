@@ -334,7 +334,7 @@ async def build_vk_admin_status_text(
 
     schedule_url = settings.schedule_url if settings else "http://asu.sf-misis.ru/rasp/600"
     rabbitmq_url = settings.rabbitmq_url if settings else ""
-    site_status = await check_schedule_site(schedule_url, timeout=3.0)
+    site_status = await check_schedule_site(ScheduleParser(schedule_url).site_root_url, timeout=3.0)
     db_status = await check_database_status(db)
 
     vk_users = sum(1 for user in users if user.platform == "vk")

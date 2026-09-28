@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -78,6 +79,18 @@ class ScheduleParser:
         if schedule_id is None:
             raise ValueError("schedule_id is required to build a schedule URL")
         return f"{self.schedule_base_url}/{schedule_id}"
+
+    @property
+    def site_root_url(self) -> str:
+        """Корень сайта (например, http://asu.sf-misis.ru/), а не /rasp без ID.
+
+        /rasp сам по себе не существующая страница — это только префикс, к которому
+        всегда приписывается конкретный schedule_id (build_schedule_url). Проверка
+        живости сайта должна ходить сюда, а не на /rasp, иначе она будет получать 404
+        даже когда сайт полностью работает, и слать ложные тревоги о падении.
+        """
+        parts = urlsplit(self.schedule_base_url)
+        return f"{parts.scheme}://{parts.netloc}/"
 
     async def fetch_html(self, schedule_id: int | None) -> str:
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:

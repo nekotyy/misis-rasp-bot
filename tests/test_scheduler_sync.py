@@ -737,5 +737,33 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
             await run_task
 
 
+class RunSystemHealthCheckTests(unittest.IsolatedAsyncioTestCase):
+    """/rasp сам по себе всегда 404 на сайте МИСИС — проверка живости должна ходить
+
+    на корень сайта, а не на префикс, к которому в остальном коде всегда
+    приписывается конкретный schedule_id.
+    """
+
+    async def test_checks_site_root_not_bare_rasp_prefix(self) -> None:
+        from src.parser import ScheduleParser
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.parser = ScheduleParser(schedule_url="http://asu.sf-misis.ru/rasp/600")
+        jobs.db = MagicMock(path="test.db")
+        jobs.rabbitmq_url = ""
+        jobs.web_port = 8080
+        jobs.alert_manager = None
+
+        with (
+            patch("src.scheduler.check_schedule_site", AsyncMock(return_value={"ok": True})) as check_site,
+            patch("src.scheduler.check_database_status", AsyncMock(return_value={"ok": True})),
+            patch("src.scheduler.check_web_dashboard_status", AsyncMock(return_value={"ok": True})),
+        ):
+            await jobs.run_system_health_check()
+
+        check_site.assert_awaited_once_with("http://asu.sf-misis.ru/")
+
+
 if __name__ == "__main__":
     unittest.main()
