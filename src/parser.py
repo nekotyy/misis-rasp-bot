@@ -13,6 +13,11 @@ from src.models import DaySchedule, Lesson, ScheduleSnapshot
 
 logger = logging.getLogger(__name__)
 
+# Пауза между источниками при ручном перепарсинге из админки. Плановая синхронизация
+# ждёт 12–18 с, а ручная раньше дёргала сайт ~100 раз подряд без паузы, добивая и без
+# того нестабильный сайт колледжа.
+MANUAL_REFRESH_PAUSE_SECONDS = 1.5
+
 MONTHS = {
     "января": "01",
     "февраля": "02",
@@ -113,7 +118,9 @@ class ScheduleParser:
                 return response
             except httpx.HTTPError as exc:
                 last_exc = exc
-                if attempt >= self.request_retries:
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                # 4xx (кроме 429) повтором не лечится — страницы просто нет.
+                if attempt >= self.request_retries or (status is not None and 400 <= status < 500 and status != 429):
                     break
                 logger.warning("Ошибка загрузки %s (попытка %s/%s): %s", url, attempt, self.request_retries, exc)
                 await asyncio.sleep(self.retry_backoff_seconds * attempt)

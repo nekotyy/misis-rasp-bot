@@ -49,7 +49,7 @@ from src.ocr_schedule import (
     OcrEngineError,
     compress_image_for_ocr,
 )
-from src.parser import ScheduleParser, compute_snapshot_hash
+from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
@@ -1730,7 +1730,9 @@ def build_vk_bot(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
                     snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
@@ -1763,7 +1765,9 @@ def build_vk_bot(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
                     snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
@@ -1922,7 +1926,13 @@ def build_vk_bot(
         if text and not has_attachments:
             await wait_rate_limit_queue(user_id, 0.8)
 
-        if message.action and getattr(message.action, "type", None) in {"chat_invite_user", "chat_invite_user_by_link"}:
+        # Инструкция — только когда в беседу добавили самого бота (сообщество: отрицательный member_id),
+        # а не при каждом приглашённом участнике.
+        if (
+            message.action
+            and getattr(message.action, "type", None) in {"chat_invite_user", "chat_invite_user_by_link"}
+            and (getattr(message.action, "member_id", None) or 0) < 0
+        ):
             welcome_msg = (
                 "Инструкция по настройке бота в беседе\n\n"
                 "Бот успешно добавлен в вашу беседу.\n\n"

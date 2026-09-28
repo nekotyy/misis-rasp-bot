@@ -14,6 +14,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.methods import GetUpdates
 
 from src.config import Settings
 from src.db import Database
@@ -36,8 +37,9 @@ from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot, vk_handler_timeout
 from src.vk_runtime import VkUpdateDispatcher
 
-# Если VK long poll не отвечал дольше этого, мониторинг считает приём сообщений VK упавшим.
+# Если long poll VK / getUpdates Telegram не отвечали дольше этого, мониторинг считает приём сообщений упавшим.
 VK_POLLING_STALE_SECONDS = 300.0
+TELEGRAM_POLLING_STALE_SECONDS = 300.0
 
 _background_tasks: set[asyncio.Task] = set()
 
@@ -101,8 +103,32 @@ def start_background_task(name: str, coro) -> asyncio.Task:
     return task
 
 
+class TrackingAiohttpSession(AiohttpSession):
+    """Сессия aiogram, которая помнит время последнего успешного getUpdates — для мониторинга."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.started_at = monotonic()
+        self.last_updates_ok_at: float | None = None
+
+    async def make_request(self, bot, method, timeout=None):
+        result = await super().make_request(bot, method, timeout)
+        if isinstance(method, GetUpdates):
+            self.last_updates_ok_at = monotonic()
+        return result
+
+
+def telegram_polling_probe(session: TrackingAiohttpSession) -> Callable[[], tuple[bool, str]]:
+    def probe() -> tuple[bool, str]:
+        reference = session.last_updates_ok_at if session.last_updates_ok_at is not None else session.started_at
+        age = monotonic() - reference
+        return age < TELEGRAM_POLLING_STALE_SECONDS, f"последний успешный getUpdates {age:.0f} с назад"
+
+    return probe
+
+
 def build_telegram_bot(settings: Settings) -> Bot:
-    session = AiohttpSession(proxy=settings.telegram_proxy or None)
+    session = TrackingAiohttpSession(proxy=settings.telegram_proxy or None)
     return Bot(
         token=settings.telegram_bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -396,9 +422,11 @@ async def main() -> None:
 
     # Боты поднимаются раньше всего остального: уведомления админу на старте
     # (например, «OCR недоступен») раньше уходили в пустоту — ботов ещё не было.
-    start_telegram_polling(
+    telegram_bot = start_telegram_polling(
         settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer, error_reporter=error_reporter
     )
+    if telegram_bot is not None and isinstance(telegram_bot.session, TrackingAiohttpSession):
+        jobs.liveness_probes["telegram_polling"] = telegram_polling_probe(telegram_bot.session)
     vk_probe = start_vk_polling(
         settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer, error_reporter=error_reporter
     )

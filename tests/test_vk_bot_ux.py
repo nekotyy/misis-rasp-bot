@@ -136,6 +136,23 @@ class VkBotUxTests(unittest.IsolatedAsyncioTestCase):
         text, _ = self.last_screen()
         self.assertIn("Админ-панель", text)
 
+    async def _invite(self, member_id: int) -> None:
+        await self.handler(
+            SimpleNamespace(
+                peer_id=CHAT_PEER,
+                from_id=USER_ID,
+                text="",
+                action=SimpleNamespace(type="chat_invite_user", member_id=member_id),
+                attachments=[],
+            )
+        )
+
+    async def test_setup_instructions_only_when_bot_itself_is_invited(self) -> None:
+        await self._invite(member_id=555)
+        self.assertEqual(self.sent(), [], "приглашение обычного участника не должно слать инструкцию")
+        await self._invite(member_id=-237526231)
+        self.assertIn("Инструкция по настройке бота в беседе", self.sent()[-1]["message"])
+
     async def test_mention_prefixed_button_is_recognized(self) -> None:
         await self.send("[club1|@bot] Дополнительно")
         text, _ = self.last_screen()

@@ -66,7 +66,7 @@ from src.ocr_schedule import (
     OcrEngineError,
     compress_image_for_ocr,
 )
-from src.parser import ScheduleParser, compute_snapshot_hash
+from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
@@ -244,6 +244,8 @@ USER_ERROR_HTML = (
 STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 TELEGRAM_MESSAGE_LIMIT = 4096
+# Через сколько секунд бот сам подтверждает нажатие кнопки, если обработчик ещё работает.
+CALLBACK_AUTO_ANSWER_SECONDS = 1.0
 MAX_OCR_IMAGE_BYTES = 20 * 1024 * 1024
 # Сколько ждать после первого фото альбома, прежде чем начать распознавание:
 # Telegram присылает части альбома отдельными сообщениями, обычно в течение
@@ -1012,6 +1014,30 @@ def build_dispatcher(
     error_reporter: AdminErrorReporter | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
+    # id нажатий, на которые уже ответили: safe_callback_answer и авто-ответ ниже не дублируют друг друга.
+    answered_callback_ids: set[str] = set()
+
+    async def early_callback_answer_middleware(handler, event: CallbackQuery, data: dict) -> Any:
+        """Подтверждает нажатие кнопки, если обработчик не ответил за секунду.
+
+        Обработчики отвечают на callback в конце, после работы с БД и сайтом. Пока ответа
+        нет, у пользователя на кнопке крутятся «часики», а через ~15 с ответ вообще
+        становится просроченным. Быстрые обработчики по-прежнему успевают показать свой
+        текст (всплывающее уведомление), медленные получают тихое подтверждение.
+        """
+
+        async def answer_later() -> None:
+            await asyncio.sleep(CALLBACK_AUTO_ANSWER_SECONDS)
+            await safe_callback_answer(event)
+
+        timer = asyncio.create_task(answer_later())
+        try:
+            return await handler(event, data)
+        finally:
+            timer.cancel()
+            answered_callback_ids.discard(getattr(event, "id", None))
+
+    dispatcher.callback_query.outer_middleware(early_callback_answer_middleware)
     reporter = error_reporter or AdminErrorReporter(broadcaster.notify_admins if broadcaster is not None else None)
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
@@ -1241,6 +1267,9 @@ def build_dispatcher(
             if user.subscription_type == "teacher" and user.subscription_title:
                 snapshot_obj = await build_teacher_schedule_snapshot(db, user.subscription_title)
                 snapshot_hash = compute_snapshot_hash(snapshot_obj)
+            elif user.subscription_type == "audience" and user.subscription_url:
+                # Как в VK: без этой ветки подписка на кабинет без кэша давала «не удалось получить».
+                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
             elif user.schedule_id is not None:
                 snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
             else:
@@ -1868,7 +1897,9 @@ def build_dispatcher(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
@@ -1901,7 +1932,9 @@ def build_dispatcher(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
@@ -2041,7 +2074,48 @@ def build_dispatcher(
                 continue
             await safe_delete_message(bot, chat_id, message_id)
         context_messages[chat_id][context] = kept_ids
+    def reset_user_input_states(user_id: int | None) -> None:
+        """Сбрасывает все режимы ожидания ввода пользователя (/start, /cancel, «Назад»).
+
+        Раньше сбрасывалась только часть: админ, нажавший /start посреди добавления пары
+        или ожидания JSON, отправлял следующий обычный текст прямо в админский сценарий.
+        """
+        if user_id is None:
+            return
+        for waiting in (
+            awaiting_schedule_search,
+            awaiting_audience_subscription_input,
+            awaiting_admin_broadcast_text,
+            awaiting_admin_user_search,
+            awaiting_admin_lesson_input,
+            awaiting_admin_lesson_delete_input,
+            awaiting_admin_lesson_delete_one_input,
+            awaiting_admin_import_lessons,
+            awaiting_admin_ocr_photo,
+            awaiting_admin_ocr_summary_photo,
+            awaiting_admin_ocr_json,
+            awaiting_custom_donate_stars,
+            awaiting_custom_sticker,
+        ):
+            waiting.discard(user_id)
+        for drafts in (
+            search_results,
+            admin_broadcast_drafts,
+            admin_lesson_drafts,
+            admin_lesson_delete_drafts,
+            admin_lesson_delete_one_drafts,
+            admin_import_lessons_drafts,
+            admin_user_search_state,
+        ):
+            drafts.pop(user_id, None)
+
     async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> None:
+        callback_id = getattr(callback, "id", None)
+        if callback_id is not None:
+            if callback_id in answered_callback_ids:
+                # На нажатие уже ответили (например, авто-ответ по таймеру) — второй ответ Telegram отклонит.
+                return
+            answered_callback_ids.add(callback_id)
         retries = 3
         for attempt in range(1, retries + 1):
             try:
@@ -2168,7 +2242,13 @@ def build_dispatcher(
 
     async def prompt_schedule_search(bot: Bot, chat_id: int, user_id: int, error_text: str | None = None) -> None:
         awaiting_schedule_search.add(user_id)
-        await send_new_context_message(bot, chat_id, "schedule", format_search_prompt(error_text))
+        await send_new_context_message(
+            bot,
+            chat_id,
+            "schedule",
+            format_search_prompt(error_text),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:start")]]),
+        )
 
     async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
         if search_catalog is None:
@@ -2447,10 +2527,7 @@ def build_dispatcher(
                 "Текущий статус: /group_status",
             )
             return
-        search_results.pop(message.from_user.id if message.from_user else 0, None)
-        if message.from_user:
-            awaiting_schedule_search.discard(message.from_user.id)
-            awaiting_audience_subscription_input.discard(message.from_user.id)
+        reset_user_input_states(message.from_user.id if message.from_user else None)
         user = await get_user_record(message.from_user.id if message.from_user else None)
         if user is None or not user.subscription_key or not user.subscription_title:
             await prompt_group_selection(message.bot, message.chat.id)
@@ -2521,7 +2598,8 @@ def build_dispatcher(
     @dispatcher.message(Command("cleandb"))
     async def handle_cleandb_command(message: Message) -> None:
         await register_message_user(message)
-        if message.from_user is None or not user_is_admin(message.from_user.id):
+        # Очистка БД — только полному админу, как и одноимённая кнопка в админке.
+        if message.from_user is None or not user_is_full_admin(message.from_user.id):
             return
 
         await send_reply(
@@ -2535,7 +2613,8 @@ def build_dispatcher(
     @dispatcher.message(Command("dnremove"))
     async def handle_dnremove_command(message: Message) -> None:
         await register_message_user(message)
-        if message.from_user is None or not user_is_admin(message.from_user.id):
+        # Возврат платежей — только полному админу: ограниченный админ не должен двигать деньги.
+        if message.from_user is None or not user_is_full_admin(message.from_user.id):
             return
 
         args = (message.text or "").strip().split()
@@ -2697,20 +2776,11 @@ def build_dispatcher(
         await register_message_user(message)
         if message.chat.type != "private":
             return
-        if message.from_user:
-            awaiting_admin_broadcast_text.discard(message.from_user.id)
-            admin_broadcast_drafts.pop(message.from_user.id, None)
-            awaiting_audience_subscription_input.discard(message.from_user.id)
+        reset_user_input_states(message.from_user.id if message.from_user else None)
         await clear_context_messages(message.bot, message.chat.id, "dz")
         await clear_context_messages(message.bot, message.chat.id, "admin_broadcast")
         await clear_context_messages(message.bot, message.chat.id, "admin_lesson")
-        search_results.pop(message.from_user.id, None)
-        awaiting_schedule_search.discard(message.from_user.id)
-        awaiting_admin_lesson_input.discard(message.from_user.id)
-        if message.from_user:
-            awaiting_custom_donate_stars.discard(message.from_user.id)
         await clear_context_messages(message.bot, message.chat.id, "donate")
-        admin_lesson_drafts.pop(message.from_user.id, None)
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -2838,13 +2908,7 @@ def build_dispatcher(
     async def handle_menu_start(callback: CallbackQuery) -> None:
         await wait_callback_rate_limit(callback)
         await register_callback_user(callback)
-        search_results.pop(callback.from_user.id, None)
-        awaiting_schedule_search.discard(callback.from_user.id)
-        awaiting_admin_broadcast_text.discard(callback.from_user.id)
-        awaiting_admin_lesson_input.discard(callback.from_user.id)
-        awaiting_audience_subscription_input.discard(callback.from_user.id)
-        admin_broadcast_drafts.pop(callback.from_user.id, None)
-        admin_lesson_drafts.pop(callback.from_user.id, None)
+        reset_user_input_states(callback.from_user.id)
         editor = await user_is_editor(callback.from_user.id)
         user = await get_user_record(callback.from_user.id)
         if callback.message is not None:
@@ -3154,7 +3218,8 @@ def build_dispatcher(
         action = callback.data.split(":", 1)[1]
         is_full_admin = user_is_full_admin(callback.from_user.id)
         if not is_full_admin and (action in {
-            "broadcast", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk", "baseline", "editors", "test",
+            "broadcast", "broadcast_confirm", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk",
+            "baseline", "editors", "test",
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
             "lesson_confirm", "lesson_confirm_force",
@@ -4061,7 +4126,9 @@ def build_dispatcher(
         await register_message_user(message)
         if message.from_user is None:
             return
-        if not is_ocr_photo_candidate(message.chat.type, user_is_admin(message.from_user.id)):
+        # Импорт с фото доступен только полному админу (подтверждение ограниченному и так запрещено),
+        # иначе его фото впустую тратили бы запросы к Gemini.
+        if not is_ocr_photo_candidate(message.chat.type, user_is_full_admin(message.from_user.id)):
             return
 
         if message.from_user.id in awaiting_admin_ocr_json:

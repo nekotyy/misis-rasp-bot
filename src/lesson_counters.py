@@ -18,7 +18,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import ScheduleParser
-from src.schedule_service import format_human_date
+from src.schedule_service import format_human_date, snapshot_is_all_empty
 from src.subscription_utils import extract_numeric_id
 
 logger = logging.getLogger(__name__)
@@ -35,17 +35,65 @@ class LessonCounterSyncResult:
         return not (self.processed or self.skipped_already_done or self.failed)
 
 
-def _lesson_pairs_from_content(content: dict, target_date_iso: str) -> list[tuple[str, str]]:
-    day_item = next(
-        (day for day in content.get("days", []) if day.get("date_iso") == target_date_iso),
-        None,
-    )
-    if day_item is None:
+class LessonConfigReadError(RuntimeError):
+    """Файл счётчиков есть, но не читается. Записывать поверх нельзя — сотрём все данные."""
+
+
+class LessonDayUnavailableError(LookupError):
+    """Ни сайт, ни кэш не содержат нужной даты — день нельзя ни посчитать, ни пометить учтённым."""
+
+
+def read_lesson_config_for_update(path: Path) -> dict:
+    """Читает JSON счётчиков перед изменением.
+
+    Раньше при ошибке чтения подставлялся пустой конфиг, и следующая запись
+    сохраняла файл с одной-единственной группой — все остальные счётчики пропадали.
+    """
+    if not path.exists():
+        return {"groups": []}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise LessonConfigReadError(f"Не удалось прочитать {path.name}: {exc}") from exc
+    if isinstance(payload, list):
+        return {"groups": payload}
+    if isinstance(payload, dict):
+        payload.setdefault("groups", [])
+        return payload
+    raise LessonConfigReadError(f"{path.name}: неожиданный формат ({type(payload).__name__})")
+
+
+def _lesson_pairs_from_days(days: list[tuple[str, list[tuple[str, str]]]], target_date_iso: str) -> list[tuple[str, str]] | None:
+    """Пары на дату из списка дней, либо None, если про эту дату данных нет.
+
+    Отсутствие дня внутри охваченного периода (например, воскресенье между субботой и
+    понедельником) — это «пар нет». А дата вне периода — «не знаем»: сайт уже убрал
+    прошедшие дни, и считать такой день пустым нельзя.
+    """
+    for date_iso, pairs in days:
+        if date_iso == target_date_iso:
+            return pairs
+    known = sorted(date_iso for date_iso, _ in days if date_iso)
+    if known and known[0] <= target_date_iso <= known[-1]:
         return []
+    return None
+
+
+def _days_from_content(content: dict) -> list[tuple[str, list[tuple[str, str]]]]:
     return [
-        (str(lesson.get("subject") or "").strip(), str(lesson.get("teacher") or "").strip())
-        for lesson in day_item.get("lessons", [])
+        (
+            str(day.get("date_iso") or ""),
+            [
+                (str(lesson.get("subject") or "").strip(), str(lesson.get("teacher") or "").strip())
+                for lesson in day.get("lessons", [])
+            ],
+        )
+        for day in content.get("days", [])
     ]
+
+
+def _lesson_pairs_from_content(content: dict, target_date_iso: str) -> list[tuple[str, str]]:
+    return _lesson_pairs_from_days(_days_from_content(content), target_date_iso) or []
 
 
 async def _fetch_day_lesson_pairs(
@@ -58,40 +106,50 @@ async def _fetch_day_lesson_pairs(
     """(subject, teacher) на нужную дату для одного источника.
 
     Группа с schedule_id сначала спрашивается напрямую с сайта — это самые свежие данные.
-    Если сайт недоступен (частое явление — 502 держится часами), падаем на последний снимок
-    в БД: его постоянно обновляет фоновый общий синк расписания (ScheduleJobs), независимо от
-    подсчёта пар, так что кэш почти всегда свежий даже когда сайт лежит именно в момент этого
-    вызова. Если и кэша нет вообще — тогда сайт правда единственный источник, ошибка пробрасывается.
+    Если сайт недоступен (частое явление — 502 держится часами), отдал пустые таблицы
+    после сбоя или уже не показывает нужную дату (подсчёт «за вчера» после полуночи),
+    берём последний снимок из БД. Если и там этой даты нет — `LessonDayUnavailableError`:
+    такой день нельзя помечать учтённым с нулём пар.
 
     Группа без schedule_id — только через OCR (source_key вида "group-pending:<имя>") — берётся
-    из последнего сохранённого в БД снимка сразу, без похода на сайт: у неё нет schedule_id,
-    чтобы вообще что-то спросить.
+    из последнего сохранённого в БД снимка сразу, без похода на сайт.
     """
+    site_error: Exception | None = None
     if schedule_id is not None:
         try:
             snapshot, _ = await parser.parse(schedule_id)
         except httpx.HTTPError as exc:
-            cached = await db.get_latest_snapshot("current", schedule_id=schedule_id)
-            if cached is None:
-                raise
-            logger.warning(
-                "Lesson counter: site unavailable for schedule_id=%s (%s), using last cached snapshot instead",
-                schedule_id,
-                exc,
-            )
-            return _lesson_pairs_from_content(cached["content"], target_date_iso)
-        day_item = next((day for day in snapshot.days if day.date_iso == target_date_iso), None)
-        if day_item is None:
-            return []
-        return [(lesson.subject.strip(), lesson.teacher.strip()) for lesson in day_item.lessons]
-
-    if source_key is not None:
+            site_error = exc
+        else:
+            if not snapshot_is_all_empty(snapshot) and snapshot.days:
+                site_days = [
+                    (day.date_iso, [(lesson.subject.strip(), lesson.teacher.strip()) for lesson in day.lessons])
+                    for day in snapshot.days
+                ]
+                pairs = _lesson_pairs_from_days(site_days, target_date_iso)
+                if pairs is not None:
+                    return pairs
+        cached = await db.get_latest_snapshot("current", schedule_id=schedule_id)
+    elif source_key is not None:
         cached = await db.get_latest_snapshot("current", source_key=source_key)
-        if cached is None:
-            return []
-        return _lesson_pairs_from_content(cached["content"], target_date_iso)
+    else:
+        return []
 
-    return []
+    if cached is not None:
+        pairs = _lesson_pairs_from_days(_days_from_content(cached["content"]), target_date_iso)
+        if pairs is not None:
+            if site_error is not None:
+                logger.warning(
+                    "Lesson counter: site unavailable for schedule_id=%s (%s), using last cached snapshot instead",
+                    schedule_id,
+                    site_error,
+                )
+            return pairs
+    if site_error is not None:
+        raise site_error
+    if schedule_id is None and cached is None:
+        return []
+    raise LessonDayUnavailableError(f"нет данных за {target_date_iso} ни на сайте, ни в кэше")
 
 
 async def sync_lesson_counters_for_date(
@@ -161,15 +219,14 @@ async def sync_lesson_counters_for_date(
                 for subj, teach in lesson_pairs:
                     if subj:
                         counts[(subj, teach)] += 1
-
-                for (subj, teach), cnt in counts.items():
-                    lesson_counter_service.auto_increment_or_create_subject_in_json(
-                        group_name=group_name,
-                        schedule_id=schedule_id,
-                        subject=subj,
-                        teacher=teach,
-                        count=cnt,
-                    )
+                # Все пары группы — одной записью: если файл не сохранился, группа не
+                # помечается учтённой и посчитается при следующем запуске, без задвоения.
+                if counts and not lesson_counter_service.apply_lesson_increments(
+                    group_name=group_name,
+                    schedule_id=schedule_id,
+                    increments=[(subj, teach, cnt) for (subj, teach), cnt in counts.items()],
+                ):
+                    raise RuntimeError("не удалось сохранить файл счётчиков")
 
             await db.mark_daily_counter_processed(target_date_iso, group_name)
             result.processed.append(group_name)
@@ -681,21 +738,31 @@ class LessonCounterService:
     ) -> bool:
         if is_uncounted_lesson(subject, teacher):
             return False
+        return self.apply_lesson_increments(group_name, schedule_id, [(subject, teacher, count)])
+
+    def apply_lesson_increments(
+        self,
+        group_name: str,
+        schedule_id: int | None,
+        increments: list[tuple[str, str, int]],
+    ) -> bool:
+        """Прибавляет прошедшие пары группы за один проход чтения/записи файла."""
+        increments = [item for item in increments if not is_uncounted_lesson(item[0], item[1])]
+        if not increments:
+            return True
         if not self.lesson_counters_path:
             return False
-        self.lesson_counters_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict = {"groups": []}
-        if self.lesson_counters_path.exists():
-            try:
-                with open(self.lesson_counters_path, encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception as exc:
-                logger.warning("Failed to read JSON file before auto-increment: %s", exc)
-                data = {"groups": []}
+        try:
+            data = read_lesson_config_for_update(self.lesson_counters_path)
+        except LessonConfigReadError as exc:
+            logger.error("Счётчики пар не обновлены, файл не перезаписан: %s", exc)
+            return False
 
-        groups = data.get("groups", [])
+        groups = data.setdefault("groups", [])
         target_group = None
         for g in groups:
+            if not isinstance(g, dict):
+                continue
             g_name = str(g.get("group_name") or g.get("name") or "").strip()
             if g_name.lower() == group_name.strip().lower():
                 target_group = g
@@ -711,39 +778,39 @@ class LessonCounterService:
                 "subjects": [],
             }
             groups.append(target_group)
-            data["groups"] = groups
 
         subjects = target_group.setdefault("subjects", [])
-        found_subject = None
-        subj_norm = normalize_lesson_text(subject)
-        teach_norm = normalize_lesson_text(teacher)
+        for subject, teacher, count in increments:
+            found_subject = None
+            subj_norm = normalize_lesson_text(subject)
+            teach_norm = normalize_lesson_text(teacher)
+            for item in subjects:
+                if not isinstance(item, dict):
+                    continue
+                item_subj = normalize_lesson_text(str(item.get("display_name") or item.get("subject") or ""))
+                item_teach = normalize_lesson_text(str(item.get("teacher") or ""))
+                if subject_matches(item_subj, subject) and (not item_teach or teacher_matches(item_teach, teacher)):
+                    found_subject = item
+                    break
+                if item_subj == subj_norm and item_teach == teach_norm:
+                    found_subject = item
+                    break
 
-        for item in subjects:
-            item_subj = normalize_lesson_text(str(item.get("display_name") or item.get("subject") or ""))
-            item_teach = normalize_lesson_text(str(item.get("teacher") or ""))
-            if subject_matches(item_subj, subject) and (not item_teach or teacher_matches(item_teach, teacher)):
-                found_subject = item
-                break
-            if item_subj == subj_norm and item_teach == teach_norm:
-                found_subject = item
-                break
-
-        if found_subject is not None:
-            current_passed = found_subject.get("passed", 0)
-            try:
-                current_passed = int(current_passed or 0)
-            except (ValueError, TypeError):
-                current_passed = 0
-            found_subject["passed"] = current_passed + count
-        else:
-            subjects.append({
-                "group_name": group_name,
-                "subject": subject,
-                "display_name": subject,
-                "teacher": teacher,
-                "passed": count,
-                "total": None,
-            })
+            if found_subject is not None:
+                try:
+                    current_passed = int(found_subject.get("passed", 0) or 0)
+                except (ValueError, TypeError):
+                    current_passed = 0
+                found_subject["passed"] = current_passed + count
+            else:
+                subjects.append({
+                    "group_name": group_name,
+                    "subject": subject,
+                    "display_name": subject,
+                    "teacher": teacher,
+                    "passed": count,
+                    "total": None,
+                })
 
         return _atomic_write_json(self.lesson_counters_path, data)
 
@@ -751,8 +818,7 @@ class LessonCounterService:
         if not self.lesson_counters_path or not self.lesson_counters_path.exists():
             return False
         try:
-            with open(self.lesson_counters_path, encoding="utf-8") as f:
-                data = json.load(f)
+            data = read_lesson_config_for_update(self.lesson_counters_path)
             groups = data.get("groups", [])
             for g in groups:
                 g_name = str(g.get("group_name") or g.get("name") or "").strip()

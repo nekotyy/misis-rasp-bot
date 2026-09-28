@@ -767,4 +767,14 @@ class ScheduleJobs:
     async def handle_auto_daily_lesson_counter_job(self, job: AutoDailyLessonCounterJob) -> None:
         if not self.lesson_counters_enabled or self.lesson_counter_service is None:
             return
-        await sync_lesson_counters_for_date(self.db, self.parser, self.lesson_counter_service, job.target_date_iso)
+        result = await sync_lesson_counters_for_date(self.db, self.parser, self.lesson_counter_service, job.target_date_iso)
+        if result.failed:
+            # ERROR уходит админу через AdminLogHandler — раньше сбойные группы терялись молча.
+            failed = ", ".join(f"{name} ({error[:60]})" for name, error in result.failed[:10])
+            logger.error(
+                "Автоподсчёт пар за %s: не посчитано групп %s из %s: %s",
+                job.target_date_iso,
+                len(result.failed),
+                len(result.failed) + len(result.processed) + len(result.skipped_already_done),
+                failed,
+            )

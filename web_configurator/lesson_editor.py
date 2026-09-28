@@ -11,26 +11,26 @@ import httpx
 
 from src.db import Database
 from src.group_catalog import GroupCatalog
-from src.lesson_counters import normalize_lesson_text, subject_matches, teacher_matches
+from src.lesson_counters import (
+    LessonConfigReadError,  # noqa: F401 — реэкспорт для админок
+    normalize_lesson_text,
+    read_lesson_config_for_update,
+    subject_matches,
+    teacher_matches,
+)
 from src.parser import ScheduleParser
 
 logger = logging.getLogger(__name__)
 
 
 def load_lesson_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"groups": []}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to read lesson counters config %s: %s", path, exc)
-        return {"groups": []}
-    if isinstance(payload, list):
-        return {"groups": payload}
-    if isinstance(payload, dict):
-        payload.setdefault("groups", [])
-        return payload
-    return {"groups": []}
+    """Конфиг счётчиков для правки.
+
+    Битый файл — `LessonConfigReadError`, а не пустой конфиг: раньше пустой конфиг
+    после любой правки в админке сохранялся поверх, и все счётчики пропадали.
+    """
+    return read_lesson_config_for_update(path)
+
 
 
 def save_lesson_config(path: Path, payload: dict[str, Any]) -> None:
