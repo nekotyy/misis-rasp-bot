@@ -1002,6 +1002,46 @@ class Database:
             )
             await db.commit()
 
+    async def get_pending_group_subscribers(self) -> list[dict]:
+        """Подписки-заглушки на группы, которых ещё не было на сайте на момент OCR-загрузки.
+
+        Как только каталог групп находит на сайте настоящий schedule_id с тем же именем,
+        этих подписчиков нужно перевести на него (`promote_pending_group_subscription`) —
+        иначе они навсегда останутся без обычной синхронизации с сайтом, а новые студенты
+        не смогут найти такую группу поиском вообще (сайт для неё уже приоритетнее ОСR).
+        """
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT DISTINCT subscription_key, subscription_title
+                FROM users
+                WHERE subscription_key LIKE 'group-pending:%' AND subscription_title IS NOT NULL
+                """
+            )
+            rows = await cursor.fetchall()
+        return [{"subscription_key": row[0], "subscription_title": row[1]} for row in rows]
+
+    async def promote_pending_group_subscription(self, pending_key: str, group_name: str, schedule_id: int) -> int:
+        """Переводит подписчиков OCR-заглушки группы на настоящий источник с сайта.
+
+        Старый snapshot-кэш под group-pending:* не трогаем и не переносим — первая
+        обычная синхронизация с сайта сама заведёт для нового source_key свежий baseline
+        (см. apply_snapshot: baseline is None -> тихо сохраняет, без рассылки).
+        """
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET subscription_key = ?, subscription_title = ?, subscription_url = ?,
+                    group_name = ?, schedule_id = ?
+                WHERE subscription_key = ?
+                """,
+                (f"group:{schedule_id}", group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
+            )
+            moved = cursor.rowcount
+            await db.commit()
+        return moved
+
     async def save_snapshot(
         self,
         snapshot_type: str,

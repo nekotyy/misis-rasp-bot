@@ -235,6 +235,12 @@ class ScheduleJobs:
                 max_instances=1,
                 coalesce=True,
             )
+            self.scheduler.add_job(
+                self.retry_group_catalog_departments,
+                IntervalTrigger(minutes=30),
+                max_instances=1,
+                coalesce=True,
+            )
 
     async def refresh_group_catalog(self) -> None:
         """Раз в несколько месяцев подтягивает список групп и их ID с сайта заново.
@@ -257,6 +263,50 @@ class ScheduleJobs:
             )
             return
         logger.info("Каталог групп обновлён с сайта: было %s, стало %s групп.", before, after)
+        await self._promote_pending_group_subscribers()
+
+    async def retry_group_catalog_departments(self) -> None:
+        """Между плановыми обновлениями каталога домётывает отделения сайта, не загрузившиеся
+        при последнем полном обходе (`GroupCatalog._fetch_from_site`). Сайт МИСИС падает не
+        целиком, а вразнобой по отдельным страницам, и без этого новые группы конкретного
+        отделения (например, весь набор нового курса) были бы не видны поиску до следующего
+        планового обновления через `group_catalog_refresh_days`.
+        """
+        if self.group_catalog is None:
+            return
+        recovered = await self.group_catalog.retry_failed_departments()
+        if recovered:
+            logger.info("Каталог групп: домёл ранее недоступные отделения, всего групп теперь %s.", len(self.group_catalog))
+            await self._promote_pending_group_subscribers()
+
+    async def _promote_pending_group_subscribers(self) -> None:
+        """Переводит подписчиков OCR-заглушки группы на сайт, как только тот её публикует.
+
+        Пока у группы не было schedule_id (видели только по фото), подписки на неё
+        жили под ключом group-pending:<имя> и получали обновления только вручную через
+        новые OCR-загрузки — обычная синхронизация с сайта их не касалась. Как только
+        каталог групп находит на сайте настоящий ID с тем же именем, сайт для этой
+        группы становится приоритетнее OCR, и подписчиков нужно перевести на него, иначе
+        они так и останутся без ежедневного автосинка, а новые студенты вообще не найдут
+        эту группу поиском (см. add_pending_groups — сайт при обновлении её вытесняет).
+        """
+        if self.group_catalog is None:
+            return
+        pending = await self.db.get_pending_group_subscribers()
+        for item in pending:
+            group = await self.group_catalog.find_group(str(item["subscription_title"]))
+            if group is None or group.schedule_id is None:
+                continue
+            moved = await self.db.promote_pending_group_subscription(
+                str(item["subscription_key"]), group.group_name, group.schedule_id
+            )
+            if moved:
+                logger.info(
+                    "Группа %s появилась на сайте (schedule_id=%s) — перевёл %s подписчиков с OCR-заглушки на сайт.",
+                    group.group_name,
+                    group.schedule_id,
+                    moved,
+                )
 
     async def run_system_health_check(self) -> dict[str, Any]:
         """Runs periodic diagnostic checks and notifies admins on status changes."""
