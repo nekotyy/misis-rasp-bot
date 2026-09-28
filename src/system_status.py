@@ -3,6 +3,7 @@ import contextlib
 import logging
 import sys
 from datetime import datetime, timedelta
+from html import escape
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -113,6 +114,8 @@ COMPONENT_TITLES = {
     "scheduler": "Фоновый планировщик",
     "delivery": "Служба доставки уведомлений",
     "ocr": "Распознавание расписания с фото",
+    "vk_polling": "Приём сообщений VK (long poll)",
+    "telegram_polling": "Приём сообщений Telegram (polling)",
 }
 
 
@@ -418,7 +421,10 @@ class SystemAlertManager:
             details=details,
             created_at=now_dt.isoformat(timespec="seconds"),
         )
-        logger.error("System component failure [%s]: %s (%s)", component, err_msg, details)
+        # Админ получит отдельный алерт ниже — пересылать эту запись из лога не нужно.
+        logger.error(
+            "System component failure [%s]: %s (%s)", component, err_msg, details, extra={"skip_admin_report": True}
+        )
 
         if self.broadcaster is None:
             return
@@ -428,10 +434,10 @@ class SystemAlertManager:
         tg_text = "\n".join([
             "<b>Сбой службы бота</b>",
             "───────────────────────────",
-            f"<b>Служба:</b> {comp_name}",
-            f"<b>Ошибка:</b> <code>{err_msg}</code>",
+            f"<b>Служба:</b> {escape(comp_name)}",
+            f"<b>Ошибка:</b> <code>{escape(err_msg)}</code>",
             f"<b>Время:</b> {time_str}",
-            f"<b>Детали:</b> {details or 'Автоматический мониторинг зафиксировал сбой.'}",
+            f"<b>Детали:</b> {escape(details or 'Автоматический мониторинг зафиксировал сбой.')}",
         ])
         vk_text = "\n".join([
             "Сбой службы бота",
@@ -461,7 +467,7 @@ class SystemAlertManager:
         tg_text = "\n".join([
             "<b>Служба восстановлена</b>",
             "───────────────────────────",
-            f"<b>Служба:</b> {comp_name}",
+            f"<b>Служба:</b> {escape(comp_name)}",
             f"<b>Время восстановления:</b> {time_str}",
             f"<b>Длительность сбоя:</b> {duration_str}",
             "Все системы работают в штатном режиме.",

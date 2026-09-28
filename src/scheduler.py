@@ -163,6 +163,9 @@ class ScheduleJobs:
         self.group_catalog_refresh_days = max(1, group_catalog_refresh_days)
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
+        # Проверки живости приёма сообщений (VK long poll, Telegram polling):
+        # имя компонента -> функция, возвращающая (живо ли, пояснение).
+        self.liveness_probes: dict[str, Callable[[], tuple[bool, str]]] = {}
 
     def configure(self) -> None:
         self.scheduler.add_job(self.save_daily_baseline, CronTrigger(hour=0, minute=0), max_instances=1, coalesce=True)
@@ -335,6 +338,17 @@ class ScheduleJobs:
                 db_res.get("error"),
                 details=f"File: {self.db.path} ({db_res.get('size_formatted')})",
             )
+            for component, probe in list(self.liveness_probes.items()):
+                try:
+                    alive, details = probe()
+                except Exception as exc:
+                    alive, details = False, f"проверка упала: {exc}"
+                await self.alert_manager.report_component_status(
+                    component,
+                    alive,
+                    None if alive else details,
+                    details=details,
+                )
 
         return {
             "schedule_site": site_res,
@@ -753,4 +767,14 @@ class ScheduleJobs:
     async def handle_auto_daily_lesson_counter_job(self, job: AutoDailyLessonCounterJob) -> None:
         if not self.lesson_counters_enabled or self.lesson_counter_service is None:
             return
-        await sync_lesson_counters_for_date(self.db, self.parser, self.lesson_counter_service, job.target_date_iso)
+        result = await sync_lesson_counters_for_date(self.db, self.parser, self.lesson_counter_service, job.target_date_iso)
+        if result.failed:
+            # ERROR уходит админу через AdminLogHandler — раньше сбойные группы терялись молча.
+            failed = ", ".join(f"{name} ({error[:60]})" for name, error in result.failed[:10])
+            logger.error(
+                "Автоподсчёт пар за %s: не посчитано групп %s из %s: %s",
+                job.target_date_iso,
+                len(result.failed),
+                len(result.failed) + len(result.processed) + len(result.skipped_already_done),
+                failed,
+            )

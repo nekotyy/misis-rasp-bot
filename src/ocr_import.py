@@ -220,6 +220,8 @@ class OcrScheduleImporter:
             engine_diagnostics.get("account_status") or "unknown",
             raw_error,
             info.action,
+            # Сбой OCR уходит админу алертом компонента ниже — из лога не пересылаем.
+            extra={"skip_admin_report": True},
         )
         details = (
             f"Категория: {info.title} ({info.code}); этап: {context}; "

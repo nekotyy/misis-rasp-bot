@@ -62,7 +62,7 @@ class BotInitializationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_build_telegram_bot_uses_configured_proxy(self):
         with (
-            patch("src.main.AiohttpSession") as session_class,
+            patch("src.main.TrackingAiohttpSession") as session_class,
             patch("src.main.Bot") as bot_class,
         ):
             session = session_class.return_value

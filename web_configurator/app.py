@@ -27,7 +27,12 @@ from src.lesson_counters import (
 from src.message_broker import OutboundMessage, RabbitMQBroker
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST
 from src.parser import ScheduleParser, compute_snapshot_hash
-from web_configurator.lesson_editor import load_lesson_config, save_lesson_config, validate_lesson_config
+from web_configurator.lesson_editor import (
+    LessonConfigReadError,
+    load_lesson_config,
+    save_lesson_config,
+    validate_lesson_config,
+)
 from web_configurator.metrics import collect_metrics
 from web_configurator.security import (
     ALL_PERMISSIONS,
@@ -274,6 +279,19 @@ def require(permission: str):
 @app.exception_handler(401)
 async def unauthorized_handler(_: Request, __: HTTPException) -> RedirectResponse:
     return RedirectResponse("/login", status_code=303)
+
+
+@app.exception_handler(LessonConfigReadError)
+async def lesson_config_error_handler(_: Request, exc: LessonConfigReadError) -> HTMLResponse:
+    # Битый файл счётчиков не подменяем пустым конфигом: следующее сохранение стёрло бы все группы.
+    logger.error("Файл счётчиков пар не читается: %s", exc)
+    return HTMLResponse(
+        "<h3>Файл счётчиков пар повреждён</h3>"
+        f"<p>{html_escape(str(exc))}</p>"
+        "<p>Изменения не сохранены, чтобы не стереть данные. Восстановите lesson_counters.json из резервной копии.</p>"
+        "<p><a href='/'>На главную</a></p>",
+        status_code=500,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

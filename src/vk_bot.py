@@ -2,25 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import defaultdict
+from collections.abc import Awaitable
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from time import monotonic
-from traceback import format_exception
 from typing import Any
 
 import httpx
-from aiohttp import ClientError, TCPConnector
-from vkbottle import API, Keyboard, Text
+from vkbottle import Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
-from vkbottle.exception_factory.base_exceptions import VKAPIError
-from vkbottle.http import AiohttpClient
 from vkbottle.tools import DocMessagesUploader
 
 from src.config import Settings
 from src.db import Database
+from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
@@ -50,7 +49,7 @@ from src.ocr_schedule import (
     OcrEngineError,
     compress_image_for_ocr,
 )
-from src.parser import ScheduleParser, compute_snapshot_hash
+from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
@@ -69,6 +68,13 @@ from src.system_status import (
     get_memory_usage_mb,
 )
 from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
+from src.vk_runtime import (
+    ResilientBotPolling,
+    build_vk_api,
+    vk_call_with_retry,
+    vk_edit_message,
+    vk_send_message,
+)
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -96,6 +102,35 @@ SEARCH_NOT_FOUND_TEXT = (
     "Если группа введена точно, но не находится, значит проблема, скорее всего, в каталоге групп на стороне сайта."
 )
 logger = logging.getLogger(__name__)
+
+USER_ERROR_TEXT = (
+    "Что-то пошло не так при обработке запроса. Администратор уже получил отчёт об ошибке.\n\n"
+    "Попробуй ещё раз через минуту. Если повторится — напиши: " + SUPPORT_CONTACT
+)
+USER_TIMEOUT_TEXT = (
+    "Запрос обрабатывался слишком долго и был прерван — скорее всего, сайт расписания "
+    "сейчас тормозит. Попробуй ещё раз через пару минут."
+)
+
+# Имя пользователя VK подтягиваем не на каждое сообщение (это лишний запрос к API
+# и лишняя точка отказа), а раз в сутки.
+VK_NAME_REFRESH_SECONDS = 24 * 3600
+
+# В беседах VK подставляет упоминание бота перед текстом кнопки или команды:
+# "[club123|@bot] Расписание" — без очистки такие нажатия не распознаются.
+_VK_MENTION_RE = re.compile(r"^\s*(?:\[(?:club|public)\d+\|[^\]]*\]|@(?:club|public)\d+)[\s,:]*", re.IGNORECASE)
+
+
+def strip_vk_bot_mention(text: str | None) -> str:
+    if not text:
+        return ""
+    return _VK_MENTION_RE.sub("", text, count=1).strip()
+
+
+def vk_handler_timeout(settings: Settings) -> float:
+    """Потолок обработки одного сообщения: OCR ждёт дольше остальных сценариев."""
+    ocr_timeout = float(getattr(settings, "ocr_timeout_seconds", 180.0) or 180.0)
+    return max(300.0, ocr_timeout + 120.0)
 
 
 # Лимиты обычной (не inline) клавиатуры VK. Превышение любого из них — ошибка
@@ -673,19 +708,35 @@ def build_vk_bot(
     search_catalog: ScheduleSearchCatalog | None = None,
     schedule_jobs: Any | None = None,
     ocr_importer: OcrScheduleImporter | None = None,
+    error_reporter: AdminErrorReporter | None = None,
 ) -> Bot | None:
     if not settings.vk_bot_token:
         return None
 
-    api = None
-    if settings.vk_disable_ssl_verify:
-        api = API(
-            settings.vk_bot_token,
-            http_client=AiohttpClient(connector=TCPConnector(ssl=False)),
-        )
+    reporter = error_reporter or AdminErrorReporter(broadcaster.notify_admins if broadcaster is not None else None)
+    api = build_vk_api(settings.vk_bot_token, verify_ssl=not settings.vk_disable_ssl_verify)
 
+    async def on_polling_error(error: BaseException, failures: int) -> None:
+        # Одиночные сбои сети не шлём: long poll сам переподключится. Шлём, если
+        # связь не восстанавливается — это уже похоже на реальную проблему.
+        if failures in {5, 30} or (failures > 30 and failures % 120 == 0):
+            await reporter.report_exception(
+                "VK long poll",
+                error,
+                summary=f"Нет связи с VK уже {failures} попыток подряд: {type(error).__name__}: {error}",
+                details=[("Что происходит", "бот не получает сообщения VK, переподключается")],
+            )
+
+    async def on_polling_recovered(failures: int, outage_seconds: float) -> None:
+        if failures >= 5 and broadcaster is not None:
+            text = f"VK long poll снова работает (было {failures} ошибок, ~{outage_seconds:.0f} с без связи)."
+            await broadcaster.notify_admins(text, text)
+
+    polling = ResilientBotPolling(api, on_error=on_polling_error, on_recovered=on_polling_recovered)
     error_handler = ErrorHandler(redirect_arguments=True)
-    bot = Bot(token=settings.vk_bot_token, api=api, error_handler=error_handler)
+    bot = Bot(api=api, polling=polling, error_handler=error_handler)
+    bot.resilient_polling = polling  # type: ignore[attr-defined]
+    bot.error_reporter = reporter  # type: ignore[attr-defined]
     search_results: dict[int, dict[str, object]] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
@@ -707,6 +758,12 @@ def build_vk_bot(
     admin_ocr_apply_locks: set[int] = set()
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
+    name_refreshed_at: dict[int, float] = {}
+    # Долгие админские операции (рассылка, перепарсинг, подсчёт) идут в фоне:
+    # сообщения одного диалога обрабатываются по очереди, и иначе админ минутами
+    # не мог бы даже нажать «Назад».
+    admin_background_tasks: set[asyncio.Task] = set()
+    admin_running_jobs: set[str] = set()
     lesson_counter_service = LessonCounterService(db, settings.lesson_counters_path)
     admin_counter_sync_lock = asyncio.Lock()
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
@@ -759,46 +816,83 @@ def build_vk_bot(
                 await asyncio.sleep(delay)
             message_rate_limit[user_id] = monotonic() + cooldown
 
-    async def notify_user_about_error(peer_id: int, error: Exception) -> None:
+    async def notify_user_about_error(peer_id: int, error: BaseException) -> None:
+        text = USER_TIMEOUT_TEXT if isinstance(error, TimeoutError) else USER_ERROR_TEXT
         try:
-            await bot.api.messages.send(
-                peer_ids=[peer_id],
-                message=(
-                    "Произошла ошибка при обработке запроса.\n\n"
-                    f"Ошибка: {short_error_text(error)}\n\n"
-                    f"Напишите мне для решения: {SUPPORT_CONTACT}"
-                ),
-                random_id=0,
-            )
+            await vk_send_message(bot.api, peer_id, text, max_attempts=2)
         except Exception as exc:
             logger.warning("Failed to notify VK user %s about their error: %s", peer_id, exc)
 
-    async def notify_admin_about_error(user_id: int | None, peer_id: int | None, error: Exception) -> None:
-        if broadcaster is None:
-            return
-        db_user = await db.get_user("vk", user_id) if user_id is not None else None
-        username = db_user.username if db_user else None
-        user_info_tg = format_user_profile_link("vk", user_id, username, html=True)
-        user_info_vk = format_user_profile_link("vk", user_id, username, html=False)
+    async def notify_admin_about_error(
+        user_id: int | None,
+        peer_id: int | None,
+        error: BaseException,
+        text: str | None = None,
+        mode: str | None = None,
+    ) -> None:
+        user_info = format_user_profile_link("vk", user_id, None, html=False)
+        details = [
+            ("Пользователь", user_info),
+            ("Чат", str(peer_id) if peer_id is not None else "неизвестно"),
+        ]
+        if mode:
+            details.append(("Режим", mode))
+        if text:
+            details.append(("Сообщение", text[:200]))
+        await reporter.report_exception("VK-бот", error, details=details)
 
-        traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
-        if len(traceback_text) > 2500:
-            traceback_text = f"...{traceback_text[-2500:]}"
-        telegram_text = (
-            "<b>Сбой в боте (vk)</b>\n\n"
-            f"Пользователь: {user_info_tg}\n"
-            f"Чат: <b>{peer_id if peer_id is not None else 'неизвестно'}</b>\n"
-            f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
-            f"<pre>{escape(traceback_text)}</pre>"
+    async def report_update_failure(update: dict, error: BaseException) -> None:
+        """Сбой вне обработчика (таймаут, ошибка роутера) — сообщаем и пользователю, и админу."""
+        obj = update.get("object") if isinstance(update, dict) else None
+        message_obj = obj.get("message") if isinstance(obj, dict) else None
+        peer_id = message_obj.get("peer_id") if isinstance(message_obj, dict) else None
+        from_id = message_obj.get("from_id") if isinstance(message_obj, dict) else None
+        text = message_obj.get("text") if isinstance(message_obj, dict) else None
+        if isinstance(peer_id, int):
+            await notify_user_about_error(peer_id, error)
+        await notify_admin_about_error(
+            from_id if isinstance(from_id, int) else None,
+            peer_id if isinstance(peer_id, int) else None,
+            error,
+            text=text,
+            mode=peer_modes.get(peer_id) if isinstance(peer_id, int) else None,
         )
-        vk_text = (
-            "Сбой в боте (vk)\n\n"
-            f"Пользователь: {user_info_vk}\n"
-            f"Чат: {peer_id if peer_id is not None else 'неизвестно'}\n"
-            f"Ошибка: {short_error_text(error)}\n\n"
-            f"{traceback_text}"
-        )
-        await broadcaster.notify_admins(telegram_text, vk_text)
+
+    bot.report_update_failure = report_update_failure  # type: ignore[attr-defined]
+
+    async def wait_admin_jobs(timeout: float = 30.0) -> None:
+        """Ждёт фоновые админские операции — для тестов и корректной остановки."""
+        if admin_background_tasks:
+            await asyncio.wait(set(admin_background_tasks), timeout=timeout)
+
+    bot.wait_admin_jobs = wait_admin_jobs  # type: ignore[attr-defined]
+
+    def spawn_admin_job(peer_id: int, job_key: str, coro: Awaitable[None]) -> bool:
+        """Запускает долгую админскую операцию в фоне. False — такая уже идёт."""
+        if job_key in admin_running_jobs:
+            coro.close()  # type: ignore[attr-defined]
+            return False
+        admin_running_jobs.add(job_key)
+
+        async def runner() -> None:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Фоновая админская операция %s упала: %s", job_key, exc)
+                await notify_admin_about_error(settings.admin_vk_id, peer_id, exc, mode=f"фон: {job_key}")
+                try:
+                    await show_screen(peer_id, f"Операция «{job_key}» завершилась ошибкой: {short_error_text(exc)}", keyboard=admin_keyboard())
+                except Exception:
+                    logger.warning("Не удалось сообщить админу о сбое операции %s.", job_key)
+            finally:
+                admin_running_jobs.discard(job_key)
+
+        task = asyncio.create_task(runner(), name=f"vk-admin-{job_key}")
+        admin_background_tasks.add(task)
+        task.add_done_callback(admin_background_tasks.discard)
+        return True
 
     def user_is_admin(user_id: int | None) -> bool:
         return bool(user_id and settings.admin_vk_id and user_id == settings.admin_vk_id)
@@ -830,38 +924,24 @@ def build_vk_bot(
         return bool(user and user.is_editor)
     async def fetch_vk_names(user_ids: list[int]) -> dict[int, str]:
         unique_ids = sorted({user_id for user_id in user_ids if user_id > 0})
-        if not unique_ids:
-            return {}
-        delay_seconds = 1.0
-        for attempt in range(1, 4):
-            try:
-                profiles = await bot.api.users.get(user_ids=unique_ids)
-                break
-            except VKAPIError as exc:
-                if getattr(exc, "code", None) != 10:
-                    raise
-                logger.warning(
-                    "VK users.get temporary error for %s users on attempt %s/3: %s",
-                    len(unique_ids),
-                    attempt,
-                    exc,
-                )
-            except (ClientError, OSError) as exc:
-                logger.warning(
-                    "Failed to fetch VK names for %s users on attempt %s/3: %s",
-                    len(unique_ids),
-                    attempt,
-                    exc,
-                )
-            if attempt >= 3:
-                return {}
-            await asyncio.sleep(delay_seconds)
-            delay_seconds *= 2
         result: dict[int, str] = {}
-        for profile in profiles:
-            full_name = " ".join(part for part in [profile.first_name, profile.last_name] if part).strip()
-            if full_name:
-                result[profile.id] = full_name
+        # users.get принимает до 1000 id за раз.
+        for start in range(0, len(unique_ids), 1000):
+            batch = unique_ids[start : start + 1000]
+            try:
+                response = await vk_call_with_retry(
+                    bot.api, "users.get", {"user_ids": ",".join(str(user_id) for user_id in batch)}, max_attempts=3
+                )
+            except Exception as exc:
+                logger.warning("Failed to fetch VK names for %s users: %s", len(batch), exc)
+                continue
+            profiles = response.get("response") if isinstance(response, dict) else None
+            for profile in profiles or []:
+                if not isinstance(profile, dict) or not isinstance(profile.get("id"), int):
+                    continue
+                full_name = " ".join(part for part in [profile.get("first_name"), profile.get("last_name")] if part).strip()
+                if full_name:
+                    result[profile["id"]] = full_name
         return result
 
     async def sync_vk_user_names(user_ids: list[int]) -> dict[int, str]:
@@ -881,11 +961,15 @@ def build_vk_bot(
         return names
 
     async def register_user(message: Message) -> None:
-        if message.from_id is None:
+        if message.from_id is None or message.from_id <= 0:
             return
-        names = await fetch_vk_names([message.from_id])
         existing = await db.get_user("vk", message.from_id)
-        full_name = names.get(message.from_id) or (existing.full_name if existing else None)
+        full_name = existing.full_name if existing else None
+        last_refresh = name_refreshed_at.get(message.from_id)
+        if not full_name or last_refresh is None or monotonic() - last_refresh > VK_NAME_REFRESH_SECONDS:
+            names = await fetch_vk_names([message.from_id])
+            name_refreshed_at[message.from_id] = monotonic()
+            full_name = names.get(message.from_id) or full_name
         await db.upsert_user(
             platform="vk",
             user_id=message.from_id,
@@ -909,53 +993,36 @@ def build_vk_bot(
         *,
         keyboard: str | None = None,
         attachment: str | None = None,
-        max_attempts: int = 3,
+        max_attempts: int = 4,
     ) -> int | None:
-        delay_seconds = 1.0
-        for attempt in range(1, max_attempts + 1):
-            try:
-                res = await bot.api.messages.send(
-                    peer_ids=[peer_id],
-                    message=message,
-                    keyboard=keyboard,
-                    attachment=attachment,
-                    random_id=0,
-                )
-                if isinstance(res, list) and res:
-                    item = res[0]
-                    if isinstance(item, dict):
-                        return item.get("message_id")
-                    if isinstance(item, int):
-                        return item
-                if isinstance(res, int):
-                    return res
-                return None
-            except VKAPIError as exc:
-                if getattr(exc, "code", None) != 10 or attempt >= max_attempts:
-                    raise
-                logger.warning(
-                    "VK messages.send temporary error for peer %s on attempt %s/%s: %s",
-                    peer_id,
-                    attempt,
-                    max_attempts,
-                    exc,
-                )
-            except (ClientError, OSError) as exc:
-                if attempt >= max_attempts:
-                    raise
-                logger.warning(
-                    "VK messages.send network error for peer %s on attempt %s/%s: %s",
-                    peer_id,
-                    attempt,
-                    max_attempts,
-                    exc,
-                )
-            await asyncio.sleep(delay_seconds)
-            delay_seconds *= 2
-        return None
+        return await vk_send_message(
+            bot.api, peer_id, message, keyboard=keyboard, attachment=attachment, max_attempts=max_attempts
+        )
 
     async def show_screen(peer_id: int, text: str, keyboard: str | None = None, attachment: str | None = None) -> None:
         await send_vk_message(peer_id=peer_id, message=text, keyboard=keyboard, attachment=attachment)
+
+    class ProgressMessage:
+        """Одно сообщение о ходе долгой операции, которое обновляется на месте.
+
+        Раньше каждый шаг распознавания и каждые 0.8 с рассылки приходили новым
+        сообщением — на рассылке по сотням пользователей это был поток спама админу.
+        """
+
+        def __init__(self, peer_id: int, min_interval: float = 3.0) -> None:
+            self.peer_id = peer_id
+            self.min_interval = min_interval
+            self.message_id: int | None = None
+            self._last_update = 0.0
+
+        async def update(self, text: str, *, force: bool = False, keyboard: str | None = None) -> None:
+            now = monotonic()
+            if not force and self.message_id is not None and now - self._last_update < self.min_interval:
+                return
+            self._last_update = now
+            if self.message_id is not None and keyboard is None and await vk_edit_message(bot.api, self.peer_id, self.message_id, text):
+                return
+            self.message_id = await send_vk_message(self.peer_id, text, keyboard=keyboard)
     def menu_keyboard(user, is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Дополнительно"]]
         if user and user.subscription_type == "teacher":
@@ -1049,6 +1116,9 @@ def build_vk_bot(
         peer_modes[peer_id] = "schedule_menu"
         await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
 
+    def search_prompt_keyboard() -> str:
+        return make_keyboard([["Назад в меню"]])
+
     def search_result_keyboard() -> str:
         return make_keyboard(
             [
@@ -1088,17 +1158,19 @@ def build_vk_bot(
     def admin_keyboard() -> str:
         return make_keyboard(vk_admin_keyboard_rows())
 
+    # Экраны внутри админки возвращают в админку, а не в пользовательское меню:
+    # раньше «Назад в меню» после статуса или перепарсинга выкидывало из админки целиком.
     def admin_back_keyboard() -> str:
-        return make_keyboard([["Назад в меню"]])
+        return make_keyboard([[VK_ADMIN_SECTION_BACK]])
 
     def admin_status_keyboard() -> str:
-        return make_keyboard([["Ошибки за день"], ["Обновить статус", "Назад в меню"]])
+        return make_keyboard([["Ошибки за день"], ["Обновить статус", VK_ADMIN_SECTION_BACK]])
 
     def admin_daily_errors_keyboard() -> str:
-        return make_keyboard([["Статус", "Назад в меню"]])
+        return make_keyboard([["Статус", VK_ADMIN_SECTION_BACK]])
 
     def admin_gemini_keyboard() -> str:
-        return make_keyboard([["Обновить", "Назад в меню"]])
+        return make_keyboard([["Обновить", VK_ADMIN_SECTION_BACK]])
 
     def admin_user_profile_link(user) -> str:
         if user.platform == "vk":
@@ -1281,14 +1353,10 @@ def build_vk_bot(
         if not path.exists():
             await show_screen(peer_id, f"{title} не найден.", keyboard=admin_keyboard())
             return
+        await show_screen(peer_id, f"Загружаю {title}...")
         uploader = DocMessagesUploader(bot.api)
         doc = await uploader.upload(path, peer_id=peer_id, title=title)
-        await bot.api.messages.send(
-            peer_ids=[peer_id],
-            message=title,
-            attachment=doc,
-            random_id=0,
-        )
+        await send_vk_message(peer_id, title, attachment=doc, keyboard=admin_keyboard())
 
     async def sync_lesson_counters_from_file() -> None:
         try:
@@ -1382,6 +1450,9 @@ def build_vk_bot(
         )
 
     async def prompt_group_selection(peer_id: int, error_text: str | None = None) -> None:
+        await prompt_group_selection_screen(peer_id, error_text)
+
+    async def prompt_group_selection_screen(peer_id: int, error_text: str | None = None) -> None:
         peer_modes[peer_id] = "group_select"
         lines = [
             "Укажи свою группу",
@@ -1436,7 +1507,22 @@ def build_vk_bot(
         return False
 
     async def handle_subscription_input(peer_id: int, user_id: int, text: str) -> bool:
+        is_chat = peer_id >= VK_CHAT_PEER_ID_THRESHOLD and user_id == peer_id
         existing_user = await db.get_user("vk", user_id)
+        if existing_user is None and is_chat:
+            # У беседы нет своей строки в users (регистрируются только люди), а
+            # set_user_subscription — это UPDATE: без строки подписка беседы молча
+            # не сохранялась, и настройка бота в беседах VK не работала вообще.
+            await db.upsert_user(platform="vk", user_id=peer_id, username=None, full_name=f"VK беседа {peer_id - VK_CHAT_PEER_ID_THRESHOLD}")
+
+        async def prompt_group_selection(target_peer_id: int, error_text: str | None = None) -> None:
+            if is_chat:
+                peer_modes[target_peer_id] = "awaiting_group_selection"
+                retry_text = "Пришлите название группы ещё раз одним сообщением."
+                await show_screen(target_peer_id, f"{error_text}\n\n{retry_text}" if error_text else retry_text)
+                return
+            await prompt_group_selection_screen(target_peer_id, error_text)
+
         group = None
         if group_catalog is not None:
             try:
@@ -1474,6 +1560,17 @@ def build_vk_bot(
                 or existing_user.subscription_key != subscription_data["subscription_key"]
             ):
                 await db.clear_user_audience_subscription("vk", user_id)
+        if is_chat:
+            updated = await db.get_user("vk", peer_id)
+            title = updated.subscription_title if updated else text
+            peer_modes[peer_id] = "main_menu"
+            await show_screen(
+                peer_id,
+                f"Беседа подписана: {title}.\n\n"
+                "Сюда будут приходить уведомления об изменениях расписания. "
+                "Сменить группу — снова /startgroup.",
+            )
+            return True
         await show_main_menu(peer_id, user_id)
         return True
 
@@ -1549,17 +1646,17 @@ def build_vk_bot(
     async def perform_schedule_search(peer_id: int, query: str) -> bool:
         if search_catalog is None:
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text("Поиск временно недоступен."))
+            await show_screen(peer_id, schedule_search_prompt_text("Поиск временно недоступен."), keyboard=search_prompt_keyboard())
             return False
         try:
             target = await search_catalog.find(query)
         except httpx.HTTPError:
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))
+            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."), keyboard=search_prompt_keyboard())
             return False
         if target is None:
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text(SEARCH_NOT_FOUND_TEXT))
+            await show_screen(peer_id, schedule_search_prompt_text(SEARCH_NOT_FOUND_TEXT), keyboard=search_prompt_keyboard())
             return False
         try:
             if target.kind == "teacher":
@@ -1570,7 +1667,7 @@ def build_vk_bot(
                 content = await resolve_audience_preview_content(db, parser, target.url)
         except httpx.HTTPError:
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."))
+            await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."), keyboard=search_prompt_keyboard())
             return False
         snapshot = {
             "title": target.title,
@@ -1602,9 +1699,22 @@ def build_vk_bot(
         message = message_obj if isinstance(message_obj, Message) else None
         peer_id = message.peer_id if message is not None else None
         user_id = message.from_id if message is not None else None
+        logger.error(
+            "VK handler failed for peer %s: %s",
+            peer_id,
+            error_obj,
+            exc_info=error_obj,
+            extra={"skip_admin_report": True},
+        )
         if peer_id is not None:
             await notify_user_about_error(peer_id, error_obj)
-        await notify_admin_about_error(user_id, peer_id, error_obj)
+        await notify_admin_about_error(
+            user_id,
+            peer_id,
+            error_obj,
+            text=getattr(message, "text", None),
+            mode=peer_modes.get(peer_id) if peer_id is not None else None,
+        )
 
     async def show_settings(peer_id: int, user_id: int, extra: str | None = None) -> None:
         user = await db.get_user("vk", user_id)
@@ -1620,7 +1730,9 @@ def build_vk_bot(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
                     snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
@@ -1653,7 +1765,9 @@ def build_vk_bot(
             return []
 
         rows: list[tuple[str, str, str]] = []
-        for source in sources:
+        for index, source in enumerate(sources):
+            if index and source["source_type"] != "teacher":
+                await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
                     snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
@@ -1791,13 +1905,20 @@ def build_vk_bot(
         return make_keyboard(rows)
     @bot.on.message()
     async def all_messages_handler(message: Message) -> None:
-        await register_user(message)
         if message.peer_id is None or message.from_id is None:
             return
+        # Сообщения других сообществ и ботов в беседе не обрабатываем.
+        if message.from_id < 0:
+            return
+        try:
+            await register_user(message)
+        except Exception as exc:
+            # Регистрация — вспомогательный шаг, из-за неё нельзя терять ответ пользователю.
+            logger.warning("Не удалось обновить профиль VK-пользователя %s: %s", message.from_id, exc)
 
         peer_id = message.peer_id
         user_id = message.from_id
-        text = (message.text or "").strip()
+        text = strip_vk_bot_mention(message.text)
         normalized = text.casefold()
         mode = peer_modes.get(peer_id, "main_menu")
 
@@ -1805,7 +1926,13 @@ def build_vk_bot(
         if text and not has_attachments:
             await wait_rate_limit_queue(user_id, 0.8)
 
-        if message.action and getattr(message.action, "type", None) in {"chat_invite_user", "chat_invite_user_by_link"}:
+        # Инструкция — только когда в беседу добавили самого бота (сообщество: отрицательный member_id),
+        # а не при каждом приглашённом участнике.
+        if (
+            message.action
+            and getattr(message.action, "type", None) in {"chat_invite_user", "chat_invite_user_by_link"}
+            and (getattr(message.action, "member_id", None) or 0) < 0
+        ):
             welcome_msg = (
                 "Инструкция по настройке бота в беседе\n\n"
                 "Бот успешно добавлен в вашу беседу.\n\n"
@@ -1827,6 +1954,12 @@ def build_vk_bot(
             success = await handle_subscription_input(peer_id, peer_id if peer_id >= VK_CHAT_PEER_ID_THRESHOLD else user_id, text)
             if success:
                 peer_modes[peer_id] = "main_menu"
+            return
+
+        if peer_id >= VK_CHAT_PEER_ID_THRESHOLD and not is_group_setup_command(text):
+            # В беседе бот реагирует только на настройку — как и в группах Telegram.
+            # Иначе каждое сообщение участников без личной подписки уходило бы в
+            # поиск группы, и бот отвечал бы «Ничего не найдено» на всю переписку.
             return
 
         if normalized in {"/start", "start", "начать"}:
@@ -1940,20 +2073,31 @@ def build_vk_bot(
 
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
+                progress_message = ProgressMessage(peer_id, min_interval=5.0)
 
                 async def on_vk_progress(prog: BroadcastProgress) -> None:
                     report = format_broadcast_progress_status(draft_text, prog, html=False)
-                    await show_screen(peer_id, report, keyboard=admin_keyboard() if prog.is_finished else None)
+                    if prog.is_finished:
+                        await progress_message.update(report, force=True)
+                        await show_screen(peer_id, "Рассылка завершена.", keyboard=admin_keyboard())
+                        return
+                    await progress_message.update(report)
 
-                await broadcaster.broadcast(
-                    draft_text,
-                    telegram_message=escape(draft_text),
-                    vk_message=draft_text,
-                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
-                    target_platform=target_platform,
-                    target_audience=target_audience,
-                    progress_callback=on_vk_progress,
+                started = spawn_admin_job(
+                    peer_id,
+                    "рассылка",
+                    broadcaster.broadcast(
+                        draft_text,
+                        telegram_message=escape(draft_text),
+                        vk_message=draft_text,
+                        campaign_type=CAMPAIGN_ADMIN_BROADCAST,
+                        target_platform=target_platform,
+                        target_audience=target_audience,
+                        progress_callback=on_vk_progress,
+                    ),
                 )
+                if not started:
+                    await show_screen(peer_id, "Предыдущая рассылка ещё идёт — дождись её отчёта.", keyboard=admin_keyboard())
                 return
 
             if text:
@@ -2042,10 +2186,11 @@ def build_vk_bot(
                 return
 
             upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
-            await show_screen(peer_id, format_progress_bar(upload_label, 10))
+            ocr_progress = ProgressMessage(peer_id, min_interval=2.0)
+            await ocr_progress.update(format_progress_bar(upload_label, 10), force=True)
 
             async def report_progress(stage: str, percent: int) -> None:
-                await show_screen(peer_id, format_progress_bar(stage, percent))
+                await ocr_progress.update(format_progress_bar(stage, percent), force=percent >= 100)
 
             try:
                 draft = await asyncio.wait_for(
@@ -2180,10 +2325,11 @@ def build_vk_bot(
             admin_ocr_summary_images[peer_id] = images
 
             upload_label = OCR_STAGE_UPLOAD if len(images) == 1 else f"{OCR_STAGE_UPLOAD} ({len(images)} фото)"
-            await show_screen(peer_id, format_progress_bar(upload_label, 10))
+            ocr_progress = ProgressMessage(peer_id, min_interval=2.0)
+            await ocr_progress.update(format_progress_bar(upload_label, 10), force=True)
 
             async def report_progress(stage: str, percent: int) -> None:
-                await show_screen(peer_id, format_progress_bar(stage, percent))
+                await ocr_progress.update(format_progress_bar(stage, percent), force=percent >= 100)
 
             try:
                 draft = await asyncio.wait_for(
@@ -2730,7 +2876,9 @@ def build_vk_bot(
 
         user = await db.get_user("vk", user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
-            if text in {"/admin", "Админка"}:
+            if user_is_admin(user_id) and (
+                text in {"/admin", "Админка", VK_ADMIN_SECTION_BACK} or text in VK_ADMIN_SECTIONS or mode.startswith("admin")
+            ):
                 pass
             elif text.startswith("/") or text in {"Дополнительно", "Настройки", "Расписание"}:
                 await prompt_group_selection(peer_id)
@@ -2816,7 +2964,7 @@ def build_vk_bot(
             user = await db.get_user("vk", user_id)
             if user and user.custom_sticker_file_id:
                 try:
-                    await bot.api.messages.send(peer_ids=[peer_id], sticker_id=int(user.custom_sticker_file_id), random_id=0)
+                    await vk_send_message(bot.api, peer_id, sticker_id=int(user.custom_sticker_file_id), max_attempts=2)
                 except Exception as exc:
                     logger.warning("Failed to preview VK sticker for %s: %s", user_id, exc)
 
@@ -2892,7 +3040,7 @@ def build_vk_bot(
             user = await db.get_user("vk", user_id)
             if user and user.custom_sticker_file_id:
                 try:
-                    await bot.api.messages.send(peer_id=peer_id, sticker_id=int(user.custom_sticker_file_id), random_id=0)
+                    await vk_send_message(bot.api, peer_id, sticker_id=int(user.custom_sticker_file_id), max_attempts=2)
                 except Exception as exc:
                     logger.warning("Failed to send VK sticker on schedule menu for %s: %s", user_id, exc)
             peer_modes[peer_id] = "schedule_menu"
@@ -2927,7 +3075,38 @@ def build_vk_bot(
 
         if text == "Найти расписание":
             peer_modes[peer_id] = "schedule_search"
-            await show_screen(peer_id, schedule_search_prompt_text())
+            await show_screen(peer_id, schedule_search_prompt_text(), keyboard=search_prompt_keyboard())
+            return
+
+        # Вход в админку и навигация по ней — раньше режимов свободного ввода:
+        # иначе в режиме поиска нажатие «Админка» уходило в поиск расписания.
+        if text in {"/admin", "Админка"}:
+            if not user_is_admin(user_id):
+                await show_screen(
+                    peer_id,
+                    "Эта кнопка доступна только администратору.",
+                    keyboard=menu_keyboard(await db.get_user("vk", user_id), await user_is_editor(user_id), user_is_admin(user_id)),
+                )
+                return
+            admin_broadcast_drafts.pop(peer_id, None)
+            peer_modes[peer_id] = "admin_menu"
+            await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
+            return
+
+        if user_is_admin(user_id) and text == VK_ADMIN_SECTION_BACK:
+            admin_broadcast_drafts.pop(peer_id, None)
+            admin_lesson_drafts.pop(peer_id, None)
+            admin_lesson_delete_drafts.pop(peer_id, None)
+            admin_lesson_delete_one_drafts.pop(peer_id, None)
+            admin_user_search_state.pop(peer_id, None)
+            peer_modes[peer_id] = "admin_menu"
+            await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
+            return
+
+        if user_is_admin(user_id) and text in VK_ADMIN_SECTIONS:
+            section = VK_ADMIN_SECTIONS[text]
+            peer_modes[peer_id] = "admin_menu"
+            await show_screen(peer_id, section["text"], keyboard=make_keyboard(section["rows"]))
             return
 
         if mode == "audience_select":
@@ -2942,7 +3121,7 @@ def build_vk_bot(
             snapshot = search_results.get(peer_id)
             if snapshot is None:
                 peer_modes[peer_id] = "schedule_search"
-                await show_screen(peer_id, schedule_search_prompt_text("Сначала найди расписание."))
+                await show_screen(peer_id, schedule_search_prompt_text("Сначала найди расписание."), keyboard=search_prompt_keyboard())
                 return
             if text not in {"Найти расписание", "Назад в меню"}:
                 await show_screen(
@@ -2953,33 +3132,7 @@ def build_vk_bot(
                 return
 
 
-        if text in {"/admin", "Админка"}:
-            if not user_is_admin(user_id):
-                await show_screen(
-                    peer_id,
-                    "Эта кнопка доступна только администратору.",
-                    keyboard=menu_keyboard(await db.get_user("vk", user_id), await user_is_editor(user_id), user_is_admin(user_id)),
-                )
-                return
-            admin_broadcast_drafts.pop(peer_id, None)
-            peer_modes[peer_id] = "admin_menu"
-            await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
-            return
-
         if user_is_admin(user_id):
-            if text in {"Назад в меню", "Назад в админку"} and mode in {"admin_menu", "admin_status", "admin_daily_errors", "admin_gemini_status", "admin_users", "admin_user_search", "admin_user_search_results", "admin_editors"}:
-                admin_broadcast_drafts.pop(peer_id, None)
-                admin_lesson_drafts.pop(peer_id, None)
-                admin_user_search_state.pop(peer_id, None)
-                peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
-                return
-
-            if text in VK_ADMIN_SECTIONS:
-                section = VK_ADMIN_SECTIONS[text]
-                peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, section["text"], keyboard=make_keyboard(section["rows"]))
-                return
 
             if text == "Ручной подсчёт":
                 peer_modes[peer_id] = "admin_menu"
@@ -3004,19 +3157,24 @@ def build_vk_bot(
                     target_date -= timedelta(days=1)
                 target_date_iso = target_date.isoformat()
                 counters_section_keyboard = make_keyboard(VK_ADMIN_SECTIONS["Счётчики пар"]["rows"])
-                async with admin_counter_sync_lock:
-                    await show_screen(
-                        peer_id,
-                        "Считаю пары...\n\nОпрашиваю сайт по всем группам. Если он тормозит, это может занять несколько минут.",
-                        keyboard=None,
-                    )
-                    try:
-                        sync_result = await sync_lesson_counters_for_date(db, parser, lesson_counter_service, target_date_iso)
-                        report_text = format_counter_sync_report(sync_result, target_date_iso)
-                    except Exception:
-                        logger.exception("Ручной подсчёт пар за %s не удался", target_date_iso)
-                        report_text = "Не удалось выполнить подсчёт. Подробности в логах сервера."
-                    await show_screen(peer_id, report_text, keyboard=counters_section_keyboard)
+
+                async def run_counter_sync() -> None:
+                    async with admin_counter_sync_lock:
+                        try:
+                            sync_result = await sync_lesson_counters_for_date(db, parser, lesson_counter_service, target_date_iso)
+                            report_text = format_counter_sync_report(sync_result, target_date_iso)
+                        except Exception:
+                            logger.exception("Ручной подсчёт пар за %s не удался", target_date_iso)
+                            report_text = "Не удалось выполнить подсчёт. Подробности уже отправлены администратору."
+                        await show_screen(peer_id, report_text, keyboard=counters_section_keyboard)
+
+                await show_screen(
+                    peer_id,
+                    "Считаю пары...\n\nОпрашиваю сайт по всем группам. Если он тормозит, это может занять несколько минут. "
+                    "Отчёт пришлю отдельным сообщением, админкой можно пользоваться.",
+                    keyboard=counters_section_keyboard,
+                )
+                spawn_admin_job(peer_id, "подсчёт пар", run_counter_sync())
                 return
 
             if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):
@@ -3121,33 +3279,25 @@ def build_vk_bot(
                 peer_modes[peer_id] = "admin_gemini_status"
                 await show_screen(peer_id, format_admin_gemini_status(ocr_service, html=False), keyboard=admin_gemini_keyboard())
                 return
-            if text == "Перепарсить":
-                await show_screen(
-                    peer_id,
-                    "Перепарсинг запущен...\n\nПарсю активные источники и обновляю текущие слепки. Это может занять до минуты.",
-                )
-                report_rows = await refresh_all_active_sources()
-                if not report_rows:
-                    await show_screen(peer_id, "Нет активных групп для перепарсинга.", keyboard=admin_back_keyboard())
+            if text in {"Перепарсить", "Сохранить эталон"}:
+                is_refresh = text == "Перепарсить"
+                job_name = "перепарсинг" if is_refresh else "сохранение эталона"
+
+                async def run_sources_job() -> None:
+                    rows = await (refresh_all_active_sources() if is_refresh else save_baseline_for_all_active_sources())
+                    if not rows:
+                        await show_screen(peer_id, "Нет активных групп для этой операции.", keyboard=admin_back_keyboard())
+                        return
+                    title = "Перепарсинг активных групп" if is_refresh else "Эталоны для активных групп"
+                    await show_screen(peer_id, format_group_action_report(title, rows), keyboard=admin_back_keyboard())
+
+                if not spawn_admin_job(peer_id, job_name, run_sources_job()):
+                    await show_screen(peer_id, f"Операция «{job_name}» уже идёт — дождись отчёта.", keyboard=admin_back_keyboard())
                     return
                 await show_screen(
                     peer_id,
-                    format_group_action_report("Перепарсинг активных групп", report_rows),
-                    keyboard=admin_back_keyboard(),
-                )
-                return
-            if text == "Сохранить эталон":
-                await show_screen(
-                    peer_id,
-                    "Сохранение эталонов запущено...\n\nПарсю активные источники и записываю новый эталон. Это может занять до минуты.",
-                )
-                report_rows = await save_baseline_for_all_active_sources()
-                if not report_rows:
-                    await show_screen(peer_id, "Нет активных групп для сохранения эталона.", keyboard=admin_back_keyboard())
-                    return
-                await show_screen(
-                    peer_id,
-                    format_group_action_report("Эталоны для активных групп", report_rows),
+                    ("Перепарсинг запущен..." if is_refresh else "Сохранение эталонов запущено...")
+                    + "\n\nПарсю активные источники, это может занять несколько минут. Отчёт пришлю отдельным сообщением.",
                     keyboard=admin_back_keyboard(),
                 )
                 return
@@ -3170,16 +3320,30 @@ def build_vk_bot(
                 await show_screen(
                     peer_id,
                     "Поиск пользователя\n\nНапиши запрос одним сообщением. Поддерживается поиск по айди, @username, имени, фамилии и названию группы.",
-                    keyboard=make_keyboard([["Все пользователи"], ["Назад в меню"]]),
+                    keyboard=make_keyboard([["Все пользователи"], [VK_ADMIN_SECTION_BACK]]),
                 )
                 return
             if text == "Информация по группам":
                 await show_screen(peer_id, format_group_user_stats(await db.get_group_user_stats()), keyboard=admin_back_keyboard())
                 return
             if text == "Тестовая рассылка":
-                if broadcaster is not None:
-                    await broadcaster.broadcast_test_message()
-                await show_screen(peer_id, "Тестовая рассылка\n\nСообщение отправлено всем зарегистрированным пользователям.", keyboard=admin_back_keyboard())
+                if broadcaster is None:
+                    await show_screen(peer_id, "Сервис рассылки сейчас недоступен.", keyboard=admin_back_keyboard())
+                    return
+
+                async def run_test_broadcast() -> None:
+                    progress = await broadcaster.broadcast_test_message()
+                    summary = (
+                        f"Тестовая рассылка завершена.\n\nУспешно: {progress.success_count}, ошибок: {progress.failed_count}."
+                        if progress is not None
+                        else "Тестовая рассылка завершена."
+                    )
+                    await show_screen(peer_id, summary, keyboard=admin_back_keyboard())
+
+                if not spawn_admin_job(peer_id, "рассылка", run_test_broadcast()):
+                    await show_screen(peer_id, "Другая рассылка ещё идёт — дождись её отчёта.", keyboard=admin_back_keyboard())
+                    return
+                await show_screen(peer_id, "Тестовая рассылка запущена. Отчёт пришлю, когда закончится.", keyboard=admin_back_keyboard())
                 return
             if mode == "admin_users":
                 if text == "Следующая страница":
@@ -3273,16 +3437,6 @@ def build_vk_bot(
                     users = await db.list_users("vk")
                     await show_screen(peer_id, "Управление редакторами\n\nРоль обновлена. Выбери пользователя, чтобы продолжить.", keyboard=build_editor_keyboard(peer_id, users, peer_pages[peer_id].get("editors", 0)))
                     return
-            if text == "Тестовая рассылка":
-                users = await db.get_users_for_platform("vk")
-                for user in users:
-                    try:
-                        await bot.api.messages.send(peer_ids=[user.user_id], message="Тестовое уведомление: бот активен и рассылка работает.", random_id=0)
-                    except Exception as exc:
-                        logger.warning("Failed to send test broadcast to VK user %s: %s", user.user_id, exc)
-                        continue
-                await show_screen(peer_id, "Тестовая рассылка\n\nСообщение отправлено всем зарегистрированным пользователям VK.", keyboard=admin_keyboard())
-                return
 
         await show_main_menu(peer_id, user_id)
 

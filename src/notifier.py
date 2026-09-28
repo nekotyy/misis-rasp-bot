@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -7,12 +8,20 @@ from datetime import datetime
 from time import monotonic
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from vkbottle import Keyboard, Text
 from vkbottle.bot import Bot as VkBot
 
 from src.db import Database
 from src.message_broker import OutboundMessage, RabbitMQBroker
+from src.vk_runtime import is_permanent_vk_delivery_error, split_vk_text, vk_send_message
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +53,35 @@ SCHEDULE_NOTIFICATION_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
+
+# Кнопки под уведомлением в VK — те же, что в Telegram. Это обычные текстовые
+# кнопки: нажатие присылает боту подпись, которую VK-обработчик понимает в любом
+# состоянии диалога.
+VK_NOTIFICATION_BUTTONS = (
+    ("Расписание на сегодня", "Расписание на завтра"),
+    ("Расписание на 2 дня", "Расписание звонков"),
+    ("Найти расписание",),
+)
+
+
+def build_vk_notification_keyboard() -> str:
+    keyboard = Keyboard(one_time=False, inline=True)
+    for row_index, row in enumerate(VK_NOTIFICATION_BUTTONS):
+        if row_index:
+            keyboard.row()
+        for label in row:
+            keyboard.add(Text(label))
+    return keyboard.get_json()
+
+
+VK_NOTIFICATION_KEYBOARD = build_vk_notification_keyboard()
+
+TELEGRAM_SEND_ATTEMPTS = 3
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+class DeliveryUnavailableError(RuntimeError):
+    """Канал доставки ещё не поднят (бот не подключён) — сообщение стоит повторить позже."""
 
 
 class Broadcaster:
@@ -211,8 +249,8 @@ class Broadcaster:
 
         return progress
 
-    async def broadcast_test_message(self) -> None:
-        await self.broadcast(
+    async def broadcast_test_message(self) -> BroadcastProgress:
+        return await self.broadcast(
             "Тестовое уведомление: бот активен и рассылка работает.",
             campaign_type=CAMPAIGN_NOTIFICATION,
         )
@@ -386,7 +424,7 @@ class Broadcaster:
                 logger.warning("Failed to fetch custom notification settings for %s: %s", user_id, user_exc)
 
         try:
-            await self.telegram_bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
+            await self._send_telegram_with_retry(user_id, message, reply_markup)
         except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(
@@ -405,7 +443,8 @@ class Broadcaster:
                 except Exception as disable_exc:
                     logger.warning("Failed to auto-disable telegram user %s: %s", user_id, disable_exc)
             logger.warning("Telegram broadcast failed for %s: %s", user_id, exc)
-            if raise_on_failure:
+            # Постоянную ошибку (бот заблокирован, чат удалён) повторять бессмысленно.
+            if raise_on_failure and not self._is_permanent_telegram_failure(exc):
                 raise
             return False
 
@@ -431,24 +470,29 @@ class Broadcaster:
         message_id: str | None = None,
         raise_on_failure: bool = False,
     ) -> bool:
+        if self.vk_bot is None:
+            # Консьюмер RabbitMQ может получить сообщение раньше, чем поднимется
+            # VK-бот. Раньше тут было AttributeError, и сообщение терялось.
+            if raise_on_failure:
+                raise DeliveryUnavailableError("VK-бот ещё не подключён")
+            logger.warning("VK-бот не подключён, сообщение для %s не отправлено.", user_id)
+            return False
+        api = self.vk_bot.api
         if campaign_type == CAMPAIGN_NOTIFICATION:
             try:
                 user = await self.db.get_user("vk", user_id)
                 if user is not None and user.custom_sticker_file_id:
                     try:
-                        await self.vk_bot.api.messages.send(
-                            peer_ids=[user_id],
-                            sticker_id=int(user.custom_sticker_file_id),
-                            random_id=0,
-                        )
+                        await vk_send_message(api, user_id, sticker_id=int(user.custom_sticker_file_id), max_attempts=2)
                     except Exception as sticker_exc:
                         logger.warning("Failed to send VK custom sticker for user %s: %s", user_id, sticker_exc)
             except Exception as user_exc:
                 logger.warning("Failed to fetch VK custom sticker settings for %s: %s", user_id, user_exc)
 
+        keyboard = VK_NOTIFICATION_KEYBOARD if campaign_type == CAMPAIGN_NOTIFICATION else None
         try:
-            await self.vk_bot.api.messages.send(peer_ids=[user_id], message=message, random_id=0)
-        except Exception as exc:  # pragma: no cover - depends on VK API
+            await vk_send_message(api, user_id, message, keyboard=keyboard)
+        except Exception as exc:
             error_text = f"{type(exc).__name__}: {exc}"
             await self._record_delivery_event(
                 campaign_type=campaign_type,
@@ -460,8 +504,14 @@ class Broadcaster:
                 message_id=message_id,
                 error_text=error_text,
             )
+            permanent = is_permanent_vk_delivery_error(exc)
+            if permanent and campaign_type != CAMPAIGN_ADMIN_NOTIFY:
+                try:
+                    await self.db.mark_delivery_auto_disabled("vk", user_id, True)
+                except Exception as disable_exc:
+                    logger.warning("Failed to auto-disable VK user %s: %s", user_id, disable_exc)
             logger.warning("VK broadcast failed for %s: %s", user_id, exc)
-            if raise_on_failure:
+            if raise_on_failure and not permanent:
                 raise
             return False
 
@@ -475,6 +525,33 @@ class Broadcaster:
             message_id=message_id,
         )
         return True
+
+    async def _send_telegram_with_retry(self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None) -> None:
+        # Сообщение длиннее лимита Telegram отклоняется целиком ("message is too long"),
+        # поэтому режем по строкам (HTML-теги уведомлений не переходят через строку),
+        # а кнопки ставим под последней частью.
+        chunks = split_vk_text(text, TELEGRAM_MESSAGE_LIMIT)
+        for index, chunk in enumerate(chunks):
+            await self._send_telegram_chunk(chat_id, chunk, reply_markup if index == len(chunks) - 1 else None)
+
+    async def _send_telegram_chunk(self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None) -> None:
+        delay = 1.0
+        for attempt in range(1, TELEGRAM_SEND_ATTEMPTS + 1):
+            try:
+                await self.telegram_bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+                return
+            except TelegramRetryAfter as exc:
+                if attempt >= TELEGRAM_SEND_ATTEMPTS:
+                    raise
+                wait_for = min(float(exc.retry_after) + 0.5, 60.0)
+                logger.warning("Telegram просит подождать %.0f с перед отправкой в %s.", wait_for, chat_id)
+                await asyncio.sleep(wait_for)
+            except (TelegramNetworkError, TelegramServerError) as exc:
+                if attempt >= TELEGRAM_SEND_ATTEMPTS:
+                    raise
+                logger.warning("Telegram send to %s: временная ошибка (попытка %s): %s", chat_id, attempt, exc)
+                await asyncio.sleep(delay)
+                delay *= 2
 
     def _is_permanent_telegram_failure(self, exc: Exception) -> bool:
         error_text = str(exc).lower()

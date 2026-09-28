@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -64,6 +65,8 @@ class _QueueJobBroker:
         self._channel: aio_pika.abc.AbstractRobustChannel | None = None
         self._queue: aio_pika.abc.AbstractQueue | None = None
         self._consumer_tag: str | None = None
+        # Параллельные publish() на старте открывали по отдельному соединению.
+        self._connect_lock = asyncio.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -74,12 +77,14 @@ class _QueueJobBroker:
             return
         if self._connection is not None and not self._connection.is_closed:
             return
-
-        self._connection = await aio_pika.connect_robust(self.url)
-        self._channel = await self._connection.channel()
-        await self._channel.set_qos(prefetch_count=self.prefetch_count)
-        self._queue = await self._channel.declare_queue(self.queue_name, durable=True)
-        logger.info("RabbitMQ connected for %s. Queue: %s", self.label, self.queue_name)
+        async with self._connect_lock:
+            if self._connection is not None and not self._connection.is_closed:
+                return
+            self._connection = await aio_pika.connect_robust(self.url, timeout=15)
+            self._channel = await self._connection.channel()
+            await self._channel.set_qos(prefetch_count=self.prefetch_count)
+            self._queue = await self._channel.declare_queue(self.queue_name, durable=True)
+            logger.info("RabbitMQ connected for %s. Queue: %s", self.label, self.queue_name)
 
     async def publish(self, payload) -> bool:
         if not self.enabled:

@@ -302,6 +302,7 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("src.vk_bot.sync_lesson_counters_for_date", AsyncMock(return_value=result)) as sync:
             await handler(self._message(VK_ADMIN_ID, "Подсчёт за сегодня"))
+            await bot.wait_admin_jobs()
 
         self.assertEqual(sync.await_args.args[3], datetime.now().date().isoformat())
         text, labels = self._last_screen(bot)
@@ -316,6 +317,7 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
             "src.vk_bot.sync_lesson_counters_for_date", AsyncMock(return_value=LessonCounterSyncResult())
         ) as sync:
             await self._handler(bot)(self._message(VK_ADMIN_ID, "Подсчёт за вчера"))
+            await bot.wait_admin_jobs()
 
         expected = (datetime.now().date() - timedelta(days=1)).isoformat()
         self.assertEqual(sync.await_args.args[3], expected)
@@ -325,6 +327,7 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("src.vk_bot.sync_lesson_counters_for_date", AsyncMock(side_effect=RuntimeError("boom"))):
             await self._handler(bot)(self._message(VK_ADMIN_ID, "Подсчёт за сегодня"))
+            await bot.wait_admin_jobs()
 
         self.assertIn("Не удалось выполнить подсчёт", self._last_screen(bot)[0])
 
