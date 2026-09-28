@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from src.config import Settings
 from src.db import Database
-from src.lesson_counters import LessonCounterService
+from src.lesson_counters import LessonCounterService, is_uncounted_lesson
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot
 
@@ -57,6 +57,66 @@ class LessonCountersReadJsonTests(unittest.IsolatedAsyncioTestCase):
         text = await service.format_counters_text(600, group_name="ИСП-25-1")
 
         self.assertEqual(text, "Список дисциплин пока не настроен.")
+
+
+class ConsultationIsNotCountedTests(unittest.IsolatedAsyncioTestCase):
+    """"Консульт." / "Консультирующий" — не пара, в счётчиках её быть не должно."""
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self._tmp.name) / "test.db")
+        await self.db.initialize()
+        self.json_path = Path(self._tmp.name) / "lesson_counters.json"
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_detects_consultation_by_subject_or_teacher(self) -> None:
+        self.assertTrue(is_uncounted_lesson("Консульт.", "Консультирующий"))
+        self.assertTrue(is_uncounted_lesson("консульт", "Иванов И.И."))
+        self.assertTrue(is_uncounted_lesson("Математика", "Консультирующий"))
+        self.assertFalse(is_uncounted_lesson("Математика", "Иванов И.И."))
+
+    async def test_auto_increment_ignores_consultation(self) -> None:
+        service = LessonCounterService(self.db, self.json_path)
+
+        changed = service.auto_increment_or_create_subject_in_json(
+            group_name="ИСП-25-1", schedule_id=600, subject="Консульт.", teacher="Консультирующий", count=1
+        )
+
+        self.assertFalse(changed)
+        self.assertFalse(self.json_path.exists())
+
+    async def test_auto_increment_still_counts_regular_lesson(self) -> None:
+        service = LessonCounterService(self.db, self.json_path)
+
+        service.auto_increment_or_create_subject_in_json(
+            group_name="ИСП-25-1", schedule_id=600, subject="Математика", teacher="Иванов И.И.", count=1
+        )
+
+        data = json.loads(self.json_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["groups"][0]["subjects"][0]["passed"], 1)
+
+    async def test_existing_consultation_entries_are_hidden_from_users(self) -> None:
+        payload = {
+            "groups": [
+                {
+                    "schedule_id": 600,
+                    "group_name": "ИСП-25-1",
+                    "subjects": [
+                        {"subject": "Консульт.", "teacher": "Консультирующий", "passed": 2, "total": None},
+                        {"subject": "Математика", "teacher": "Иванов И.И.", "passed": 4, "total": None},
+                    ],
+                }
+            ]
+        }
+        self.json_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        service = LessonCounterService(self.db, self.json_path)
+
+        text = await service.format_counters_text(600, group_name="ИСП-25-1")
+
+        self.assertIn("Математика", text)
+        self.assertNotIn("Консульт", text)
 
 
 class BotsPassCountersPathToServiceTests(unittest.IsolatedAsyncioTestCase):

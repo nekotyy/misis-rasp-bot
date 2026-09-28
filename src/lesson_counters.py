@@ -186,6 +186,19 @@ def normalize_lesson_text(value: str) -> str:
     return " ".join(normalized.split())
 
 
+# Консультация ("Консульт." / "Консультирующий") — не пара, а окно для вопросов:
+# в счётчиках пар её не учитываем и не показываем ни у одной группы.
+UNCOUNTED_SUBJECT_NORM = "консульт"
+UNCOUNTED_TEACHER_NORM = "консультирующий"
+
+
+def is_uncounted_lesson(subject: str, teacher: str) -> bool:
+    return (
+        normalize_lesson_text(subject) == UNCOUNTED_SUBJECT_NORM
+        or normalize_lesson_text(teacher) == UNCOUNTED_TEACHER_NORM
+    )
+
+
 SUBJECT_NOISE_PREFIXES = (
     "консульт",
     "консультац",
@@ -533,6 +546,17 @@ class LessonCounterService:
 
         db_counters = await self.db.list_lesson_counters(schedule_id) if schedule_id else []
 
+        json_counters = [
+            item for item in json_counters
+            if not is_uncounted_lesson(
+                str(item.get("display_name") or item.get("subject") or ""), str(item.get("teacher") or "")
+            )
+        ]
+        db_counters = [
+            counter for counter in db_counters
+            if not is_uncounted_lesson(str(counter["subject"]), str(counter["teacher"]))
+        ]
+
         if not json_counters and not db_counters:
             return "Список дисциплин пока не настроен."
 
@@ -625,6 +649,8 @@ class LessonCounterService:
         teacher: str,
         count: int = 1,
     ) -> bool:
+        if is_uncounted_lesson(subject, teacher):
+            return False
         if not self.lesson_counters_path:
             return False
         self.lesson_counters_path.parent.mkdir(parents=True, exist_ok=True)
