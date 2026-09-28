@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import aiosqlite
 
 from src.db import Database
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
@@ -131,6 +133,107 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         await jobs._run_for_active_sources("sync-current", worker)
 
         worker.assert_not_awaited()
+
+    async def test_empty_result_with_fresh_cache_keeps_old_current_and_does_not_broadcast(self) -> None:
+        """Сайт после падения вернул 200 с пустым расписанием — не затираем валидный кэш."""
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+        jobs.alert_manager = AsyncMock()
+
+        real_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов", classroom="301"),
+            ])],
+        )
+        jobs._parse_source = AsyncMock(return_value=(real_snapshot, "hash_real"))
+        await jobs._sync_source(self.source)
+
+        empty_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[])],
+        )
+        jobs._parse_source = AsyncMock(return_value=(empty_snapshot, "hash_empty"))
+        await jobs._sync_source(self.source)
+
+        self.mock_broadcaster.broadcast.assert_not_called()
+        jobs.alert_manager.report_component_status.assert_awaited_once()
+        self.assertEqual(jobs.alert_manager.report_component_status.await_args.args[:2], ("schedule_site", False))
+
+        current = await self.db.get_latest_snapshot("current", schedule_id=600)
+        self.assertTrue(current["content"]["days"][0]["lessons"])
+
+    async def test_empty_result_after_grace_period_is_trusted(self) -> None:
+        """Если пустой результат держится дольше окна доверия, считаем его правдой."""
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+        jobs.alert_manager = AsyncMock()
+
+        real_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов", classroom="301"),
+            ])],
+        )
+        jobs._parse_source = AsyncMock(return_value=(real_snapshot, "hash_real"))
+        await jobs._sync_source(self.source)
+
+        stale_fetched_at = (datetime.now() - timedelta(hours=13)).isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.db_path) as raw_db:
+            await raw_db.execute(
+                "UPDATE schedule_snapshots SET fetched_at = ? WHERE snapshot_type = 'current' AND schedule_id = 600",
+                (stale_fetched_at,),
+            )
+            await raw_db.commit()
+
+        empty_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[])],
+        )
+        jobs._parse_source = AsyncMock(return_value=(empty_snapshot, "hash_empty"))
+        await jobs._sync_source(self.source)
+
+        jobs.alert_manager.report_component_status.assert_not_awaited()
+
+    async def test_manual_snapshot_trusts_empty_result_even_with_fresh_cache(self) -> None:
+        """OCR/ручная загрузка не должна отвергаться анти-глюк проверкой сайта."""
+        from src.scheduler import ScheduleJobs
+
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = self.db
+        jobs.broadcaster = self.mock_broadcaster
+        jobs.alert_manager = AsyncMock()
+
+        real_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[
+                Lesson(number=1, subject="Математика", teacher="Иванов", classroom="301"),
+            ])],
+        )
+        jobs._parse_source = AsyncMock(return_value=(real_snapshot, "hash_real"))
+        await jobs._sync_source(self.source)
+
+        empty_snapshot = ScheduleSnapshot(
+            group_name="КИБ-24-1",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Пн", date_iso="2026-08-05", lessons=[])],
+        )
+        await jobs.apply_manual_snapshot(self.source, empty_snapshot, notify=False)
+
+        jobs.alert_manager.report_component_status.assert_not_awaited()
+        current = await self.db.get_latest_snapshot("current", schedule_id=600)
+        self.assertEqual(current["content"]["days"][0]["lessons"], [])
 
     async def test_parse_source_teacher_never_hits_site(self) -> None:
         """Синхронизация "подписки на препода" не должна ходить на сайт — только в БД по группам."""

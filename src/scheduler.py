@@ -30,7 +30,7 @@ from src.message_broker import (
 from src.models import ChangeSummary, ScheduleSnapshot
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser, compute_snapshot_hash
-from src.schedule_service import ScheduleComparator
+from src.schedule_service import ScheduleComparator, looks_like_stale_site_glitch
 from src.system_status import (
     SystemAlertManager,
     check_database_status,
@@ -491,6 +491,7 @@ class ScheduleJobs:
             snapshot,
             compute_snapshot_hash(snapshot),
             notify=notify,
+            trust_empty=True,
         )
 
     async def apply_snapshot(
@@ -500,6 +501,7 @@ class ScheduleJobs:
         snapshot_hash: str,
         *,
         notify: bool = True,
+        trust_empty: bool = False,
     ) -> ChangeSummary | None:
         async def save(snapshot_type: str) -> None:
             await self.db.save_snapshot(
@@ -513,6 +515,28 @@ class ScheduleJobs:
                 source_title=source["source_title"],
                 source_url=source["source_url"],
             )
+
+        if not trust_empty:
+            previous_current = await self.db.get_latest_snapshot(
+                "current",
+                schedule_id=source["schedule_id"],
+                source_key=source["source_key"],
+            )
+            if looks_like_stale_site_glitch(previous_current, snapshot):
+                logger.warning(
+                    "Источник %s вернул пустое расписание при валидном кэше от %s — похоже на сбой сайта "
+                    "после восстановления, не перезаписываю кэш.",
+                    source["source_title"],
+                    previous_current["fetched_at"],
+                )
+                if self.alert_manager is not None:
+                    await self.alert_manager.report_component_status(
+                        "schedule_site",
+                        False,
+                        "Сайт вернул пустое расписание при валидном кэше",
+                        details=f"Источник {source.get('source_title')}: подозрение на сбой сайта после восстановления",
+                    )
+                return None
 
         baseline = await self.db.get_latest_snapshot(
             "daily_baseline",
