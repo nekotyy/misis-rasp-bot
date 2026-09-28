@@ -9,13 +9,18 @@ from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from time import monotonic
-from traceback import format_exception
 from typing import Any
 
 import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramNetworkError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramEntityTooLarge,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -31,6 +36,7 @@ from aiogram.types import (
 
 from src.config import Settings
 from src.db import Database
+from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
@@ -230,6 +236,11 @@ async def build_personalization_keyboard(user_id: int, db: Database) -> InlineKe
 
 
 SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
+USER_ERROR_HTML = (
+    "<b>Что-то пошло не так при обработке запроса.</b>\n\n"
+    "Администратор уже получил отчёт об ошибке. Попробуй ещё раз через минуту.\n"
+    f"Если повторится — напиши: {SUPPORT_CONTACT}"
+)
 STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 TELEGRAM_MESSAGE_LIMIT = 4096
@@ -998,8 +1009,10 @@ def build_dispatcher(
     search_catalog: ScheduleSearchCatalog | None = None,
     schedule_jobs: Any | None = None,
     ocr_importer: OcrScheduleImporter | None = None,
+    error_reporter: AdminErrorReporter | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
+    reporter = error_reporter or AdminErrorReporter(broadcaster.notify_admins if broadcaster is not None else None)
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
     awaiting_schedule_search: set[int] = set()
@@ -1035,6 +1048,8 @@ def build_dispatcher(
     # обе рассылки в это окно ещё видят черновик на месте.
     admin_ocr_apply_locks: set[int] = set()
     admin_ocr_album_buffers: dict[str, list[Message]] = {}
+    # Строгие ссылки на отложенные задачи альбомов: asyncio хранит только слабые.
+    album_tasks: set[asyncio.Task] = set()
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
     message_rate_limit: dict[int, float] = {}
@@ -1933,7 +1948,9 @@ def build_dispatcher(
                     await safe_delete_message(bot, chat_id, extra_id)
                 context_messages[chat_id][context] = [message_ids[0]]
                 return
-            except (TelegramBadRequest, TelegramNetworkError):
+            except TelegramForbiddenError:
+                return
+            except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter):
                 pass
         sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
         context_messages[chat_id][context] = [sent.message_id] if sent is not None else message_ids
@@ -1959,8 +1976,16 @@ def build_dispatcher(
         for attempt in range(1, retries + 1):
             try:
                 return await bot.send_message(chat_id, text, reply_markup=reply_markup)
-            except TelegramBadRequest:
+            except TelegramBadRequest as exc:
+                logger.warning("Telegram send_message rejected for chat %s: %s", chat_id, exc)
                 return None
+            except TelegramForbiddenError:
+                return None
+            except TelegramRetryAfter as exc:
+                if attempt >= retries:
+                    logger.warning("Telegram flood control for chat %s: %s", chat_id, exc)
+                    return None
+                await asyncio.sleep(min(float(exc.retry_after) + 0.5, 30.0))
             except TelegramNetworkError as exc:
                 if attempt >= retries:
                     logger.warning("Telegram send_message failed for chat %s: %s", chat_id, exc)
@@ -1974,7 +1999,7 @@ def build_dispatcher(
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=message_id)
                 return True
-            except TelegramBadRequest:
+            except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return False
             except TelegramNetworkError as exc:
                 if attempt >= retries:
@@ -2001,7 +2026,7 @@ def build_dispatcher(
             try:
                 await message.delete()
                 return
-            except TelegramBadRequest:
+            except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return
             except TelegramNetworkError:
                 if attempt >= retries:
@@ -2022,7 +2047,7 @@ def build_dispatcher(
             try:
                 await callback.answer(*args, **kwargs)
                 return
-            except TelegramBadRequest:
+            except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return
             except TelegramNetworkError:
                 if attempt >= retries:
@@ -2054,57 +2079,44 @@ def build_dispatcher(
                 return True
             except TelegramBadRequest as exc:
                 return "message is not modified" in str(exc).lower()
+            except TelegramForbiddenError:
+                return False
+            except TelegramRetryAfter as exc:
+                if attempt >= retries:
+                    return False
+                await asyncio.sleep(min(float(exc.retry_after) + 0.5, 30.0))
             except TelegramNetworkError:
                 if attempt >= retries:
                     return False
                 await asyncio.sleep(0.5 * attempt)
         return False
 
-    def short_error_text(error: Exception) -> str:
-        text = f"{type(error).__name__}: {error}"
-        if len(text) > 350:
-            text = f"{text[:347]}..."
-        return text
-
-    async def notify_user_about_error(bot: Bot, chat_id: int, error: Exception) -> None:
+    async def notify_user_about_error(bot: Bot, chat_id: int, error: BaseException) -> None:
         try:
-            await bot.send_message(
-                chat_id,
-                (
-                    "<b>Произошла ошибка при обработке запроса.</b>\n\n"
-                    f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
-                    f"Напишите мне для решения: {SUPPORT_CONTACT}"
-                ),
-            )
-        except TelegramBadRequest:
-            return
+            await bot.send_message(chat_id, USER_ERROR_HTML)
+        except Exception as exc:
+            logger.warning("Не удалось сообщить пользователю %s об ошибке: %s", chat_id, exc)
 
-    async def notify_admin_about_error(platform: str, user_id: int | None, chat_id: int | None, error: Exception) -> None:
-        if broadcaster is None:
-            return
-        db_user = await db.get_user(platform, user_id) if user_id is not None else None
-        username = db_user.username if db_user else None
-        user_info_tg = format_user_profile_link(platform, user_id, username, html=True)
-        user_info_vk = format_user_profile_link(platform, user_id, username, html=False)
-
-        traceback_text = "".join(format_exception(type(error), error, error.__traceback__))
-        if len(traceback_text) > 2500:
-            traceback_text = f"...{traceback_text[-2500:]}"
-        telegram_text = (
-            f"<b>Сбой в боте ({escape(platform)})</b>\n\n"
-            f"Пользователь: {user_info_tg}\n"
-            f"Чат: <b>{chat_id if chat_id is not None else 'неизвестно'}</b>\n"
-            f"Ошибка: <code>{escape(short_error_text(error))}</code>\n\n"
-            f"<pre>{escape(traceback_text)}</pre>"
-        )
-        vk_text = (
-            f"Сбой в боте ({platform})\n\n"
-            f"Пользователь: {user_info_vk}\n"
-            f"Чат: {chat_id if chat_id is not None else 'неизвестно'}\n"
-            f"Ошибка: {short_error_text(error)}\n\n"
-            f"{traceback_text}"
-        )
-        await broadcaster.notify_admins(telegram_text, vk_text)
+    async def notify_admin_about_error(
+        platform: str,
+        user_id: int | None,
+        chat_id: int | None,
+        error: BaseException,
+        update_summary: str | None = None,
+    ) -> None:
+        username = None
+        try:
+            db_user = await db.get_user(platform, user_id) if user_id is not None else None
+            username = db_user.username if db_user else None
+        except Exception:
+            logger.warning("Не удалось прочитать пользователя %s для отчёта об ошибке.", user_id)
+        details = [
+            ("Пользователь", format_user_profile_link(platform, user_id, username, html=False)),
+            ("Чат", str(chat_id) if chat_id is not None else "неизвестно"),
+        ]
+        if update_summary:
+            details.append(("Действие", update_summary[:200]))
+        await reporter.report_exception(f"{'Telegram' if platform == 'telegram' else platform}-бот", error, details=details)
 
     def extract_error_context(event: ErrorEvent) -> tuple[int | None, int | None]:
         update = event.update
@@ -4079,7 +4091,9 @@ def build_dispatcher(
         buffer = admin_ocr_album_buffers.setdefault(media_group_id, [])
         buffer.append(message)
         if len(buffer) == 1:
-            asyncio.create_task(finalize_admin_ocr_album(media_group_id, summary))
+            task = asyncio.create_task(finalize_admin_ocr_album(media_group_id, summary))
+            album_tasks.add(task)
+            task.add_done_callback(album_tasks.discard)
 
     async def finalize_admin_ocr_album(media_group_id: str, summary: bool) -> None:
         await asyncio.sleep(ADMIN_OCR_ALBUM_WAIT_SECONDS)
@@ -4950,10 +4964,32 @@ def build_dispatcher(
 
     @dispatcher.errors()
     async def handle_telegram_errors(event: ErrorEvent, bot: Bot) -> bool:
+        error = event.exception
         user_id, chat_id = extract_error_context(event)
+        update = event.update
+        update_summary = None
+        if update.message is not None:
+            update_summary = f"сообщение: {(update.message.text or update.message.caption or '')[:150]}"
+        elif update.callback_query is not None:
+            update_summary = f"кнопка: {update.callback_query.data}"
+            # Иначе у пользователя на кнопке ещё ~15 секунд крутятся «часики».
+            await safe_callback_answer(update.callback_query, "Произошла ошибка, администратор уже в курсе.", show_alert=False)
+        logger.error(
+            "Telegram handler failed for chat %s: %s",
+            chat_id,
+            error,
+            exc_info=error,
+            extra={"skip_admin_report": True},
+        )
+        # Пользователь сам закрыл доступ боту — ни ему, ни админу тут писать нечего.
+        if isinstance(error, TelegramForbiddenError):
+            return True
         if chat_id is not None:
-            await notify_user_about_error(bot, chat_id, event.exception)
-        await notify_admin_about_error("telegram", user_id, chat_id, event.exception)
+            await notify_user_about_error(bot, chat_id, error)
+        try:
+            await notify_admin_about_error("telegram", user_id, chat_id, error, update_summary)
+        except Exception:
+            logger.warning("Не удалось отправить отчёт об ошибке Telegram админу.", exc_info=True)
         return True
 
     return dispatcher

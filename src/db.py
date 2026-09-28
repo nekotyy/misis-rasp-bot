@@ -13,12 +13,21 @@ from src.models import ScheduleSnapshot, UserRecord
 logger = logging.getLogger(__name__)
 
 
+# Бот и веб-админка пишут в одну SQLite из разных процессов. Штатные 5 секунд
+# ожидания блокировки под нагрузкой (рассылка + автоподсчёт) заканчивались
+# "database is locked" и падением обработчика у пользователя.
+SQLITE_BUSY_TIMEOUT_SECONDS = 30.0
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    def _connect(self) -> aiosqlite.Connection:
+        return aiosqlite.connect(self.path, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
+
     async def initialize(self) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -391,7 +400,7 @@ class Database:
         is_editor: bool = False,
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO users (
@@ -412,6 +421,13 @@ class Database:
                     schedule_id = COALESCE(excluded.schedule_id, users.schedule_id),
                     is_admin = excluded.is_admin,
                     is_editor = COALESCE(users.is_editor, excluded.is_editor),
+                    -- Пользователь снова пишет боту — значит, доставка возможна:
+                    -- снимаем автоотключение (например, после разблокировки бота).
+                    homework_notifications_enabled = CASE
+                        WHEN users.delivery_disabled_auto = 1 THEN 1
+                        ELSE users.homework_notifications_enabled
+                    END,
+                    delivery_disabled_auto = 0,
                     last_seen_at = excluded.last_seen_at
                 """,
                 (
@@ -488,7 +504,7 @@ class Database:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY platform, created_at"
 
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
 
@@ -534,7 +550,7 @@ class Database:
         )
 
     async def get_user(self, platform: str, user_id: int) -> UserRecord | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT
@@ -592,7 +608,7 @@ class Database:
         group_name: str | None = None,
         schedule_id: int | None = None,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -629,7 +645,7 @@ class Database:
         audience_subscription_title: str,
         audience_subscription_url: str,
     ) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -650,7 +666,7 @@ class Database:
             await db.commit()
 
     async def clear_user_audience_subscription(self, platform: str, user_id: int) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -665,7 +681,7 @@ class Database:
             await db.commit()
 
     async def clear_user_subscription(self, platform: str, user_id: int) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -686,7 +702,7 @@ class Database:
             await db.commit()
 
     async def set_editor(self, platform: str, user_id: int, is_editor: bool) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -698,7 +714,7 @@ class Database:
             await db.commit()
 
     async def set_notifications_enabled(self, platform: str, user_id: int, enabled: bool) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -712,7 +728,7 @@ class Database:
             await db.commit()
 
     async def mark_delivery_auto_disabled(self, platform: str, user_id: int, disabled: bool) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 UPDATE users
@@ -726,7 +742,7 @@ class Database:
             await db.commit()
 
     async def count_auto_disabled_users(self, platform: str) -> int:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT COUNT(*)
@@ -739,7 +755,7 @@ class Database:
         return int(row[0] if row else 0)
 
     async def auto_disable_undeliverable_telegram_users(self) -> int:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 f"""
                 UPDATE users
@@ -765,6 +781,7 @@ class Database:
                                 LIMIT 1
                             )
                             AND last_event.status = 'failed'
+                            AND last_event.created_at > COALESCE(users.last_seen_at, '')
                             AND {self._telegram_permanent_failure_sql("last_event.error_text")}
                     )
                 """
@@ -788,7 +805,7 @@ class Database:
         return [user for user in users if user.homework_notifications_enabled]
 
     async def get_group_user_stats(self) -> list[dict[str, int | str]]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT
@@ -821,7 +838,7 @@ class Database:
         ]
 
     async def get_active_sources(self) -> list[dict]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT source_type, source_key, source_title, source_url, schedule_id, group_name, SUM(users_count)
@@ -879,7 +896,7 @@ class Database:
         переименованием и исчезновением отдельных групп.
         """
         now = datetime.now().isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute("DELETE FROM groups")
             await db.executemany(
                 """
@@ -908,7 +925,7 @@ class Database:
         которых уже есть хоть один сохранённый снимок расписания. У таких групп нет
         отдельного каталога вроде таблицы groups — единственный сигнал об их
         существовании — то, что для них когда-либо сохраняли snapshot_type='current'."""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT source_key, group_name
@@ -929,7 +946,7 @@ class Database:
 
     async def get_all_groups(self) -> list[dict]:
         """Список групп, сохранённый при последней успешной загрузке с сайта."""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             try:
                 cursor = await db.execute(
                     "SELECT schedule_id, group_name, department_id, department_code, department_name, url FROM groups"
@@ -958,7 +975,7 @@ class Database:
         переименованиями и исчезновением отдельных записей.
         """
         now = datetime.now().isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute("DELETE FROM search_targets WHERE kind = ?", (kind,))
             await db.executemany(
                 "INSERT INTO search_targets (kind, title, url, updated_at) VALUES (?, ?, ?, ?)",
@@ -968,7 +985,7 @@ class Database:
 
     async def get_search_targets(self, kind: str) -> list[dict]:
         """Последний сохранённый в БД снимок справочника (преподаватели/аудитории) для kind."""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             try:
                 cursor = await db.execute(
                     "SELECT title, url FROM search_targets WHERE kind = ?", (kind,)
@@ -991,7 +1008,7 @@ class Database:
         if not names:
             return
         now = datetime.now().isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.executemany(
                 """
                 INSERT OR IGNORE INTO groups
@@ -1010,7 +1027,7 @@ class Database:
         иначе они навсегда останутся без обычной синхронизации с сайтом, а новые студенты
         не смогут найти такую группу поиском вообще (сайт для неё уже приоритетнее ОСR).
         """
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT DISTINCT subscription_key, subscription_title
@@ -1028,7 +1045,7 @@ class Database:
         обычная синхронизация с сайта сама заведёт для нового source_key свежий baseline
         (см. apply_snapshot: baseline is None -> тихо сохраняет, без рассылки).
         """
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 UPDATE users
@@ -1056,7 +1073,7 @@ class Database:
     ) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO schedule_snapshots (
@@ -1088,7 +1105,7 @@ class Database:
     ) -> dict | None:
         condition, condition_params = self._source_scope_condition(schedule_id, source_key)
         scope_sql = f" AND {condition}" if condition else ""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 f"""
                 SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
@@ -1124,7 +1141,7 @@ class Database:
         обращаясь к отдельной странице препода на сайте — так подписка на
         препода продолжает работать, даже если сайт расписания недоступен.
         """
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT s.source_type, s.source_key, s.source_title, s.source_url, s.group_name, s.schedule_id,
@@ -1171,7 +1188,7 @@ class Database:
         source_url: str | None = None,
     ) -> bool:
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 INSERT OR IGNORE INTO change_events (
@@ -1203,7 +1220,7 @@ class Database:
     ) -> dict | None:
         condition, condition_params = self._source_scope_condition(schedule_id, source_key)
         where_sql = f"WHERE {condition}" if condition else ""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 f"""
                 SELECT source_type, source_key, source_title, source_url, group_name, schedule_id, message, changed_dates_json, payload_json, created_at
@@ -1232,7 +1249,7 @@ class Database:
         }
 
     async def get_daily_change_groups(self, day_prefix: str) -> list[dict]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT source_title, MAX(created_at) AS created_at
@@ -1270,7 +1287,7 @@ class Database:
         safe_error_text = (error_text or "").strip() or None
         if safe_error_text and len(safe_error_text) > 500:
             safe_error_text = f"{safe_error_text[:497]}..."
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO delivery_events (
@@ -1302,7 +1319,7 @@ class Database:
 
     async def get_delivery_stats(self) -> dict[str, int]:
         threshold_24h = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             permanent_failure_sql = self._telegram_permanent_failure_sql()
             cursor = await db.execute(
                 f"""
@@ -1396,7 +1413,7 @@ class Database:
     ) -> list[dict[str, int | str]]:
         safe_limit = max(1, min(limit, 20))
         threshold = (datetime.now() - timedelta(hours=max(1, hours))).isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT
@@ -1433,7 +1450,7 @@ class Database:
     ) -> bool:
         condition, condition_params = self._source_scope_condition(schedule_id, source_key)
         scope_sql = f" AND {condition}" if condition else ""
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 f"""
                 SELECT 1
@@ -1459,7 +1476,7 @@ class Database:
         total_count: int,
     ) -> None:
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO lesson_counters (
@@ -1487,7 +1504,7 @@ class Database:
             await db.commit()
 
     async def list_lesson_counters(self, schedule_id: int | None = None) -> list[dict]:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             if schedule_id is None:
                 cursor = await db.execute(
                     """
@@ -1532,7 +1549,7 @@ class Database:
         if not ids_to_delete:
             return 0
         placeholders = ",".join("?" for _ in ids_to_delete)
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(f"DELETE FROM lesson_counters WHERE id IN ({placeholders})", ids_to_delete)
             await db.commit()
         return len(ids_to_delete)
@@ -1569,7 +1586,7 @@ class Database:
         charge_id: str,
     ) -> int:
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 INSERT INTO star_donations (user_id, username, full_name, stars, charge_id, created_at)
@@ -1582,7 +1599,7 @@ class Database:
 
     async def get_star_donation(self, query: int | str) -> dict | None:
         raw_str = str(query).strip()
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             if raw_str.isdigit():
                 sql = """
                 SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at
@@ -1616,7 +1633,7 @@ class Database:
 
     async def refund_star_donation(self, donation_id: int) -> bool:
         now = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 UPDATE star_donations
@@ -1629,7 +1646,7 @@ class Database:
             return cursor.rowcount > 0
 
     async def set_user_custom_sticker(self, platform: str, user_id: int, sticker_file_id: str) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "UPDATE users SET custom_sticker_file_id = ? WHERE platform = ? AND user_id = ?",
                 (sticker_file_id, platform, user_id),
@@ -1637,7 +1654,7 @@ class Database:
             await db.commit()
 
     async def clear_user_custom_sticker(self, platform: str, user_id: int) -> None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "UPDATE users SET custom_sticker_file_id = NULL WHERE platform = ? AND user_id = ?",
                 (platform, user_id),
@@ -1652,7 +1669,7 @@ class Database:
         size_before_bytes = self.path.stat().st_size if self.path.exists() else 0
         deleted_counts: dict[str, int] = {}
 
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             # 1. delivery_events
             try:
                 cursor = await db.execute(
@@ -1726,7 +1743,7 @@ class Database:
         return report_data
 
     async def is_daily_counter_processed(self, target_date_iso: str, group_name: str) -> bool:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT 1 FROM daily_lesson_counter_logs
@@ -1739,7 +1756,7 @@ class Database:
 
     async def mark_daily_counter_processed(self, target_date_iso: str, group_name: str) -> None:
         now_str = datetime.now().isoformat()
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT OR IGNORE INTO daily_lesson_counter_logs (target_date_iso, group_name, processed_at)
@@ -1760,7 +1777,7 @@ class Database:
         now_str = created_at or datetime.now().isoformat(timespec="seconds")
         safe_msg = (message or "").strip()[:500]
         safe_details = (details or "").strip()[:1000] if details else None
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO system_errors (component, error_type, message, details, created_at)
@@ -1772,7 +1789,7 @@ class Database:
 
     async def save_ocr_status_snapshot(self, payload: dict) -> None:
         now_str = datetime.now().isoformat(timespec="seconds")
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             await db.execute(
                 """
                 INSERT INTO ocr_status_snapshot (id, payload_json, updated_at)
@@ -1784,7 +1801,7 @@ class Database:
             await db.commit()
 
     async def get_ocr_status_snapshot(self) -> dict | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute("SELECT payload_json, updated_at FROM ocr_status_snapshot WHERE id = 1")
             row = await cursor.fetchone()
         if not row:
@@ -1804,7 +1821,7 @@ class Database:
         target_date = date_prefix or datetime.now().date().isoformat()
         like_pattern = f"{target_date}%"
         errors: list[dict[str, Any]] = []
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             # 1. System errors
             cursor = await db.execute(
                 """
@@ -1862,7 +1879,7 @@ class Database:
     async def get_daily_errors_summary(self, date_prefix: str | None = None) -> dict[str, Any]:
         target_date = date_prefix or datetime.now().date().isoformat()
         like_pattern = f"{target_date}%"
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT component, COUNT(*) AS cnt
@@ -1897,7 +1914,7 @@ class Database:
         }
 
     async def get_db_first_created_at(self) -> str | None:
-        async with aiosqlite.connect(self.path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 """
                 SELECT MIN(created_at) FROM (

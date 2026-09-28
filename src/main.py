@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import signal
+from collections.abc import Callable
 from html import escape
 from pathlib import Path
 from time import monotonic, time
@@ -15,6 +18,7 @@ from aiogram.enums import ParseMode
 from src.config import Settings
 from src.db import Database
 from src.db_migrations import apply_migrations
+from src.error_reporting import AdminErrorReporter, install_error_reporting
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
 from src.message_broker import (
@@ -29,7 +33,13 @@ from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
 from src.system_status import SystemAlertManager
 from src.telegram_bot import build_dispatcher
-from src.vk_bot import build_vk_bot
+from src.vk_bot import build_vk_bot, vk_handler_timeout
+from src.vk_runtime import VkUpdateDispatcher
+
+# Если VK long poll не отвечал дольше этого, мониторинг считает приём сообщений VK упавшим.
+VK_POLLING_STALE_SECONDS = 300.0
+
+_background_tasks: set[asyncio.Task] = set()
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -74,8 +84,12 @@ def log_memory(stage: str) -> None:
 
 def start_background_task(name: str, coro) -> asyncio.Task:
     task = asyncio.create_task(coro, name=name)
+    # Строгая ссылка: asyncio держит на задачу только слабую, и без неё фоновая
+    # задача может быть собрана сборщиком мусора посреди работы.
+    _background_tasks.add(task)
 
     def _log_result(done_task: asyncio.Task) -> None:
+        _background_tasks.discard(done_task)
         try:
             done_task.result()
         except asyncio.CancelledError:
@@ -119,23 +133,36 @@ def start_telegram_polling(
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
     ocr_importer: OcrScheduleImporter | None = None,
-) -> None:
+    error_reporter: AdminErrorReporter | None = None,
+) -> Bot | None:
     if not settings.telegram_bot_token:
         logging.warning("TELEGRAM_BOT_TOKEN не задан. Telegram-бот не будет запущен.")
-        return
+        return None
+
+    # Бот и диспетчер создаются один раз. Раньше при каждом перезапуске поллинга
+    # старая сессия закрывалась, а рассылка продолжала слать через неё
+    # ("Connector is closed") — уведомления терялись.
+    bot = build_telegram_bot(settings)
+    broadcaster.telegram_bot = bot
+    dispatcher = build_dispatcher(
+        settings,
+        db,
+        parser,
+        broadcaster,
+        group_catalog,
+        search_catalog,
+        schedule_jobs,
+        ocr_importer,
+        error_reporter=error_reporter,
+    )
 
     async def _run_once() -> None:
-        bot = build_telegram_bot(settings)
-        broadcaster.telegram_bot = bot
-        dispatcher = build_dispatcher(
-            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
-        )
-        try:
-            await dispatcher.start_polling(bot)
-        finally:
-            await bot.session.close()
+        # Сигналы обрабатывает main(): иначе aiogram перехватывал SIGTERM, останавливал
+        # только поллинг, а супервизор тут же поднимал его снова.
+        await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
 
     start_background_task("telegram-supervisor", run_forever("Telegram bot", _run_once))
+    return bot
 
 
 def start_vk_polling(
@@ -147,24 +174,52 @@ def start_vk_polling(
     search_catalog: ScheduleSearchCatalog,
     schedule_jobs: ScheduleJobs | None = None,
     ocr_importer: OcrScheduleImporter | None = None,
-) -> None:
+    error_reporter: AdminErrorReporter | None = None,
+) -> Callable[[], tuple[bool, str]] | None:
+    """Поднимает VK-бота и возвращает проверку живости long poll для мониторинга."""
     if not settings.vk_bot_token:
         logging.warning("VK_BOT_TOKEN не задан. VK-бот не будет запущен.")
-        return
+        return None
+
+    vk_bot = build_vk_bot(
+        settings,
+        db,
+        parser,
+        broadcaster,
+        group_catalog,
+        search_catalog,
+        schedule_jobs,
+        ocr_importer,
+        error_reporter=error_reporter,
+    )
+    if vk_bot is None:
+        return None
+    # Бот нужен рассылке сразу, ещё до первого события long poll: консьюмер
+    # RabbitMQ стартует следом и может получить VK-сообщение немедленно.
+    broadcaster.vk_bot = vk_bot
+    polling = vk_bot.resilient_polling
+    router = vk_bot.router
+    dispatcher = VkUpdateDispatcher(
+        lambda update: router.route(update, vk_bot.api),
+        handler_timeout=vk_handler_timeout(settings),
+        on_failure=vk_bot.report_update_failure,
+    )
 
     async def _run_once() -> None:
-        vk_bot = build_vk_bot(
-            settings, db, parser, broadcaster, group_catalog, search_catalog, schedule_jobs, ocr_importer
-        )
-        if vk_bot is None:
-            return
-        broadcaster.vk_bot = vk_bot
-        # vkbottle in this version expects to own the loop unless we mark it as already running.
-        vk_bot.loop_wrapper.loop = asyncio.get_running_loop()
-        vk_bot.loop_wrapper._running = True
-        await vk_bot.run_polling()
+        await dispatcher.run(polling)
 
-    start_background_task("vk-supervisor", run_forever("VK bot", _run_once))
+    start_background_task("vk-supervisor", run_forever("VK bot", _run_once, restart_delay_seconds=5.0))
+
+    def probe() -> tuple[bool, str]:
+        reference = polling.last_ok_at if polling.last_ok_at is not None else polling.started_at
+        age = monotonic() - reference
+        details = (
+            f"последний ответ long poll {age:.0f} с назад, ошибок подряд: {polling.consecutive_failures}, "
+            f"в обработке событий: {dispatcher.pending_tasks}"
+        )
+        return age < VK_POLLING_STALE_SECONDS, details
+
+    return probe
 
 
 OCR_READY_HTML = (
@@ -255,7 +310,7 @@ async def warm_up_ocr_and_notify(
         return
 
     reason = ocr_importer.last_error or "причина неизвестна"
-    logging.error("Распознавание с фото не поднялось: %s", reason)
+    logging.error("Распознавание с фото не поднялось: %s", reason, extra={"skip_admin_report": True})
     await broadcaster.notify_admins(
         OCR_FAILED_HTML.format(reason=escape(reason)),
         OCR_FAILED_TEXT.format(reason=reason),
@@ -271,6 +326,11 @@ async def main() -> None:
 
     apply_migrations(settings.database_path)
     restore_logging()
+    # Любая ошибка в логе (ERROR и выше), упавшая фоновая задача или задача
+    # планировщика уходит админу. Отправитель подключается чуть ниже, когда
+    # появится Broadcaster; до этого отчёты просто не отправляются.
+    error_reporter = AdminErrorReporter()
+    install_error_reporting(error_reporter, asyncio.get_running_loop())
     logging.info("Миграции применены, логирование восстановлено.")
     log_memory("после старта")
     db = Database(settings.database_path)
@@ -310,6 +370,7 @@ async def main() -> None:
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
     )
+    error_reporter.set_notifier(broadcaster.notify_admins)
     alert_manager = SystemAlertManager(db=db, broadcaster=broadcaster)
     jobs = ScheduleJobs(
         db=db,
@@ -331,9 +392,20 @@ async def main() -> None:
         rabbitmq_url=settings.rabbitmq_url,
         group_catalog=group_catalog,
     )
+    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog, alert_manager)
+
+    # Боты поднимаются раньше всего остального: уведомления админу на старте
+    # (например, «OCR недоступен») раньше уходили в пустоту — ботов ещё не было.
+    start_telegram_polling(
+        settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer, error_reporter=error_reporter
+    )
+    vk_probe = start_vk_polling(
+        settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer, error_reporter=error_reporter
+    )
+    if vk_probe is not None:
+        jobs.liveness_probes["vk_polling"] = vk_probe
     jobs.start()
 
-    ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog, alert_manager)
     ocr_available, ocr_message = ocr_importer.availability()
     if ocr_available:
         logging.info("Импорт расписания из фото доступен (%s).", ocr_message)
@@ -362,9 +434,6 @@ async def main() -> None:
             OCR_UNAVAILABLE_TEXT.format(reason=ocr_message),
         )
 
-    start_telegram_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
-    start_vk_polling(settings, db, parser, broadcaster, group_catalog, search_catalog, jobs, ocr_importer)
-
     try:
         await broadcaster.start()
     except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
@@ -380,13 +449,48 @@ async def main() -> None:
     except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
         logging.exception("Auto daily lesson counter RabbitMQ consumer failed on startup. Scheduled direct fallback remains available.")
         await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска auto_daily_lesson_counter consumer RabbitMQ")
-    try:
-        await jobs.sync_current_snapshot()
-    except Exception as exc:
-        logging.exception("Initial schedule sync failed. Background scheduler will retry later.")
-        await alert_manager.report_component_status("schedule_site", False, str(exc), details="Первоначальная синхронизация расписания не удалась")
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        # На Windows add_signal_handler не поддерживается — там остаётся Ctrl+C по умолчанию.
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, stop_event.set)
 
-    await asyncio.Event().wait()
+    async def initial_sync() -> None:
+        try:
+            await jobs.sync_current_snapshot()
+        except Exception as exc:
+            logging.exception("Initial schedule sync failed. Background scheduler will retry later.")
+            await alert_manager.report_component_status(
+                "schedule_site", False, str(exc), details="Первоначальная синхронизация расписания не удалась"
+            )
+
+    # Первичная синхронизация идёт десятки минут (пауза между запросами к сайту),
+    # поэтому в фоне — чтобы остановка контейнера не ждала её окончания.
+    start_background_task("initial-sync", initial_sync())
+
+    await stop_event.wait()
+    await shutdown(jobs, broadcaster)
+
+
+async def shutdown(jobs: ScheduleJobs, broadcaster: Broadcaster) -> None:
+    """Корректная остановка по SIGTERM (docker stop): без неё контейнер убивался через 10 с."""
+    logging.info("Получен сигнал остановки, завершаю работу...")
+    with contextlib.suppress(Exception):
+        jobs.scheduler.shutdown(wait=False)
+    for task in list(_background_tasks):
+        task.cancel()
+    if _background_tasks:
+        await asyncio.wait(set(_background_tasks), timeout=5)
+    with contextlib.suppress(Exception):
+        await broadcaster.stop()
+    if broadcaster.telegram_bot is not None:
+        with contextlib.suppress(Exception):
+            await broadcaster.telegram_bot.session.close()
+    if broadcaster.vk_bot is not None:
+        with contextlib.suppress(Exception):
+            await broadcaster.vk_bot.api.http_client.close()
+    logging.info("Бот остановлен.")
 
 
 if __name__ == "__main__":
