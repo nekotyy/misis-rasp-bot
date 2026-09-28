@@ -310,7 +310,7 @@ class ScheduleJobs:
 
     async def run_system_health_check(self) -> dict[str, Any]:
         """Runs periodic diagnostic checks and notifies admins on status changes."""
-        site_res = await check_schedule_site(self.parser.schedule_base_url)
+        site_res = await check_schedule_site(self.parser.site_root_url)
         db_res = await check_database_status(self.db)
         rmq_res = await check_rabbitmq_status(self.rabbitmq_url) if self.rabbitmq_url else {"ok": True, "label": "disabled"}
         web_res = await check_web_dashboard_status(port=self.web_port)
@@ -320,7 +320,7 @@ class ScheduleJobs:
                 "schedule_site",
                 site_res["ok"],
                 site_res.get("error"),
-                details=f"URL: {self.parser.schedule_base_url} (status: {site_res.get('status_code')}, ping: {site_res.get('latency_ms')} мс)",
+                details=f"URL: {self.parser.site_root_url} (status: {site_res.get('status_code')}, ping: {site_res.get('latency_ms')} мс)",
             )
             if self.rabbitmq_url:
                 await self.alert_manager.report_component_status(
