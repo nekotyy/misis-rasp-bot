@@ -98,5 +98,25 @@ class AdminLogHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.handler = handlers[0]
 
 
+class RestoreLoggingTests(unittest.TestCase):
+    def test_library_loggers_are_reenabled_after_alembic(self) -> None:
+        import logging.config
+
+        import aiogram  # noqa: F401 — создаёт свои логгеры до fileConfig, как в проде
+
+        from src.main import restore_logging
+
+        root = logging.getLogger()
+        saved_level, saved_handlers = root.level, list(root.handlers)
+        try:
+            logging.config.fileConfig("alembic.ini")
+            restore_logging()
+            for name in ("aiogram.dispatcher", "aiogram.event", "asyncio", "src.vk_runtime"):
+                self.assertFalse(logging.getLogger(name).disabled, name)
+        finally:
+            root.handlers[:] = saved_handlers
+            root.setLevel(saved_level)
+
+
 if __name__ == "__main__":
     unittest.main()

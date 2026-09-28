@@ -58,11 +58,12 @@ def restore_logging() -> None:
     """
     for logger_name in ("src", "__main__", ""):
         logging.getLogger(logger_name).disabled = False
-    # `fileConfig()` помечает disabled каждый уже созданный дочерний логгер
-    # отдельно. Включения только родителя `src` недостаточно: события
-    # `src.ocr_schedule` и `src.ocr_import` всё равно бесследно пропадут.
-    for logger_name, logger_object in logging.root.manager.loggerDict.items():
-        if logger_name.startswith("src.") and isinstance(logger_object, logging.Logger):
+    # `fileConfig()` помечает disabled каждый уже созданный логгер отдельно —
+    # не только наши `src.*`, но и aiogram, aio_pika, asyncio. Без этого ошибки
+    # поллинга Telegram и «Task exception was never retrieved» молча пропадали
+    # и не доходили ни до лога, ни до админа.
+    for logger_object in logging.root.manager.loggerDict.values():
+        if isinstance(logger_object, logging.Logger):
             logger_object.disabled = False
     root = logging.getLogger()
     root.setLevel(logging.INFO)
