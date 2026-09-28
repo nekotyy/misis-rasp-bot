@@ -1023,7 +1023,7 @@ def build_dispatcher(
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     callback_rate_locks: dict[int, asyncio.Lock] = {}
-    lesson_counter_service = LessonCounterService(db)
+    lesson_counter_service = LessonCounterService(db, settings.lesson_counters_path)
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
 
     async def wait_rate_limit_queue(
