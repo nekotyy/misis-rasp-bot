@@ -10,6 +10,7 @@ from src.schedule_service import (
     format_human_date,
     get_day_by_offset,
     get_day_by_offset_from_content,
+    looks_like_stale_site_glitch,
 )
 
 
@@ -331,6 +332,51 @@ class FormatSearchSnapshotTests(unittest.TestCase):
 
         self.assertIn("A & B", text)
         self.assertNotIn("&amp;", text)
+
+
+class LooksLikeStaleSiteGlitchTests(unittest.TestCase):
+    """Сайт после падения иногда отвечает 200 с пустой таблицей вместо ошибки —
+    эта функция решает, можно ли доверять такому пустому результату."""
+
+    def _snapshot(self, *, with_lessons: bool) -> ScheduleSnapshot:
+        lessons = (
+            [Lesson(number=1, subject="Математика", teacher="Иванов", classroom="301")] if with_lessons else []
+        )
+        return ScheduleSnapshot(
+            group_name="Э-24",
+            fetched_at=datetime.now(),
+            days=[DaySchedule(date_label="Сегодня", date_iso="2026-09-28", lessons=lessons)],
+        )
+
+    def _previous_current(self, *, with_lessons: bool, fetched_at: datetime) -> dict:
+        lessons = (
+            [{"number": 1, "subject": "Математика", "teacher": "Иванов", "classroom": "301"}]
+            if with_lessons
+            else []
+        )
+        return {
+            "content": {"days": [{"date_iso": "2026-09-28", "date_label": "Сегодня", "lessons": lessons}]},
+            "fetched_at": fetched_at.isoformat(timespec="seconds"),
+        }
+
+    def test_no_previous_snapshot_is_not_a_glitch(self) -> None:
+        self.assertFalse(looks_like_stale_site_glitch(None, self._snapshot(with_lessons=False)))
+
+    def test_new_snapshot_with_lessons_is_never_flagged(self) -> None:
+        previous = self._previous_current(with_lessons=True, fetched_at=datetime.now())
+        self.assertFalse(looks_like_stale_site_glitch(previous, self._snapshot(with_lessons=True)))
+
+    def test_empty_previous_cache_does_not_block_empty_result(self) -> None:
+        previous = self._previous_current(with_lessons=False, fetched_at=datetime.now())
+        self.assertFalse(looks_like_stale_site_glitch(previous, self._snapshot(with_lessons=False)))
+
+    def test_fresh_nonempty_cache_flags_new_empty_result_as_glitch(self) -> None:
+        previous = self._previous_current(with_lessons=True, fetched_at=datetime.now() - timedelta(hours=1))
+        self.assertTrue(looks_like_stale_site_glitch(previous, self._snapshot(with_lessons=False)))
+
+    def test_stale_nonempty_cache_no_longer_blocks_empty_result(self) -> None:
+        previous = self._previous_current(with_lessons=True, fetched_at=datetime.now() - timedelta(hours=13))
+        self.assertFalse(looks_like_stale_site_glitch(previous, self._snapshot(with_lessons=False)))
 
 
 if __name__ == "__main__":

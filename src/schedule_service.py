@@ -5,6 +5,38 @@ from html import escape
 
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
 
+# Насколько долго валидный непустой кэш защищает источник от перезаписи пустым
+# результатом с сайта: после падения сайт иногда отвечает 200 с пустой таблицей
+# вместо ошибки, и без этой защиты фоновая синхронизация тут же затирает
+# валидный кэш "текущего" расписания, а бот начинает показывать "пар нет".
+EMPTY_FETCH_GRACE_PERIOD = timedelta(hours=12)
+
+
+def snapshot_is_all_empty(snapshot: ScheduleSnapshot) -> bool:
+    return bool(snapshot.days) and all(not day.lessons for day in snapshot.days)
+
+
+def content_has_lessons(content: dict) -> bool:
+    return any(day.get("lessons") for day in content.get("days", []))
+
+
+def looks_like_stale_site_glitch(previous_current: dict | None, snapshot: ScheduleSnapshot) -> bool:
+    """Похоже ли, что сайт после сбоя вернул 200 с пустым расписанием вместо ошибки.
+
+    True, если новый снимок пуст на всех днях, а предыдущий "текущий" снимок того же
+    источника не старше EMPTY_FETCH_GRACE_PERIOD и содержал реальные пары — именно
+    такая картина наблюдалась после восстановления сайта расписания.
+    """
+    if previous_current is None or not snapshot_is_all_empty(snapshot):
+        return False
+    if not content_has_lessons(previous_current["content"]):
+        return False
+    try:
+        previous_fetched_at = datetime.fromisoformat(previous_current["fetched_at"])
+    except (TypeError, ValueError):
+        return False
+    return datetime.now() - previous_fetched_at < EMPTY_FETCH_GRACE_PERIOD
+
 MONTHS_RU = {
     1: "января",
     2: "февраля",
