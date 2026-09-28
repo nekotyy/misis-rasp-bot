@@ -14,12 +14,14 @@ from src.telegram_bot import (
     ADMIN_OCR_PREVIEW_KEYBOARD,
     ADMIN_OCR_SUMMARY_INPUT_KEYBOARD,
     ADMIN_OCR_SUMMARY_PREVIEW_KEYBOARD,
+    ADMIN_SECTION_KEYBOARDS,
     format_admin_ocr_json_prompt,
     format_admin_ocr_prompt,
     format_admin_ocr_summary_add_more_prompt,
     format_admin_ocr_summary_prompt,
 )
 from src.vk_bot import (
+    VK_ADMIN_SECTIONS,
     _best_vk_photo_url,
     _collect_vk_image_urls,
     format_vk_ocr_json_prompt,
@@ -30,11 +32,16 @@ from src.vk_bot import (
 )
 
 
+def _all_admin_callbacks() -> list[str]:
+    keyboards = [ADMIN_KEYBOARD, *ADMIN_SECTION_KEYBOARDS.values()]
+    return [button.callback_data for kb in keyboards for row in kb.inline_keyboard for button in row]
+
+
 class TelegramOcrKeyboardTests(unittest.TestCase):
     """Кнопки импорта с фото должны быть на месте — их потеря ломает единственный вход в фичу."""
 
     def test_admin_keyboard_has_ocr_button(self) -> None:
-        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        callbacks = _all_admin_callbacks()
         self.assertIn("admin:ocr_import", callbacks)
 
     def test_input_keyboard_can_cancel(self) -> None:
@@ -58,7 +65,7 @@ class TelegramOcrSummaryKeyboardTests(unittest.TestCase):
     """Сводный режим (один день, много групп) — отдельная ветка от обычного OCR-импорта."""
 
     def test_admin_keyboard_has_summary_ocr_button(self) -> None:
-        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        callbacks = _all_admin_callbacks()
         self.assertIn("admin:ocr_summary_import", callbacks)
 
     def test_input_keyboard_can_cancel(self) -> None:
@@ -103,7 +110,7 @@ class TelegramOcrJsonImportTests(unittest.TestCase):
     """Резервный путь: JSON, распознанный вручную другой нейросетью, минуя Gemini."""
 
     def test_admin_keyboard_has_json_import_button(self) -> None:
-        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        callbacks = _all_admin_callbacks()
         self.assertIn("admin:ocr_json_import", callbacks)
 
     def test_ocr_menu_keyboard_has_all_three_modes(self) -> None:
@@ -159,7 +166,7 @@ class VkOcrHelpersTests(unittest.TestCase):
         self.assertIn("Пустой JSON", format_vk_ocr_json_prompt("Пустой JSON."))
 
     def test_admin_keyboard_has_json_import_button_within_vk_limits(self) -> None:
-        rows = vk_admin_keyboard_rows()
+        rows = vk_admin_keyboard_rows() + [row for section in VK_ADMIN_SECTIONS.values() for row in section["rows"]]
         labels = {label for row in rows for label in row}
         self.assertIn("Импорт OCR JSON", labels)
         for row in rows:
@@ -212,11 +219,12 @@ class AdminGeminiPanelTests(unittest.TestCase):
     """Экран «Управление Gemini» прямо в боте — отдельный от веб-дашборда вход."""
 
     def test_telegram_admin_keyboard_has_gemini_button(self) -> None:
-        callbacks = [button.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for button in row]
+        callbacks = _all_admin_callbacks()
         self.assertIn("admin:gemini_status", callbacks)
 
     def test_vk_admin_keyboard_has_gemini_button(self) -> None:
-        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        rows = vk_admin_keyboard_rows() + [row for section in VK_ADMIN_SECTIONS.values() for row in section["rows"]]
+        labels = {label for row in rows for label in row}
         self.assertIn("Управление Gemini", labels)
 
     def test_reports_unconfigured_engine(self) -> None:

@@ -8,8 +8,20 @@ from unittest.mock import MagicMock, patch
 
 from src.config import Settings
 from src.db import Database
-from src.lesson_counters import LessonCounterService, is_uncounted_lesson
-from src.telegram_bot import build_dispatcher
+from src.lesson_counters import (
+    LessonCounterService,
+    LessonCounterSyncResult,
+    format_counter_sync_report,
+    is_uncounted_lesson,
+)
+from src.telegram_bot import (
+    ADMIN_COUNTER_SYNC_KEYBOARD,
+    ADMIN_FULL_ONLY_SECTIONS,
+    ADMIN_KEYBOARD,
+    ADMIN_KEYBOARD_LIMITED,
+    ADMIN_SECTION_KEYBOARDS,
+    build_dispatcher,
+)
 from src.vk_bot import build_vk_bot
 
 GROUP_PAYLOAD = {
@@ -168,3 +180,84 @@ class BotsPassCountersPathToServiceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualCounterSyncReportTests(unittest.TestCase):
+    def test_empty_result(self) -> None:
+        text = format_counter_sync_report(LessonCounterSyncResult(), "2026-09-28")
+
+        self.assertIn("28 сентября 2026 года", text)
+        self.assertIn("Нет ни одной группы", text)
+
+    def test_counts_and_failures(self) -> None:
+        result = LessonCounterSyncResult(
+            processed=["ИСП-25-1", "ИСП-25-2"],
+            skipped_already_done=["Э-25"],
+            failed=[("ТМ-25-1", "502 Bad Gateway")],
+        )
+
+        text = format_counter_sync_report(result, "2026-09-28", html=True)
+
+        self.assertIn("Учтено групп: 2", text)
+        self.assertIn("Уже было учтено раньше (пропущено, чтобы не задвоить): 1", text)
+        self.assertIn("Ошибок: 1", text)
+        self.assertIn("ТМ-25-1: 502 Bad Gateway", text)
+        self.assertNotIn("ИСП-25-1", text)
+
+    def test_many_failures_are_truncated(self) -> None:
+        result = LessonCounterSyncResult(failed=[(f"Г-{i}", "сбой") for i in range(15)])
+
+        text = format_counter_sync_report(result, "2026-09-28")
+
+        self.assertIn("Ошибок: 15", text)
+        self.assertIn("…и ещё 5", text)
+
+    def test_html_escapes_group_names_and_errors(self) -> None:
+        result = LessonCounterSyncResult(failed=[("<b>Г</b>", "<script>")])
+
+        text = format_counter_sync_report(result, "2026-09-28", html=True)
+
+        self.assertNotIn("<script>", text)
+        self.assertIn("&lt;script&gt;", text)
+
+
+class TelegramAdminMenuStructureTests(unittest.TestCase):
+    @staticmethod
+    def _callbacks(keyboard) -> list[str]:
+        return [button.callback_data for row in keyboard.inline_keyboard for button in row]
+
+    def test_main_menu_is_only_sections_and_close(self) -> None:
+        callbacks = self._callbacks(ADMIN_KEYBOARD)
+
+        self.assertEqual(
+            callbacks,
+            ["admin:sec:monitor", "admin:sec:schedule", "admin:sec:counters", "admin:sec:people",
+             "admin:sec:service", "admin:close"],
+        )
+
+    def test_manual_count_is_in_counters_section_and_offers_today_and_yesterday(self) -> None:
+        self.assertIn("admin:counter_sync", self._callbacks(ADMIN_SECTION_KEYBOARDS["counters"]))
+        self.assertEqual(
+            self._callbacks(ADMIN_COUNTER_SYNC_KEYBOARD)[:2],
+            ["admin:counter_sync:today", "admin:counter_sync:yesterday"],
+        )
+
+    def test_every_section_can_go_back_to_menu(self) -> None:
+        for name, keyboard in ADMIN_SECTION_KEYBOARDS.items():
+            self.assertIn("admin:back", self._callbacks(keyboard), name)
+
+    def test_limited_admin_menu_has_no_full_only_sections(self) -> None:
+        callbacks = self._callbacks(ADMIN_KEYBOARD_LIMITED)
+
+        for section in ADMIN_FULL_ONLY_SECTIONS:
+            self.assertNotIn(f"admin:sec:{section}", callbacks)
+        self.assertIn("admin:sec:monitor", callbacks)
+
+    def test_every_action_is_in_exactly_one_section(self) -> None:
+        seen: list[str] = []
+        for keyboard in ADMIN_SECTION_KEYBOARDS.values():
+            seen += [c for c in self._callbacks(keyboard) if c != "admin:back"]
+
+        self.assertEqual(len(seen), len(set(seen)))
+        for expected in ("admin:status", "admin:refresh", "admin:lesson_add", "admin:users", "admin:cleandb"):
+            self.assertIn(expected, seen)

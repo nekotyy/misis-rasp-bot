@@ -18,6 +18,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import ScheduleParser
+from src.schedule_service import format_human_date
 from src.subscription_utils import extract_numeric_id
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,35 @@ async def sync_lesson_counters_for_date(
             result.failed.append((group_name, str(exc)))
 
     return result
+
+
+MAX_FAILED_GROUPS_IN_REPORT = 10
+
+
+def format_counter_sync_report(result: LessonCounterSyncResult, target_date_iso: str, *, html: bool = False) -> str:
+    """Короткий отчёт о ручном подсчёте пар для админки бота: только счётчики и сбойные группы."""
+
+    def esc(value: str) -> str:
+        return escape(value) if html else value
+
+    title = f"Ручной подсчёт пар за {format_human_date(target_date_iso)}"
+    lines = [f"<b>{title}</b>" if html else title, ""]
+    if result.is_empty:
+        lines.append("Нет ни одной группы для подсчёта.")
+        return "\n".join(lines)
+
+    lines.append(f"Учтено групп: {len(result.processed)}")
+    if result.skipped_already_done:
+        lines.append(f"Уже было учтено раньше (пропущено, чтобы не задвоить): {len(result.skipped_already_done)}")
+    if result.failed:
+        lines.append(f"Ошибок: {len(result.failed)}")
+        for group, error in result.failed[:MAX_FAILED_GROUPS_IN_REPORT]:
+            lines.append(f"• {esc(group)}: {esc(error[:80])}")
+        hidden = len(result.failed) - MAX_FAILED_GROUPS_IN_REPORT
+        if hidden > 0:
+            lines.append(f"…и ещё {hidden}")
+        lines.append("Группы с ошибкой можно пересчитать повторным запуском — учтённые не задвоятся.")
+    return "\n".join(lines)
 
 
 def normalize_lesson_text(value: str) -> str:
