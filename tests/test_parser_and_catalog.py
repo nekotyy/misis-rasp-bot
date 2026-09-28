@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 from src.db import Database
 from src.group_catalog import GroupCatalog, GroupInfo
 from src.parser import ScheduleParser
@@ -132,7 +134,9 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_fetch_writes_catalog_to_db(self) -> None:
         catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
         with patch.object(
-            catalog, "_fetch_from_site", AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+            catalog,
+            "_fetch_from_site",
+            AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}, set())),
         ):
             await catalog.refresh()
 
@@ -147,7 +151,9 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
         # Первый каталог успешно грузится с сайта и сохраняет снимок в БД.
         warm_catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
         with patch.object(
-            warm_catalog, "_fetch_from_site", AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+            warm_catalog,
+            "_fetch_from_site",
+            AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}, set())),
         ):
             await warm_catalog.refresh()
 
@@ -243,7 +249,7 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
         with patch.object(
-            catalog, "_fetch_from_site", AsyncMock(return_value=({"мто-26": resolved}, {700: resolved}))
+            catalog, "_fetch_from_site", AsyncMock(return_value=({"мто-26": resolved}, {700: resolved}, set()))
         ):
             await catalog.refresh()
 
@@ -264,7 +270,7 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forced_refresh_refetches_even_when_already_loaded(self) -> None:
         catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
-        fetch = AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+        fetch = AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}, set()))
         with patch.object(catalog, "_fetch_from_site", fetch):
             await catalog.refresh()
             await catalog.refresh()  # уже загружен - повторного похода на сайт быть не должно
@@ -276,7 +282,9 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_forced_refresh_failure_keeps_previous_data(self) -> None:
         catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
         with patch.object(
-            catalog, "_fetch_from_site", AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}))
+            catalog,
+            "_fetch_from_site",
+            AsyncMock(return_value=({"исп-25-1": SAMPLE_GROUP}, {600: SAMPLE_GROUP}, set())),
         ):
             await catalog.refresh()
 
@@ -289,6 +297,61 @@ class GroupCatalogDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_db_read_before_any_sync(self) -> None:
         rows = await self.db.get_all_groups()
         self.assertEqual(rows, [])
+
+
+class RetryFailedDepartmentsTests(unittest.IsolatedAsyncioTestCase):
+    """Сайт МИСИС падает вразнобой по отделениям — точечный ретрай должен домётывать
+
+    только реально недостающие страницы, не дожидаясь следующего полного refresh.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self._tmp.name) / "test.db")
+        await self.db.initialize()
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    async def test_noop_when_nothing_failed(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
+        with patch.object(catalog, "_fetch_department", AsyncMock()) as fetch_department:
+            recovered = await catalog.retry_failed_departments()
+
+        self.assertFalse(recovered)
+        fetch_department.assert_not_awaited()
+
+    async def test_recovers_previously_failed_department(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
+        catalog._loaded = True
+        catalog._failed_department_ids = {36}
+        catalog._department_codes = {36: "РУП"}
+        new_group = GroupInfo(
+            department_id=36, department_code="РУП", department_name="РУП",
+            group_name="РУП-26-1", schedule_id=620, url="http://test-schedule.local/rasp/620",
+        )
+        with patch.object(catalog, "_fetch_department", AsyncMock(return_value=[new_group])):
+            recovered = await catalog.retry_failed_departments()
+
+        self.assertTrue(recovered)
+        self.assertEqual(catalog._failed_department_ids, set())
+        group = await catalog.find_group("РУП-26-1")
+        self.assertIsNotNone(group)
+        self.assertEqual(group.schedule_id, 620)
+        rows = await self.db.get_all_groups()
+        self.assertEqual([row["group_name"] for row in rows], ["РУП-26-1"])
+
+    async def test_still_failing_department_stays_in_retry_set(self) -> None:
+        catalog = GroupCatalog(schedule_url="http://test-schedule.local", db=self.db)
+        catalog._failed_department_ids = {37}
+        catalog._department_codes = {37: "ТЭС"}
+        with patch.object(
+            catalog, "_fetch_department", AsyncMock(side_effect=httpx.ConnectError("boom"))
+        ):
+            recovered = await catalog.retry_failed_departments()
+
+        self.assertFalse(recovered)
+        self.assertEqual(catalog._failed_department_ids, {37})
 
 
 if __name__ == "__main__":

@@ -209,6 +209,51 @@ class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):
         await self.db.add_pending_groups([])
         self.assertEqual(await self.db.get_all_groups(), [])
 
+    async def test_get_pending_group_subscribers_lists_distinct_pending_keys(self) -> None:
+        await self.db.upsert_user(
+            "telegram", 1, "alice", "Alice",
+            subscription_type="group", subscription_key="group-pending:тэс-26", subscription_title="ТЭС-26",
+        )
+        await self.db.upsert_user(
+            "telegram", 2, "bob", "Bob",
+            subscription_type="group", subscription_key="group-pending:тэс-26", subscription_title="ТЭС-26",
+        )
+        await self.db.upsert_user(
+            "telegram", 3, "carl", "Carl",
+            subscription_type="group", subscription_key="group:600", subscription_title="ИСП-25-1", schedule_id=600,
+        )
+
+        pending = await self.db.get_pending_group_subscribers()
+
+        self.assertEqual(pending, [{"subscription_key": "group-pending:тэс-26", "subscription_title": "ТЭС-26"}])
+
+    async def test_promote_pending_group_subscription_moves_users_to_real_source(self) -> None:
+        await self.db.upsert_user(
+            "telegram", 1, "alice", "Alice",
+            subscription_type="group", subscription_key="group-pending:тэс-26", subscription_title="ТЭС-26",
+        )
+        await self.db.upsert_user(
+            "vk", 2, "bob", "Bob",
+            subscription_type="group", subscription_key="group-pending:тэс-26", subscription_title="ТЭС-26",
+        )
+
+        moved = await self.db.promote_pending_group_subscription("group-pending:тэс-26", "ТЭС-26", 622)
+
+        self.assertEqual(moved, 2)
+        alice = await self.db.get_user("telegram", 1)
+        bob = await self.db.get_user("vk", 2)
+        for user in (alice, bob):
+            self.assertEqual(user.subscription_key, "group:622")
+            self.assertEqual(user.subscription_url, "rasp:622")
+            self.assertEqual(user.subscription_title, "ТЭС-26")
+            self.assertEqual(user.group_name, "ТЭС-26")
+            self.assertEqual(user.schedule_id, 622)
+        self.assertEqual(await self.db.get_pending_group_subscribers(), [])
+
+    async def test_promote_pending_group_subscription_returns_zero_without_matches(self) -> None:
+        moved = await self.db.promote_pending_group_subscription("group-pending:тэс-26", "ТЭС-26", 622)
+        self.assertEqual(moved, 0)
+
     async def test_ocr_status_snapshot_round_trip(self) -> None:
         self.assertIsNone(await self.db.get_ocr_status_snapshot())
 

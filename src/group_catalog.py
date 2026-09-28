@@ -47,6 +47,8 @@ class GroupCatalog:
         self._groups_by_name: dict[str, GroupInfo] = {}
         self._groups_by_compact_name: dict[str, GroupInfo] = {}
         self._groups_by_schedule_id: dict[int, GroupInfo] = {}
+        self._department_codes: dict[int, str] = {}
+        self._failed_department_ids: set[int] = set()
 
     def __len__(self) -> int:
         return len(self._groups_by_name)
@@ -68,7 +70,7 @@ class GroupCatalog:
                 return
 
             try:
-                groups_by_name, groups_by_schedule_id = await self._fetch_from_site()
+                groups_by_name, groups_by_schedule_id, failed_department_ids = await self._fetch_from_site()
             except Exception as exc:
                 logger.exception("Не удалось загрузить список отделений с %s: %s", self.base_origin, exc)
                 self.last_error = exc
@@ -98,12 +100,19 @@ class GroupCatalog:
                 self._compact_name_key(group.group_name): group for group in groups_by_schedule_id.values()
             }
             self._groups_by_schedule_id = groups_by_schedule_id
+            self._failed_department_ids = failed_department_ids
             self.last_error = None
             self._loaded = True
             await self._save_to_db()
 
-    async def _fetch_from_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo]]:
-        """Загружает список групп с сайта. Бросает исключение, если недоступна даже стартовая страница."""
+    async def _fetch_from_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo], set[int]]:
+        """Загружает список групп с сайта. Бросает исключение, если недоступна даже стартовая страница.
+
+        Отдельные отделения, которые не удалось загрузить (сеть шатается у этого сайта
+        регулярно), не валят весь заход — они просто попадают в третий элемент кортежа,
+        чтобы `retry_failed_departments` мог их скоро домести, не дожидаясь следующего
+        планового обновления всего каталога через `group_catalog_refresh_days`.
+        """
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             root_response = await self._get_with_retry(client, f"{self.base_origin}/")
             root_soup = BeautifulSoup(root_response.content, "html.parser")
@@ -115,36 +124,82 @@ class GroupCatalog:
                 if not department_id.isdigit():
                     continue
                 departments.append((int(department_id), link.get_text(" ", strip=True)))
+            self._department_codes = dict(departments)
 
             groups_by_name: dict[str, GroupInfo] = {}
             groups_by_schedule_id: dict[int, GroupInfo] = {}
+            failed_department_ids: set[int] = set()
             for department_id, department_code in sorted(set(departments)):
                 try:
-                    response = await self._get_with_retry(client, f"{self.base_origin}/group/{department_id}")
+                    department_groups = await self._fetch_department(client, department_id, department_code)
                 except httpx.HTTPError:
                     logger.warning("Пропускаю отделение id=%s из-за ошибки сети", department_id)
+                    failed_department_ids.add(department_id)
                     continue
-                soup = BeautifulSoup(response.content, "html.parser")
-                department_name_node = soup.find(id="titleS")
-                department_name = department_name_node.get_text(" ", strip=True) if department_name_node else ""
-                for link in soup.select("a[href^='/rasp/']"):
-                    href = link.get("href", "")
-                    schedule_id = href.rsplit("/", 1)[-1]
-                    group_name = link.get_text(" ", strip=True)
-                    if not schedule_id.isdigit() or not group_name:
-                        continue
-                    group = GroupInfo(
-                        department_id=department_id,
-                        department_code=department_code,
-                        department_name=department_name,
-                        group_name=group_name,
-                        schedule_id=int(schedule_id),
-                        url=f"{self.base_origin}/rasp/{schedule_id}",
-                    )
-                    normalized_name = self.normalize(group_name)
+                for group in department_groups:
+                    normalized_name = self.normalize(group.group_name)
                     groups_by_name[normalized_name] = group
                     groups_by_schedule_id[group.schedule_id] = group
-            return groups_by_name, groups_by_schedule_id
+            return groups_by_name, groups_by_schedule_id, failed_department_ids
+
+    async def _fetch_department(
+        self, client: httpx.AsyncClient, department_id: int, department_code: str
+    ) -> list[GroupInfo]:
+        response = await self._get_with_retry(client, f"{self.base_origin}/group/{department_id}")
+        soup = BeautifulSoup(response.content, "html.parser")
+        department_name_node = soup.find(id="titleS")
+        department_name = department_name_node.get_text(" ", strip=True) if department_name_node else ""
+        groups: list[GroupInfo] = []
+        for link in soup.select("a[href^='/rasp/']"):
+            href = link.get("href", "")
+            schedule_id = href.rsplit("/", 1)[-1]
+            group_name = link.get_text(" ", strip=True)
+            if not schedule_id.isdigit() or not group_name:
+                continue
+            groups.append(
+                GroupInfo(
+                    department_id=department_id,
+                    department_code=department_code,
+                    department_name=department_name,
+                    group_name=group_name,
+                    schedule_id=int(schedule_id),
+                    url=f"{self.base_origin}/rasp/{schedule_id}",
+                )
+            )
+        return groups
+
+    async def retry_failed_departments(self) -> bool:
+        """Точечно домётывает только те отделения, что не загрузились на последнем refresh.
+
+        Сайт МИСИС падает не целиком, а вразнобой по отдельным страницам-отделениям —
+        если отделение споткнулось именно в момент планового `refresh_group_catalog`
+        (раз в `group_catalog_refresh_days`), без этой функции его новые группы (например,
+        весь набор нового курса) были бы не видны поиску вплоть до следующего планового
+        обновления. Здесь же тянутся только реально недостающие страницы, а не весь каталог.
+        """
+        async with self._lock:
+            if not self._failed_department_ids:
+                return False
+            recovered_any = False
+            still_failed: set[int] = set()
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                for department_id in sorted(self._failed_department_ids):
+                    department_code = self._department_codes.get(department_id, "")
+                    try:
+                        groups = await self._fetch_department(client, department_id, department_code)
+                    except httpx.HTTPError:
+                        still_failed.add(department_id)
+                        continue
+                    for group in groups:
+                        normalized_name = self.normalize(group.group_name)
+                        self._groups_by_name[normalized_name] = group
+                        self._groups_by_compact_name[self._compact_name_key(group.group_name)] = group
+                        self._groups_by_schedule_id[group.schedule_id] = group
+                    recovered_any = True
+            self._failed_department_ids = still_failed
+            if recovered_any:
+                await self._save_to_db()
+            return recovered_any
 
     async def _save_to_db(self) -> None:
         """Сохраняет каталог в БД, чтобы пережить перезапуск бота при недоступном сайте."""
