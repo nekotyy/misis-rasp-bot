@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from time import monotonic
@@ -25,11 +25,13 @@ from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
+    format_counter_sync_report,
     normalize_lesson_text,
     resolve_audience_preview_content,
     resolve_group_preview_content,
     snapshot_to_search_content,
     subject_matches,
+    sync_lesson_counters_for_date,
     teacher_matches,
 )
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
@@ -110,17 +112,74 @@ def vk_admin_keyboard_rows() -> list[list[str]]:
     лишний ряд роняет весь экран админки ошибкой 911.
     """
     return [
-        ["Статус", "Ошибки за день"],
-        ["Перепарсить", "Сохранить эталон"],
-        ["Последнее изменение", "Информация по группам"],
-        ["Скачать БД", "Скачать пары"],
-        ["Добавить пару", "Изменить пару"],
-        ["Импорт пар из JSON", "Расписание с фото", "Сводное расписание", "Импорт OCR JSON", "Управление Gemini"],
-        ["Удалить пару", "Удалить пары"],
-        ["Пользователи", "Разослать"],
-        ["Тестовая рассылка", "Очистить БД"],
+        list(VK_ADMIN_SECTION_LABELS[:2]),
+        list(VK_ADMIN_SECTION_LABELS[2:4]),
+        [VK_ADMIN_SECTION_LABELS[4]],
         ["Закрыть админку"],
     ]
+
+
+VK_ADMIN_SECTION_LABELS = ("Мониторинг", "Расписание и OCR", "Счётчики пар", "Пользователи и рассылки", "Служебное")
+
+# "Назад в меню" в VK общий обработчик отправляет в главное меню пользователя, а не в админку,
+# поэтому из раздела возвращаемся отдельной кнопкой.
+VK_ADMIN_SECTION_BACK = "Назад в админку"
+
+VK_ADMIN_SECTIONS: dict[str, dict] = {
+    "Мониторинг": {
+        "text": "Мониторинг\n\nСтатус бота, ошибки, последние изменения и группы.",
+        "rows": [
+            ["Статус", "Ошибки за день"],
+            ["Последнее изменение", "Информация по группам"],
+            [VK_ADMIN_SECTION_BACK],
+        ],
+    },
+    "Расписание и OCR": {
+        "text": "Расписание и OCR\n\nПерепарсинг с сайта, эталоны и загрузка расписания по фото или JSON.",
+        "rows": [
+            ["Перепарсить", "Сохранить эталон"],
+            ["Расписание с фото", "Сводное расписание"],
+            ["Импорт OCR JSON", "Управление Gemini"],
+            [VK_ADMIN_SECTION_BACK],
+        ],
+    },
+    "Счётчики пар": {
+        "text": "Счётчики пар\n\nРучной подсчёт и правка счётчиков по группам.",
+        "rows": [
+            ["Ручной подсчёт"],
+            ["Добавить пару", "Изменить пару"],
+            ["Удалить пару", "Удалить пары"],
+            ["Импорт пар из JSON", "Скачать пары"],
+            [VK_ADMIN_SECTION_BACK],
+        ],
+    },
+    "Пользователи и рассылки": {
+        "text": "Пользователи и рассылки\n\nПоиск пользователей и рассылки сообщений.",
+        "rows": [
+            ["Пользователи", "Разослать"],
+            ["Тестовая рассылка"],
+            [VK_ADMIN_SECTION_BACK],
+        ],
+    },
+    "Служебное": {
+        "text": "Служебное\n\nВыгрузка и очистка базы данных.",
+        "rows": [
+            ["Скачать БД"],
+            ["Очистить БД"],
+            [VK_ADMIN_SECTION_BACK],
+        ],
+    },
+}
+
+VK_ADMIN_COUNTER_SYNC_ROWS = [["Подсчёт за сегодня", "Подсчёт за вчера"], [VK_ADMIN_SECTION_BACK]]
+
+VK_ADMIN_COUNTER_SYNC_TEXT = (
+    "Ручной подсчёт пар\n\n"
+    "Считает пары выбранного дня по расписанию для всех групп — так же, как автоподсчёт в 23:20. "
+    "Уже учтённые группы пропускаются, ничего не задвоится.\n\n"
+    "Лучше запускать после последней пары дня: учтённая группа больше не пересчитывается, "
+    "даже если расписание потом изменится."
+)
 
 
 def make_vk_keyboard(rows: list[list[str]]) -> str:
@@ -649,6 +708,7 @@ def build_vk_bot(
     message_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db, settings.lesson_counters_path)
+    admin_counter_sync_lock = asyncio.Lock()
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
 
     make_keyboard = make_vk_keyboard
@@ -1782,7 +1842,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_broadcast_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
             if mode == "admin_broadcast_input":
                 if not text:
@@ -1935,7 +1995,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_ocr_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
 
             if mode == "admin_ocr_preview" and text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
@@ -2038,7 +2098,7 @@ def build_vk_bot(
                 admin_ocr_summary_drafts.pop(peer_id, None)
                 admin_ocr_summary_images.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
 
             if mode == "admin_ocr_summary_preview":
@@ -2175,7 +2235,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_ocr_summary_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
 
             if mode == "admin_ocr_json_preview" and text in {"Подтвердить и разослать", "Сохранить без рассылки"}:
@@ -2276,7 +2336,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_import_lessons_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
 
             if mode == "admin_import_lessons_input":
@@ -2341,7 +2401,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_lesson_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
             draft = admin_lesson_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
@@ -2452,7 +2512,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_lesson_delete_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
             draft = admin_lesson_delete_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
@@ -2525,7 +2585,7 @@ def build_vk_bot(
             if text == "Отменить":
                 admin_lesson_delete_one_drafts.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
                 return
             draft = admin_lesson_delete_one_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
@@ -2903,7 +2963,7 @@ def build_vk_bot(
                 return
             admin_broadcast_drafts.pop(peer_id, None)
             peer_modes[peer_id] = "admin_menu"
-            await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+            await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
             return
 
         if user_is_admin(user_id):
@@ -2912,7 +2972,51 @@ def build_vk_bot(
                 admin_lesson_drafts.pop(peer_id, None)
                 admin_user_search_state.pop(peer_id, None)
                 peer_modes[peer_id] = "admin_menu"
-                await show_screen(peer_id, "Админ-панель\n\nВыбери нужное действие.", keyboard=admin_keyboard())
+                await show_screen(peer_id, "Админ-панель\n\nВыбери раздел.", keyboard=admin_keyboard())
+                return
+
+            if text in VK_ADMIN_SECTIONS:
+                section = VK_ADMIN_SECTIONS[text]
+                peer_modes[peer_id] = "admin_menu"
+                await show_screen(peer_id, section["text"], keyboard=make_keyboard(section["rows"]))
+                return
+
+            if text == "Ручной подсчёт":
+                peer_modes[peer_id] = "admin_menu"
+                if not settings.lesson_counters_enabled:
+                    await show_screen(peer_id, "Счётчики пар выключены в настройках.", keyboard=admin_keyboard())
+                    return
+                await show_screen(
+                    peer_id, VK_ADMIN_COUNTER_SYNC_TEXT, keyboard=make_keyboard(VK_ADMIN_COUNTER_SYNC_ROWS)
+                )
+                return
+
+            if text in {"Подсчёт за сегодня", "Подсчёт за вчера"}:
+                peer_modes[peer_id] = "admin_menu"
+                if not settings.lesson_counters_enabled:
+                    await show_screen(peer_id, "Счётчики пар выключены в настройках.", keyboard=admin_keyboard())
+                    return
+                if admin_counter_sync_lock.locked():
+                    await show_screen(peer_id, "Подсчёт уже идёт, подожди отчёта.", keyboard=make_keyboard(VK_ADMIN_COUNTER_SYNC_ROWS))
+                    return
+                target_date = datetime.now().date()
+                if text.endswith("вчера"):
+                    target_date -= timedelta(days=1)
+                target_date_iso = target_date.isoformat()
+                counters_section_keyboard = make_keyboard(VK_ADMIN_SECTIONS["Счётчики пар"]["rows"])
+                async with admin_counter_sync_lock:
+                    await show_screen(
+                        peer_id,
+                        "Считаю пары...\n\nОпрашиваю сайт по всем группам. Если он тормозит, это может занять несколько минут.",
+                        keyboard=None,
+                    )
+                    try:
+                        sync_result = await sync_lesson_counters_for_date(db, parser, lesson_counter_service, target_date_iso)
+                        report_text = format_counter_sync_report(sync_result, target_date_iso)
+                    except Exception:
+                        logger.exception("Ручной подсчёт пар за %s не удался", target_date_iso)
+                        report_text = "Не удалось выполнить подсчёт. Подробности в логах сервера."
+                    await show_screen(peer_id, report_text, keyboard=counters_section_keyboard)
                 return
 
             if text in {"/cleandb", "cleandb", "Очистить БД", "Очистить бд"} or text.startswith("/cleandb"):

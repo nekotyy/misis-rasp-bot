@@ -5,7 +5,7 @@ import logging
 import tempfile
 import zipfile
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from time import monotonic
@@ -35,11 +35,13 @@ from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
     build_teacher_schedule_snapshot,
+    format_counter_sync_report,
     normalize_lesson_text,
     resolve_audience_preview_content,
     resolve_group_preview_content,
     snapshot_to_search_content,
     subject_matches,
+    sync_lesson_counters_for_date,
     teacher_matches,
 )
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
@@ -341,79 +343,95 @@ ADMIN_GEMINI_KEYBOARD = InlineKeyboardMarkup(
     ]
 )
 
+def _admin_button(text: str, action: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=f"admin:{action}")
+
+
+_ADMIN_BACK_TO_MENU_ROW = [_admin_button("« Назад в меню", "back")]
+
 ADMIN_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="Ошибки за день", callback_data="admin:daily_errors"),
-        ],
-        [
-            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
-            InlineKeyboardButton(text="Сохранить эталон", callback_data="admin:baseline"),
-        ],
-        [
-            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
-            InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
-        ],
-        [
-            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Разослать", callback_data="admin:broadcast"),
-        ],
-        [
-            InlineKeyboardButton(text="Скачать БД", callback_data="admin:download_db"),
-            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
-        ],
-        [
-            InlineKeyboardButton(text="Добавить пару", callback_data="admin:lesson_add"),
-            InlineKeyboardButton(text="Изменить пару", callback_data="admin:lesson_edit"),
-        ],
-        [
-            InlineKeyboardButton(text="Импорт пар из JSON", callback_data="admin:import_lessons"),
-        ],
-        [
-            InlineKeyboardButton(text="Расписание с фото (OCR)", callback_data="admin:ocr_import"),
-        ],
-        [
-            InlineKeyboardButton(text="Сводное расписание (все группы)", callback_data="admin:ocr_summary_import"),
-        ],
-        [
-            InlineKeyboardButton(text="Импорт OCR JSON", callback_data="admin:ocr_json_import"),
-        ],
-        [
-            InlineKeyboardButton(text="Управление Gemini", callback_data="admin:gemini_status"),
-        ],
-        [
-            InlineKeyboardButton(text="Удалить пару", callback_data="admin:lesson_delete_one"),
-            InlineKeyboardButton(text="Удалить пары", callback_data="admin:lesson_delete"),
-        ],
-        [
-            InlineKeyboardButton(text="Очистить БД", callback_data="admin:cleandb"),
-            InlineKeyboardButton(text="Тестовая рассылка", callback_data="admin:test"),
-        ],
-        [
-            InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
-        ],
+        [_admin_button("Мониторинг", "sec:monitor"), _admin_button("Расписание и OCR", "sec:schedule")],
+        [_admin_button("Счётчики пар", "sec:counters"), _admin_button("Пользователи и рассылки", "sec:people")],
+        [_admin_button("Служебное", "sec:service")],
+        [_admin_button("Закрыть админку", "close")],
     ]
+)
+
+ADMIN_SECTION_KEYBOARDS: dict[str, InlineKeyboardMarkup] = {
+    "monitor": InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_admin_button("Статус", "status"), _admin_button("Ошибки за день", "daily_errors")],
+            [_admin_button("Последнее изменение", "last_change"), _admin_button("Информация по группам", "group_info")],
+            _ADMIN_BACK_TO_MENU_ROW,
+        ]
+    ),
+    "schedule": InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_admin_button("Перепарсить", "refresh"), _admin_button("Сохранить эталон", "baseline")],
+            [_admin_button("Расписание с фото (OCR)", "ocr_import")],
+            [_admin_button("Сводное расписание (все группы)", "ocr_summary_import")],
+            [_admin_button("Импорт OCR JSON", "ocr_json_import")],
+            [_admin_button("Управление Gemini", "gemini_status")],
+            _ADMIN_BACK_TO_MENU_ROW,
+        ]
+    ),
+    "counters": InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_admin_button("Ручной подсчёт", "counter_sync")],
+            [_admin_button("Добавить пару", "lesson_add"), _admin_button("Изменить пару", "lesson_edit")],
+            [_admin_button("Удалить пару", "lesson_delete_one"), _admin_button("Удалить пары", "lesson_delete")],
+            [_admin_button("Импорт пар из JSON", "import_lessons"), _admin_button("Скачать пары", "download_counters")],
+            _ADMIN_BACK_TO_MENU_ROW,
+        ]
+    ),
+    "people": InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_admin_button("Пользователи", "users"), _admin_button("Разослать", "broadcast")],
+            [_admin_button("Тестовая рассылка", "test")],
+            _ADMIN_BACK_TO_MENU_ROW,
+        ]
+    ),
+    "service": InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_admin_button("Скачать БД", "download_db")],
+            [_admin_button("Очистить БД", "cleandb")],
+            _ADMIN_BACK_TO_MENU_ROW,
+        ]
+    ),
+}
+
+ADMIN_SECTION_TEXTS: dict[str, str] = {
+    "monitor": "<b>Мониторинг</b>\nСтатус бота, ошибки, последние изменения и группы.",
+    "schedule": "<b>Расписание и OCR</b>\nПерепарсинг с сайта, эталоны и загрузка расписания по фото или JSON.",
+    "counters": "<b>Счётчики пар</b>\nРучной подсчёт и правка счётчиков по группам.",
+    "people": "<b>Пользователи и рассылки</b>\nПоиск пользователей и рассылки сообщений.",
+    "service": "<b>Служебное</b>\nВыгрузка и очистка базы данных.",
+}
+
+# Разделы, недоступные ограниченному админу (в них есть изменяющие данные действия).
+ADMIN_FULL_ONLY_SECTIONS = frozenset({"schedule", "counters", "people", "service"})
+
+ADMIN_COUNTER_SYNC_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [_admin_button("Сегодня", "counter_sync:today"), _admin_button("Вчера", "counter_sync:yesterday")],
+        [_admin_button("« Назад к счётчикам", "sec:counters")],
+    ]
+)
+
+ADMIN_COUNTER_SYNC_TEXT = (
+    "<b>Ручной подсчёт пар</b>\n\n"
+    "Считает пары выбранного дня по расписанию для всех групп — так же, как автоподсчёт в 23:20. "
+    "Уже учтённые группы пропускаются, ничего не задвоится.\n\n"
+    "Лучше запускать после последней пары дня: учтённая группа больше не пересчитывается, "
+    "даже если расписание потом изменится."
 )
 
 ADMIN_KEYBOARD_LIMITED = InlineKeyboardMarkup(
     inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Статус", callback_data="admin:status"),
-            InlineKeyboardButton(text="Ошибки за день", callback_data="admin:daily_errors"),
-        ],
-        [
-            InlineKeyboardButton(text="Перепарсить", callback_data="admin:refresh"),
-            InlineKeyboardButton(text="Информация по группам", callback_data="admin:group_info"),
-        ],
-        [
-            InlineKeyboardButton(text="Пользователи", callback_data="admin:users"),
-            InlineKeyboardButton(text="Последнее изменение", callback_data="admin:last_change"),
-        ],
-        [
-            InlineKeyboardButton(text="Скачать пары", callback_data="admin:download_counters"),
-            InlineKeyboardButton(text="Закрыть админку", callback_data="admin:close"),
-        ],
+        [_admin_button("Мониторинг", "sec:monitor")],
+        [_admin_button("Перепарсить", "refresh"), _admin_button("Пользователи", "users")],
+        [_admin_button("Скачать пары", "download_counters"), _admin_button("Закрыть админку", "close")],
     ]
 )
 
@@ -1024,6 +1042,7 @@ def build_dispatcher(
     message_rate_locks: dict[int, asyncio.Lock] = {}
     callback_rate_locks: dict[int, asyncio.Lock] = {}
     lesson_counter_service = LessonCounterService(db, settings.lesson_counters_path)
+    admin_counter_sync_lock = asyncio.Lock()
     ocr_service = ocr_importer or build_ocr_importer(settings, db, schedule_jobs, group_catalog)
 
     async def wait_rate_limit_queue(
@@ -1319,12 +1338,7 @@ def build_dispatcher(
         return "\n".join([
             "<b>Панель администратора</b>",
             "───────────────────────────",
-            "Выберите нужное действие для управления ботом:",
-            "• Просмотр статуса, статистики и пользовательских групп.",
-            "• Перепарсинг расписания и сохранение эталонов.",
-            "• Управление парами и импорт конфигурации.",
-            "• Рассылка сообщений и поиск пользователей.",
-            "• Очистка и выгрузка базы данных.",
+            "Выбери раздел.",
         ])
 
     def format_admin_broadcast_prompt(error_text: str | None = None) -> str:
@@ -3127,7 +3141,7 @@ def build_dispatcher(
 
         action = callback.data.split(":", 1)[1]
         is_full_admin = user_is_full_admin(callback.from_user.id)
-        if not is_full_admin and action in {
+        if not is_full_admin and (action in {
             "broadcast", "broadcast_send", "broadcast_send_all", "broadcast_send_tg", "broadcast_send_vk", "baseline", "editors", "test",
             "download_db", "lesson_add", "lesson_edit",
             "lesson_delete", "lesson_delete_one",
@@ -3137,10 +3151,60 @@ def build_dispatcher(
             "ocr_summary_import", "ocr_summary_confirm", "ocr_summary_confirm_silent", "ocr_summary_cancel", "ocr_summary_add_more",
             "ocr_json_import",
             "gemini_status",
-        }:
+            "counter_sync", "counter_sync:today", "counter_sync:yesterday",
+        } or (action.startswith("sec:") and action.split(":", 1)[1] in ADMIN_FULL_ONLY_SECTIONS)):
             await safe_callback_answer(callback, "Доступно только полному администратору.", show_alert=True)
             return
         admin_user = await get_user_record(callback.from_user.id)
+        if action.startswith("sec:"):
+            section_keyboard = ADMIN_SECTION_KEYBOARDS.get(action.split(":", 1)[1])
+            if section_keyboard is None:
+                await safe_callback_answer(callback)
+                return
+            await safe_edit_message_text(
+                callback.message, ADMIN_SECTION_TEXTS[action.split(":", 1)[1]], reply_markup=section_keyboard
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback)
+            return
+        if action == "counter_sync":
+            if not settings.lesson_counters_enabled:
+                await safe_callback_answer(callback, "Счётчики пар выключены в настройках.", show_alert=True)
+                return
+            await safe_edit_message_text(
+                callback.message, ADMIN_COUNTER_SYNC_TEXT, reply_markup=ADMIN_COUNTER_SYNC_KEYBOARD
+            )
+            context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+            await safe_callback_answer(callback)
+            return
+        if action in {"counter_sync:today", "counter_sync:yesterday"}:
+            if not settings.lesson_counters_enabled:
+                await safe_callback_answer(callback, "Счётчики пар выключены в настройках.", show_alert=True)
+                return
+            if admin_counter_sync_lock.locked():
+                await safe_callback_answer(callback, "Подсчёт уже идёт, подожди отчёта.", show_alert=True)
+                return
+            target_date = datetime.now().date()
+            if action.endswith("yesterday"):
+                target_date -= timedelta(days=1)
+            target_date_iso = target_date.isoformat()
+            async with admin_counter_sync_lock:
+                await safe_edit_message_text(
+                    callback.message,
+                    "<b>Считаю пары...</b>\n\nОпрашиваю сайт по всем группам. Если он тормозит, это может занять несколько минут.",
+                )
+                context_messages[callback.message.chat.id]["admin"] = [callback.message.message_id]
+                await safe_callback_answer(callback, "Подсчёт запущен...")
+                try:
+                    sync_result = await sync_lesson_counters_for_date(db, parser, lesson_counter_service, target_date_iso)
+                    report_text = format_counter_sync_report(sync_result, target_date_iso, html=True)
+                except Exception:
+                    logger.exception("Ручной подсчёт пар за %s не удался", target_date_iso)
+                    report_text = "Не удалось выполнить подсчёт. Подробности в логах сервера."
+                await safe_edit_message_text(
+                    callback.message, report_text, reply_markup=ADMIN_SECTION_KEYBOARDS["counters"]
+                )
+            return
         if action == "cleandb":
             await safe_callback_answer(callback, "Запущена принудительная очистка БД...")
             await send_new_context_message(

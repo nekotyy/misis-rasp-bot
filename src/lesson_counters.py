@@ -18,6 +18,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import ScheduleParser
+from src.schedule_service import format_human_date
 from src.subscription_utils import extract_numeric_id
 
 logger = logging.getLogger(__name__)
@@ -180,10 +181,52 @@ async def sync_lesson_counters_for_date(
     return result
 
 
+MAX_FAILED_GROUPS_IN_REPORT = 10
+
+
+def format_counter_sync_report(result: LessonCounterSyncResult, target_date_iso: str, *, html: bool = False) -> str:
+    """Короткий отчёт о ручном подсчёте пар для админки бота: только счётчики и сбойные группы."""
+
+    def esc(value: str) -> str:
+        return escape(value) if html else value
+
+    title = f"Ручной подсчёт пар за {format_human_date(target_date_iso)}"
+    lines = [f"<b>{title}</b>" if html else title, ""]
+    if result.is_empty:
+        lines.append("Нет ни одной группы для подсчёта.")
+        return "\n".join(lines)
+
+    lines.append(f"Учтено групп: {len(result.processed)}")
+    if result.skipped_already_done:
+        lines.append(f"Уже было учтено раньше (пропущено, чтобы не задвоить): {len(result.skipped_already_done)}")
+    if result.failed:
+        lines.append(f"Ошибок: {len(result.failed)}")
+        for group, error in result.failed[:MAX_FAILED_GROUPS_IN_REPORT]:
+            lines.append(f"• {esc(group)}: {esc(error[:80])}")
+        hidden = len(result.failed) - MAX_FAILED_GROUPS_IN_REPORT
+        if hidden > 0:
+            lines.append(f"…и ещё {hidden}")
+        lines.append("Группы с ошибкой можно пересчитать повторным запуском — учтённые не задвоятся.")
+    return "\n".join(lines)
+
+
 def normalize_lesson_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).casefold().replace("ё", "е")
     normalized = re.sub(r"[^\w\s-]+", " ", normalized, flags=re.UNICODE)
     return " ".join(normalized.split())
+
+
+# Консультация ("Консульт." / "Консультирующий") — не пара, а окно для вопросов:
+# в счётчиках пар её не учитываем и не показываем ни у одной группы.
+UNCOUNTED_SUBJECT_NORM = "консульт"
+UNCOUNTED_TEACHER_NORM = "консультирующий"
+
+
+def is_uncounted_lesson(subject: str, teacher: str) -> bool:
+    return (
+        normalize_lesson_text(subject) == UNCOUNTED_SUBJECT_NORM
+        or normalize_lesson_text(teacher) == UNCOUNTED_TEACHER_NORM
+    )
 
 
 SUBJECT_NOISE_PREFIXES = (
@@ -533,6 +576,17 @@ class LessonCounterService:
 
         db_counters = await self.db.list_lesson_counters(schedule_id) if schedule_id else []
 
+        json_counters = [
+            item for item in json_counters
+            if not is_uncounted_lesson(
+                str(item.get("display_name") or item.get("subject") or ""), str(item.get("teacher") or "")
+            )
+        ]
+        db_counters = [
+            counter for counter in db_counters
+            if not is_uncounted_lesson(str(counter["subject"]), str(counter["teacher"]))
+        ]
+
         if not json_counters and not db_counters:
             return "Список дисциплин пока не настроен."
 
@@ -625,6 +679,8 @@ class LessonCounterService:
         teacher: str,
         count: int = 1,
     ) -> bool:
+        if is_uncounted_lesson(subject, teacher):
+            return False
         if not self.lesson_counters_path:
             return False
         self.lesson_counters_path.parent.mkdir(parents=True, exist_ok=True)

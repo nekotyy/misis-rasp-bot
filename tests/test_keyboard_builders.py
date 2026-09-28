@@ -110,11 +110,13 @@ class TestAdminKeyboards(unittest.TestCase):
             ADMIN_DAILY_ERRORS_KEYBOARD,
             ADMIN_KEYBOARD,
             ADMIN_KEYBOARD_LIMITED,
+            ADMIN_SECTION_KEYBOARDS,
             ADMIN_STATUS_KEYBOARD,
         )
 
-        # ADMIN_KEYBOARD
-        full_callbacks = [btn.callback_data for row in ADMIN_KEYBOARD.inline_keyboard for btn in row]
+        # ADMIN_KEYBOARD: главное меню из разделов, кнопки действий лежат в разделах
+        keyboards = [ADMIN_KEYBOARD, *ADMIN_SECTION_KEYBOARDS.values()]
+        full_callbacks = [btn.callback_data for kb in keyboards for row in kb.inline_keyboard for btn in row]
         self.assertIn("admin:status", full_callbacks)
         self.assertIn("admin:daily_errors", full_callbacks)
         self.assertIn("admin:download_db", full_callbacks)
@@ -123,8 +125,12 @@ class TestAdminKeyboards(unittest.TestCase):
 
         # ADMIN_KEYBOARD_LIMITED
         limited_callbacks = [btn.callback_data for row in ADMIN_KEYBOARD_LIMITED.inline_keyboard for btn in row]
-        self.assertIn("admin:status", limited_callbacks)
-        self.assertIn("admin:daily_errors", limited_callbacks)
+        self.assertIn("admin:sec:monitor", limited_callbacks)
+        monitor_callbacks = [
+            btn.callback_data for row in ADMIN_SECTION_KEYBOARDS["monitor"].inline_keyboard for btn in row
+        ]
+        self.assertIn("admin:status", monitor_callbacks)
+        self.assertIn("admin:daily_errors", monitor_callbacks)
 
         # ADMIN_BACK_KEYBOARD
         back_callbacks = [btn.callback_data for row in ADMIN_BACK_KEYBOARD.inline_keyboard for btn in row]

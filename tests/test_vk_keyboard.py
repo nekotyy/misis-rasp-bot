@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 
 from src.vk_bot import (
+    VK_ADMIN_COUNTER_SYNC_ROWS,
+    VK_ADMIN_SECTIONS,
     VK_KEYBOARD_MAX_BUTTONS,
     VK_KEYBOARD_MAX_BUTTONS_PER_ROW,
     VK_KEYBOARD_MAX_ROWS,
@@ -121,13 +123,40 @@ class TestVkAdminKeyboardLimits(unittest.TestCase):
             total_buttons += len(row)
         self.assertLessEqual(total_buttons, VK_KEYBOARD_MAX_BUTTONS)
 
+    def test_every_admin_section_within_vk_limits(self) -> None:
+        all_rows = [vk_admin_keyboard_rows(), VK_ADMIN_COUNTER_SYNC_ROWS]
+        all_rows += [section["rows"] for section in VK_ADMIN_SECTIONS.values()]
+        for rows in all_rows:
+            self.assertLessEqual(len(rows), VK_KEYBOARD_MAX_ROWS)
+            self.assertLessEqual(sum(len(row) for row in rows), VK_KEYBOARD_MAX_BUTTONS)
+            for row in rows:
+                self.assertLessEqual(len(row), VK_KEYBOARD_MAX_BUTTONS_PER_ROW)
+
+    def test_main_menu_lists_every_section(self) -> None:
+        main_labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        self.assertEqual(main_labels - {"Закрыть админку"}, set(VK_ADMIN_SECTIONS))
+
+    def test_manual_count_button_lives_in_counters_section(self) -> None:
+        labels = {label for row in VK_ADMIN_SECTIONS["Счётчики пар"]["rows"] for label in row}
+        self.assertIn("Ручной подсчёт", labels)
+
+    def test_admin_button_labels_are_unique_across_sections(self) -> None:
+        labels = [
+            label
+            for section in VK_ADMIN_SECTIONS.values()
+            for row in section["rows"]
+            for label in row
+            if label != "Назад в админку"
+        ]
+        self.assertEqual(len(labels), len(set(labels)))
+
     def test_admin_keyboard_has_summary_ocr_button(self) -> None:
-        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        labels = {label for section in VK_ADMIN_SECTIONS.values() for row in section["rows"] for label in row}
         self.assertIn("Расписание с фото", labels)
         self.assertIn("Сводное расписание", labels)
 
     def test_admin_keyboard_has_gemini_button(self) -> None:
-        labels = {label for row in vk_admin_keyboard_rows() for label in row}
+        labels = {label for section in VK_ADMIN_SECTIONS.values() for row in section["rows"] for label in row}
         self.assertIn("Управление Gemini", labels)
 
 
