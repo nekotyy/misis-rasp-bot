@@ -30,7 +30,9 @@ from src.message_broker import (
 from src.models import ChangeSummary, ScheduleSnapshot
 from src.notifier import Broadcaster
 from src.parser import ScheduleParser, compute_snapshot_hash
+from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleComparator, looks_like_stale_site_glitch
+from src.subscription_utils import make_teacher_subscription
 from src.system_status import (
     SystemAlertManager,
     check_database_status,
@@ -140,6 +142,7 @@ class ScheduleJobs:
         web_port: int = 8080,
         group_catalog: GroupCatalog | None = None,
         group_catalog_refresh_days: int = 90,
+        search_catalog: ScheduleSearchCatalog | None = None,
     ) -> None:
         self.db = db
         self.parser = parser
@@ -161,6 +164,7 @@ class ScheduleJobs:
         self.web_port = web_port
         self.group_catalog = group_catalog
         self.group_catalog_refresh_days = max(1, group_catalog_refresh_days)
+        self.search_catalog = search_catalog
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
         # Проверки живости приёма сообщений (VK long poll, Telegram polling):
@@ -244,6 +248,13 @@ class ScheduleJobs:
                 max_instances=1,
                 coalesce=True,
             )
+        if self.search_catalog is not None:
+            self.scheduler.add_job(
+                self.promote_pending_teacher_subscribers,
+                IntervalTrigger(minutes=30),
+                max_instances=1,
+                coalesce=True,
+            )
 
     async def refresh_group_catalog(self) -> None:
         """Раз в несколько месяцев подтягивает список групп и их ID с сайта заново.
@@ -308,6 +319,38 @@ class ScheduleJobs:
                     "Группа %s появилась на сайте (schedule_id=%s) — перевёл %s подписчиков с OCR-заглушки на сайт.",
                     group.group_name,
                     group.schedule_id,
+                    moved,
+                )
+
+    async def promote_pending_teacher_subscribers(self) -> None:
+        """Привязывает подписки на препода без ID (teacher-pending:*) к справочнику сайта.
+
+        Как только преподаватель находится в /prep с тем же ФИО, подписчиков переводят
+        на teacher:<id>. Сайт спрашивается только когда такие подписки есть (один запрос
+        за проход), а совпадение строгое: по полному ФИО с инициалами, без догадок.
+        """
+        if self.search_catalog is None:
+            return
+        pending = await self.db.get_pending_teacher_subscribers()
+        if not pending:
+            return
+        await self.search_catalog.refresh_teachers()
+        for item in pending:
+            target = await self.search_catalog.find_site_teacher(str(item["subscription_title"]))
+            if target is None:
+                continue
+            subscription = make_teacher_subscription(target)
+            moved = await self.db.promote_pending_teacher_subscription(
+                str(item["subscription_key"]),
+                str(subscription["subscription_key"]),
+                str(subscription["subscription_title"]),
+                str(subscription["subscription_url"]),
+            )
+            if moved:
+                logger.info(
+                    "Преподаватель %s найден на сайте (%s) — перевёл %s подписчиков с teacher-pending.",
+                    target.title,
+                    subscription["subscription_key"],
                     moved,
                 )
 
