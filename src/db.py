@@ -1059,6 +1059,67 @@ class Database:
             await db.commit()
         return moved
 
+    async def get_pending_teacher_subscribers(self) -> list[dict]:
+        """Подписки на преподавателей без ID на сайте (teacher-pending:*).
+
+        Такой ключ получается, когда справочник /prep в момент подписки был недоступен или
+        имя написано иначе, чем на сайте: расписание препода тогда собирается из групп.
+        """
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                SELECT DISTINCT subscription_key, subscription_title
+                FROM users
+                WHERE subscription_type = 'teacher'
+                  AND subscription_key LIKE 'teacher-pending:%'
+                  AND subscription_title IS NOT NULL
+                """
+            )
+            rows = await cursor.fetchall()
+        return [{"subscription_key": row[0], "subscription_title": row[1]} for row in rows]
+
+    async def promote_pending_teacher_subscription(
+        self, pending_key: str, new_key: str, title: str, url: str
+    ) -> int:
+        """Переводит подписчиков teacher-pending:* на ключ преподавателя с сайта (teacher:<id>).
+
+        Последние снимки current/daily_baseline копируются под новый ключ (если у него своих
+        ещё нет), чтобы сравнение изменений не обнулилось. Всё в одной транзакции.
+        """
+        now = datetime.now().isoformat(timespec="seconds")
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE users
+                SET subscription_key = ?, subscription_title = ?, subscription_url = ?
+                WHERE subscription_key = ? AND subscription_type = 'teacher'
+                """,
+                (new_key, title, url, pending_key),
+            )
+            moved = cursor.rowcount
+            if moved:
+                for snapshot_type in ("current", "daily_baseline"):
+                    await db.execute(
+                        """
+                        INSERT INTO schedule_snapshots (
+                            snapshot_type, source_type, source_key, source_title, source_url,
+                            group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
+                        )
+                        SELECT snapshot_type, source_type, ?, ?, ?, group_name, schedule_id,
+                               snapshot_hash, content_json, fetched_at, ?
+                        FROM schedule_snapshots
+                        WHERE source_key = ? AND snapshot_type = ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM schedule_snapshots WHERE source_key = ? AND snapshot_type = ?
+                          )
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (new_key, title, url, now, pending_key, snapshot_type, new_key, snapshot_type),
+                    )
+            await db.commit()
+        return moved
+
     async def save_snapshot(
         self,
         snapshot_type: str,

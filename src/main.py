@@ -418,6 +418,7 @@ async def main() -> None:
         alert_manager=alert_manager,
         rabbitmq_url=settings.rabbitmq_url,
         group_catalog=group_catalog,
+        search_catalog=search_catalog,
     )
     ocr_importer = build_ocr_importer(settings, db, jobs, group_catalog, alert_manager)
 

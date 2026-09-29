@@ -107,6 +107,47 @@ class ScheduleSearchCatalog:
             if self.db is not None:
                 await self._save_pairs_to_db("teacher", pairs)
 
+    async def refresh_teachers(self) -> bool:
+        """Принудительно перечитывает справочник /prep с сайта.
+
+        Обычно он грузится один раз за жизнь процесса, поэтому преподаватель, которого
+        сайт завёл позже, не виден поиску до рестарта. При ошибке остаётся прежний список.
+        """
+        async with self._prep_lock:
+            try:
+                pairs = await self._fetch_pairs("/prep", "a[href^='/raspprep/']")
+            except Exception as exc:
+                logger.warning("Не удалось обновить список преподавателей с сайта: %s", exc)
+                return False
+            if not pairs:
+                return False
+            self._populate_preps(pairs)
+            self._preps_loaded = True
+            if self.db is not None:
+                await self._save_pairs_to_db("teacher", pairs)
+            return True
+
+    async def find_site_teacher(self, title: str) -> SearchTarget | None:
+        """Преподаватель из справочника сайта по полному ФИО с инициалами — без догадок.
+
+        В отличие от `find`, не ищет по фамилии, по частичному совпадению и в группах:
+        подписку нельзя привязать не к тому человеку (у Ивановой А. И. и Ивановой Е. Ю.
+        одна фамилия). Пробелы между инициалами значения не имеют («В.В.» и «В. В.»).
+        """
+        normalized = self.normalize(title)
+        if not normalized or len(normalized.split()) < 2:
+            return None
+        await self._ensure_preps_loaded()
+        compact = self._compact_name_key(normalized)
+        for key in (normalized, compact):
+            target = self._preps.get(key)
+            if target is None or not target.url:
+                continue
+            candidate = self.normalize(target.title)
+            if candidate == normalized or self._compact_name_key(candidate) == compact:
+                return target
+        return None
+
     async def _find_teacher_from_groups(self, raw_query: str) -> SearchTarget | None:
         """Резервный поиск препода по ФИО, встречающимся в уже известных группах в БД.
 
