@@ -213,6 +213,22 @@ class AdminErrorReporter:
         return html_text, plain_text
 
 
+# aiogram пишет ERROR "Failed to fetch updates - <ТипОшибки>: <текст>" на каждый неудачный
+# getUpdates и сам переподключается с нарастающей паузой. Сетевые обрывы Telegram (в том
+# числе "Server disconnected" и обрыв DNS на хосте) — это шум, а не сбой: если приём
+# сообщений реально встал, об этом сообщает проверка живости `telegram_polling`.
+# Остальные ошибки (неверный токен, конфликт двух копий бота) по-прежнему идут админу.
+_TRANSIENT_POLLING_ERRORS = frozenset({"TelegramNetworkError", "TelegramServerError", "TelegramRetryAfter"})
+
+
+def is_transient_polling_noise(record: logging.LogRecord) -> bool:
+    """Временный сетевой сбой получения апдейтов aiogram, о котором админу писать не нужно."""
+    if record.name != "aiogram.dispatcher" or not str(record.msg).startswith("Failed to fetch updates"):
+        return False
+    args = record.args
+    return isinstance(args, tuple) and bool(args) and args[0] in _TRANSIENT_POLLING_ERRORS
+
+
 class AdminLogHandler(logging.Handler):
     """Пересылает админу записи уровня ERROR и выше из любых логгеров.
 
@@ -227,6 +243,8 @@ class AdminLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         if getattr(record, "skip_admin_report", False) or record.name.startswith(__name__):
+            return
+        if is_transient_polling_noise(record):
             return
         try:
             message = record.getMessage()

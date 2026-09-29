@@ -106,6 +106,26 @@ class AdminLogHandlerTests(unittest.IsolatedAsyncioTestCase):
         await self._drain()
         self.notify.assert_not_awaited()
 
+    async def test_transient_aiogram_polling_network_errors_are_not_forwarded(self) -> None:
+        polling_logger = logging.getLogger("aiogram.dispatcher")
+        for error_type, text in (
+            ("TelegramNetworkError", "HTTP Client says - ServerDisconnectedError: Server disconnected"),
+            ("TelegramNetworkError", "HTTP Client says - ClientConnectorError: Temporary failure in name resolution"),
+            ("TelegramServerError", "Bad Gateway"),
+        ):
+            polling_logger.error("Failed to fetch updates - %s: %s", error_type, text)
+        await self._drain()
+        self.notify.assert_not_awaited()
+
+    async def test_non_network_aiogram_polling_errors_are_still_forwarded(self) -> None:
+        """Неверный токен или второй экземпляр бота — не «шум», об этом админ должен узнать."""
+        polling_logger = logging.getLogger("aiogram.dispatcher")
+        polling_logger.error("Failed to fetch updates - %s: %s", "TelegramUnauthorizedError", "Unauthorized")
+        polling_logger.error("Что-то другое в диспетчере")
+        await self._drain()
+        self.assertEqual(self.notify.await_count, 2)
+        self.assertIn("TelegramUnauthorizedError", self.notify.await_args_list[0].args[1])
+
     async def test_log_from_worker_thread_is_forwarded(self) -> None:
         await asyncio.to_thread(self.logger.error, "ошибка из потока")
         await self._drain()

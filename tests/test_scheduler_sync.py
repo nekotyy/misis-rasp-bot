@@ -134,6 +134,81 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
 
         worker.assert_not_awaited()
 
+    def _jobs_with_sources(self, titles: list[str]):
+        from src.scheduler import ScheduleJobs
+
+        sources = [
+            {**self.source, "source_key": f"group:{index}", "source_title": title, "schedule_id": 600 + index}
+            for index, title in enumerate(titles)
+        ]
+        jobs = ScheduleJobs.__new__(ScheduleJobs)
+        jobs.db = MagicMock(get_active_sources=AsyncMock(return_value=sources))
+        jobs.alert_manager = AsyncMock()
+        jobs._sleep_between_sources = AsyncMock()
+        return jobs
+
+    async def test_failed_sources_in_one_pass_produce_a_single_sync_report(self) -> None:
+        """DNS моргнул на весь проход: алерт один и по компоненту синка, а не по каждой группе."""
+        jobs = self._jobs_with_sources(["УК-26", "Э-23", "ИСП-25-1"])
+        worker = AsyncMock(
+            side_effect=[
+                OSError("[Errno -3] Temporary failure in name resolution"),
+                OSError("[Errno -3] Temporary failure in name resolution"),
+                None,
+            ]
+        )
+
+        await jobs._run_for_active_sources("sync", worker)
+
+        jobs.alert_manager.report_component_status.assert_awaited_once()
+        args, kwargs = jobs.alert_manager.report_component_status.await_args
+        self.assertEqual(args[:2], ("schedule_sync", False))
+        self.assertIn("Temporary failure in name resolution", args[2])
+        self.assertIn("2 из 3", kwargs["details"])
+
+    async def test_clean_pass_reports_sync_recovery_and_never_touches_site_component(self) -> None:
+        jobs = self._jobs_with_sources(["УК-26", "Э-23"])
+
+        await jobs._run_for_active_sources("sync", AsyncMock())
+
+        jobs.alert_manager.report_component_status.assert_awaited_once_with("schedule_sync", True)
+
+    async def test_one_failed_pass_then_clean_pass_never_alerts_admin(self) -> None:
+        """Сквозной сценарий из жалобы: сбой DNS в одном проходе + проверка живости сайта раз в 5 минут."""
+        from src.system_status import DEFAULT_FAILURE_CONFIRMATIONS, SystemAlertManager
+
+        broadcaster = AsyncMock()
+        jobs = self._jobs_with_sources(["УК-26", "Э-23"])
+        jobs.alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations=DEFAULT_FAILURE_CONFIRMATIONS
+        )
+        network_error = OSError("[Errno -3] Temporary failure in name resolution")
+
+        await jobs._run_for_active_sources("sync", AsyncMock(side_effect=network_error))
+        await jobs.alert_manager.report_component_status("schedule_site", True)  # проверка живости
+        await jobs._run_for_active_sources("sync", AsyncMock())
+
+        broadcaster.notify_admins.assert_not_awaited()
+
+    async def test_sync_failing_in_two_passes_in_a_row_alerts_once_and_recovers(self) -> None:
+        from src.system_status import DEFAULT_FAILURE_CONFIRMATIONS, SystemAlertManager
+
+        broadcaster = AsyncMock()
+        jobs = self._jobs_with_sources(["УК-26", "Э-23"])
+        jobs.alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations=DEFAULT_FAILURE_CONFIRMATIONS
+        )
+        failing = AsyncMock(side_effect=OSError("[Errno -3] Temporary failure in name resolution"))
+
+        await jobs._run_for_active_sources("sync", failing)
+        await jobs._run_for_active_sources("sync", failing)
+        await jobs._run_for_active_sources("sync", failing)
+        self.assertEqual(broadcaster.notify_admins.await_count, 1)
+        self.assertIn("Синхронизация расписания", broadcaster.notify_admins.await_args.kwargs["telegram_message"])
+
+        await jobs._run_for_active_sources("sync", AsyncMock())
+        self.assertEqual(broadcaster.notify_admins.await_count, 2)
+
     async def test_empty_result_with_fresh_cache_keeps_old_current_and_does_not_broadcast(self) -> None:
         """Сайт после падения вернул 200 с пустым расписанием — не затираем валидный кэш."""
         from src.scheduler import ScheduleJobs

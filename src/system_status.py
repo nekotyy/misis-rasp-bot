@@ -106,6 +106,7 @@ def format_bytes(bytes_count: int) -> str:
 
 COMPONENT_TITLES = {
     "schedule_site": "Сайт расписания МИСИС",
+    "schedule_sync": "Синхронизация расписания",
     "rabbitmq": "RabbitMQ Брокер",
     "web_dashboard": "Веб-дашборд (Борда)",
     "telegram": "Telegram Bot API",
@@ -117,6 +118,12 @@ COMPONENT_TITLES = {
     "vk_polling": "Приём сообщений VK (long poll)",
     "telegram_polling": "Приём сообщений Telegram (polling)",
 }
+
+
+# Сайт МИСИС и DNS хоста иногда моргают на минуту (`[Errno -3] Temporary failure in name
+# resolution`). Проверка живости идёт раз в 5 минут, синхронизация — раз в 30–60 минут:
+# сбой объявляется, только если он повторился в двух проверках/проходах подряд.
+DEFAULT_FAILURE_CONFIRMATIONS: dict[str, int] = {"schedule_site": 2, "schedule_sync": 2}
 
 
 async def check_ocr_status(ocr_importer: Any) -> dict[str, Any]:
@@ -354,10 +361,16 @@ class SystemAlertManager:
         self,
         db: Database,
         broadcaster: Any | None = None,
+        failure_confirmations: dict[str, int] | None = None,
     ) -> None:
         self.db = db
         self.broadcaster = broadcaster
-        # component -> {"ok": bool, "down_since": datetime, "last_error": str}
+        # Сколько неудачных проверок подряд нужно, чтобы объявить компонент упавшим.
+        # По умолчанию 1 — алерт сразу. Внешние зависимости (сайт расписания, его DNS)
+        # моргают на минуту-другую, и такие моргания не стоят сообщения админу.
+        self.failure_confirmations = dict(failure_confirmations or {})
+        # component -> {"ok": bool, "down_since": datetime, "last_error": str,
+        #               "fail_streak": int, "first_fail_at": datetime | None}
         self._states: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
@@ -368,42 +381,55 @@ class SystemAlertManager:
         error_message: str | None = None,
         details: str | None = None,
     ) -> None:
-        """Alerts admins exactly once per state transition: once when a component goes down, once when it recovers. No repeat reminders while it's still down."""
+        """Alerts admins exactly once per state transition: once when a component goes down, once when it recovers. No repeat reminders while it's still down.
+
+        Если для компонента задано `failure_confirmations` > 1, «упал» объявляется только
+        после стольких неудачных проверок подряд; одиночный сбой, за которым идёт успех,
+        админу не пишется ни как сбой, ни как восстановление.
+        """
         async with self._lock:
             now_dt = datetime.now()
-            state = self._states.get(component)
+            state = self._states.setdefault(
+                component,
+                {"ok": True, "down_since": None, "last_error": "", "fail_streak": 0, "first_fail_at": None},
+            )
             comp_name = COMPONENT_TITLES.get(component, component)
 
-            if state is None:
-                # First observation
-                self._states[component] = {
-                    "ok": ok,
-                    "down_since": now_dt if not ok else None,
-                    "last_error": error_message or "",
-                }
-                if not ok:
-                    await self._record_and_alert_down(component, comp_name, error_message, details, now_dt)
+            if ok:
+                state["fail_streak"] = 0
+                state["first_fail_at"] = None
+                if not state["ok"]:
+                    # Service recovered UP
+                    down_since = state.get("down_since") or now_dt
+                    duration = now_dt - down_since
+                    state["ok"] = True
+                    state["down_since"] = None
+                    state["last_error"] = ""
+                    await self._alert_recovery(comp_name, duration, now_dt)
                 return
 
-            was_ok = state["ok"]
+            state["fail_streak"] += 1
+            if state["fail_streak"] == 1:
+                state["first_fail_at"] = now_dt
+            if not state["ok"]:
+                # Still down: no repeat notification.
+                return
+            if state["fail_streak"] < max(1, self.failure_confirmations.get(component, 1)):
+                # Пока только подозрение — ждём подтверждения следующей проверкой.
+                logger.warning(
+                    "Component %s check failed (%s/%s): %s",
+                    component,
+                    state["fail_streak"],
+                    self.failure_confirmations.get(component, 1),
+                    error_message,
+                )
+                return
 
-            if was_ok and not ok:
-                # Service went DOWN
-                state["ok"] = False
-                state["down_since"] = now_dt
-                state["last_error"] = error_message or ""
-                await self._record_and_alert_down(component, comp_name, error_message, details, now_dt)
-
-            elif not was_ok and ok:
-                # Service recovered UP
-                down_since = state.get("down_since") or now_dt
-                duration = now_dt - down_since
-                state["ok"] = True
-                state["down_since"] = None
-                state["last_error"] = ""
-                await self._alert_recovery(comp_name, duration, now_dt)
-
-            # Still down or still up: no repeat notification.
+            # Service went DOWN (отсчёт сбоя — с первой неудачной проверки серии)
+            state["ok"] = False
+            state["down_since"] = state["first_fail_at"] or now_dt
+            state["last_error"] = error_message or ""
+            await self._record_and_alert_down(component, comp_name, error_message, details, now_dt)
 
     async def _record_and_alert_down(
         self,
