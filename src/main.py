@@ -500,11 +500,16 @@ async def main() -> None:
     start_background_task("initial-sync", initial_sync())
 
     await stop_event.wait()
-    await shutdown(jobs, broadcaster)
+    await shutdown(jobs, broadcaster, error_reporter)
 
 
-async def shutdown(jobs: ScheduleJobs, broadcaster: Broadcaster) -> None:
+async def shutdown(
+    jobs: ScheduleJobs, broadcaster: Broadcaster, error_reporter: AdminErrorReporter | None = None
+) -> None:
     """Корректная остановка по SIGTERM (docker stop): без неё контейнер убивался через 10 с."""
+    if error_reporter is not None:
+        # Дальше будут обрывы соединений и отмены задач — админу про них писать незачем.
+        error_reporter.mute()
     logging.info("Получен сигнал остановки, завершаю работу...")
     with contextlib.suppress(Exception):
         jobs.scheduler.shutdown(wait=False)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.error_reporting import AdminErrorReporter, AdminLogHandler, ErrorReport, install_error_reporting
 
@@ -53,6 +53,18 @@ class AdminErrorReporterTests(unittest.IsolatedAsyncioTestCase):
         reporter = AdminErrorReporter(AsyncMock(side_effect=RuntimeError("telegram down")))
         await reporter.report_exception("VK-бот", _raise("boom"))
 
+    async def test_muted_reporter_sends_nothing(self) -> None:
+        notify = AsyncMock()
+        reporter = AdminErrorReporter(notify)
+        reporter.attach_loop(asyncio.get_running_loop())
+        reporter.mute()
+
+        await reporter.report_exception("VK-бот", _raise("boom"))
+        reporter.report_in_background(ErrorReport(source="x", summary="в фоне"))
+        await asyncio.sleep(0)
+
+        notify.assert_not_awaited()
+
     async def test_without_notifier_nothing_happens(self) -> None:
         reporter = AdminErrorReporter()
         await reporter.report_exception("VK-бот", _raise("boom"))
@@ -86,6 +98,14 @@ class AdminLogHandlerTests(unittest.IsolatedAsyncioTestCase):
         await self._drain()
         self.notify.assert_not_awaited()
 
+    async def test_cancelled_task_log_is_not_forwarded(self) -> None:
+        try:
+            raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            self.logger.exception("Job raised an exception")
+        await self._drain()
+        self.notify.assert_not_awaited()
+
     async def test_log_from_worker_thread_is_forwarded(self) -> None:
         await asyncio.to_thread(self.logger.error, "ошибка из потока")
         await self._drain()
@@ -96,6 +116,22 @@ class AdminLogHandlerTests(unittest.IsolatedAsyncioTestCase):
         handlers = [item for item in logging.getLogger().handlers if isinstance(item, AdminLogHandler)]
         self.assertEqual(len(handlers), 1)
         self.handler = handlers[0]
+
+
+class ShutdownMutesReporterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_stops_admin_reports(self) -> None:
+        from src.main import shutdown
+
+        notify = AsyncMock()
+        reporter = AdminErrorReporter(notify)
+        jobs = MagicMock()
+        broadcaster = MagicMock(stop=AsyncMock(), telegram_bot=None, vk_bot=None)
+
+        await shutdown(jobs, broadcaster, reporter)
+        await reporter.report(ErrorReport(source="aiogram", summary="Server disconnected"))
+
+        jobs.scheduler.shutdown.assert_called_once()
+        notify.assert_not_awaited()
 
 
 class RestoreLoggingTests(unittest.TestCase):
