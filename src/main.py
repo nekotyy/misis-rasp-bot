@@ -32,7 +32,7 @@ from src.ocr_import import OcrScheduleImporter, build_ocr_importer
 from src.parser import ScheduleParser
 from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
-from src.system_status import SystemAlertManager
+from src.system_status import DEFAULT_FAILURE_CONFIRMATIONS, SystemAlertManager
 from src.telegram_bot import build_dispatcher
 from src.vk_bot import build_vk_bot, vk_handler_timeout
 from src.vk_runtime import VkUpdateDispatcher
@@ -398,7 +398,9 @@ async def main() -> None:
         broker=broker,
     )
     error_reporter.set_notifier(broadcaster.notify_admins)
-    alert_manager = SystemAlertManager(db=db, broadcaster=broadcaster)
+    alert_manager = SystemAlertManager(
+        db=db, broadcaster=broadcaster, failure_confirmations=DEFAULT_FAILURE_CONFIRMATIONS
+    )
     jobs = ScheduleJobs(
         db=db,
         parser=parser,
@@ -492,7 +494,7 @@ async def main() -> None:
         except Exception as exc:
             logging.exception("Initial schedule sync failed. Background scheduler will retry later.")
             await alert_manager.report_component_status(
-                "schedule_site", False, str(exc), details="Первоначальная синхронизация расписания не удалась"
+                "schedule_sync", False, str(exc), details="Первоначальная синхронизация расписания не удалась"
             )
 
     # Первичная синхронизация идёт десятки минут (пауза между запросами к сайту),
