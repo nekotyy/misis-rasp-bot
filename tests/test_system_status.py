@@ -139,6 +139,61 @@ class TestSystemStatus(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(errors), 1)
         self.assertEqual(errors[0]["component"], "schedule_site")
 
+    async def test_single_failed_check_is_not_reported_when_confirmation_required(self) -> None:
+        """Моргнул DNS на минуту: одна неудачная проверка — ни «сбоя», ни «восстановления»."""
+        broadcaster = AsyncMock()
+        alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations={"schedule_site": 2}
+        )
+
+        await alert_manager.report_component_status(
+            "schedule_site", False, "ConnectError", details="[Errno -3] Temporary failure in name resolution"
+        )
+        await alert_manager.report_component_status("schedule_site", True)
+
+        broadcaster.notify_admins.assert_not_awaited()
+        self.assertEqual(await self.db.get_daily_errors(), [])
+
+    async def test_failure_confirmed_by_second_check_alerts_once_and_counts_from_first(self) -> None:
+        broadcaster = AsyncMock()
+        alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations={"schedule_site": 2}
+        )
+
+        await alert_manager.report_component_status("schedule_site", False, "ConnectError")
+        first_fail_at = alert_manager._states["schedule_site"]["first_fail_at"]
+        self.assertEqual(broadcaster.notify_admins.await_count, 0)
+
+        await alert_manager.report_component_status("schedule_site", False, "ConnectError")
+        await alert_manager.report_component_status("schedule_site", False, "ConnectError")
+        self.assertEqual(broadcaster.notify_admins.await_count, 1)
+        self.assertEqual(alert_manager._states["schedule_site"]["down_since"], first_fail_at)
+
+        await alert_manager.report_component_status("schedule_site", True)
+        self.assertEqual(broadcaster.notify_admins.await_count, 2)
+        self.assertIn("Служба восстановлена", broadcaster.notify_admins.await_args.kwargs["telegram_message"])
+
+    async def test_success_between_failures_resets_confirmation_counter(self) -> None:
+        broadcaster = AsyncMock()
+        alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations={"schedule_site": 2}
+        )
+
+        for ok in (False, True, False, True, False):
+            await alert_manager.report_component_status("schedule_site", ok, None if ok else "ConnectError")
+
+        broadcaster.notify_admins.assert_not_awaited()
+
+    async def test_components_without_confirmation_setting_alert_immediately(self) -> None:
+        broadcaster = AsyncMock()
+        alert_manager = SystemAlertManager(
+            db=self.db, broadcaster=broadcaster, failure_confirmations={"schedule_site": 2}
+        )
+
+        await alert_manager.report_component_status("database", False, "OperationalError")
+
+        self.assertEqual(broadcaster.notify_admins.await_count, 1)
+
     async def test_format_daily_errors_report(self) -> None:
         # Empty report
         empty_html = await format_daily_errors_report(self.db, html=True)

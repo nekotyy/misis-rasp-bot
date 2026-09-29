@@ -4,6 +4,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
+from src.notifier import VK_NOTIFICATION_KEYBOARD
 from src.vk_bot import (
     VK_ADMIN_COUNTER_SYNC_ROWS,
     VK_ADMIN_SECTIONS,
@@ -108,6 +109,36 @@ class TestVkSettingsKeyboard(unittest.TestCase):
         self.assertEqual(parsed["buttons"][0][0]["action"]["label"], "Кнопка 1")
         self.assertEqual(parsed["buttons"][0][1]["action"]["label"], "Кнопка 2")
         self.assertEqual(parsed["buttons"][1][0]["action"]["label"], "Кнопка 3")
+
+
+class TestVkNotificationKeyboard(unittest.TestCase):
+    """Кнопки под уведомлением об изменениях: одна кнопка в ряду, чтобы подписи не обрезались на телефоне."""
+
+    def setUp(self) -> None:
+        self.parsed = json.loads(VK_NOTIFICATION_KEYBOARD)
+
+    def test_every_button_sits_in_its_own_row(self) -> None:
+        for row in self.parsed["buttons"]:
+            self.assertEqual(len(row), 1, "Две кнопки в ряду: на мобильном подписи обрезаются")
+
+    def test_buttons_and_order_match_telegram_notification(self) -> None:
+        labels = [row[0]["action"]["label"] for row in self.parsed["buttons"]]
+        self.assertEqual(
+            labels,
+            [
+                "Расписание на сегодня",
+                "Расписание на завтра",
+                "Расписание на 2 дня",
+                "Расписание звонков",
+                "Найти расписание",
+            ],
+        )
+
+    def test_keyboard_is_inline_and_within_vk_inline_limits(self) -> None:
+        self.assertTrue(self.parsed["inline"])
+        # Лимиты inline-клавиатуры VK: до 6 рядов и до 10 кнопок; превышение — ошибка 911.
+        self.assertLessEqual(len(self.parsed["buttons"]), 6)
+        self.assertLessEqual(sum(len(row) for row in self.parsed["buttons"]), 10)
 
 
 class TestVkAdminKeyboardLimits(unittest.TestCase):

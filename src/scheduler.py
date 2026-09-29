@@ -504,7 +504,7 @@ class ScheduleJobs:
             logger.info("Task %s skipped because there are no active sources.", job_name)
             return
 
-        any_failed = False
+        failed: list[tuple[str, Exception]] = []
         attempted = 0
         for source in sources:
             if source.get("source_type") == "group" and source.get("schedule_id") is None:
@@ -520,18 +520,21 @@ class ScheduleJobs:
             try:
                 await worker(source, **kwargs)
             except Exception as exc:
-                any_failed = True
+                failed.append((str(source["source_title"]), exc))
                 logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
-                if self.alert_manager is not None:
-                    await self.alert_manager.report_component_status(
-                        "schedule_site",
-                        False,
-                        str(exc),
-                        details=f"Ошибка в задаче {job_name} для {source.get('source_title')}",
-                    )
 
-        if attempted and not any_failed and self.alert_manager is not None:
-            await self.alert_manager.report_component_status("schedule_site", True)
+        if not attempted or self.alert_manager is None:
+            return
+        # Одно сообщение за весь проход, и отдельным компонентом: живость сайта раз в 5 минут
+        # ("schedule_site") иначе тут же "восстанавливала" сбой синхронизации, а каждая
+        # упавшая группа в проходе давала свой алерт. Разовый сбой (моргнул DNS) админу
+        # не пишется: сбой объявляется, только если проход не удался и в следующий раз.
+        if failed:
+            first_title, first_error = failed[0]
+            details = f"Ошибка в задаче {job_name}: не удалось обновить {len(failed)} из {attempted} (например, {first_title})"
+            await self.alert_manager.report_component_status("schedule_sync", False, str(first_error), details=details)
+        else:
+            await self.alert_manager.report_component_status("schedule_sync", True)
 
     async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:
         delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)  # noqa: S311
