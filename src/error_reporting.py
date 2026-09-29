@@ -87,9 +87,14 @@ class AdminErrorReporter:
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._muted = False
 
     def set_notifier(self, notify: NotifyAdmins | None) -> None:
         self._notify = notify
+
+    def mute(self) -> None:
+        """Глушит отчёты на время остановки: обрыв polling и отмена задач при перезапуске — не сбой."""
+        self._muted = True
 
     # --- публичное API -------------------------------------------------
 
@@ -113,7 +118,7 @@ class AdminErrorReporter:
         )
 
     async def report(self, report: ErrorReport) -> None:
-        if _reporting.get() or self._notify is None:
+        if _reporting.get() or self._muted or self._notify is None:
             return
         token = _reporting.set(True)
         try:
@@ -132,7 +137,7 @@ class AdminErrorReporter:
 
     def report_in_background(self, report: ErrorReport) -> None:
         """Для синхронного кода (logging.Handler, loop exception handler)."""
-        if _reporting.get():
+        if _reporting.get() or self._muted:
             return
         loop = self._loop
         if loop is None or loop.is_closed():
@@ -228,6 +233,9 @@ class AdminLogHandler(logging.Handler):
         except Exception:
             message = str(record.msg)
         error = record.exc_info[1] if record.exc_info and record.exc_info[1] is not None else None
+        if isinstance(error, asyncio.CancelledError):
+            # Отменённая задача (остановка, таймаут) — штатное завершение, а не ошибка.
+            return
         summary = message if error is None else f"{message} — {short_error_text(error)}"
         if len(summary) > 600:
             summary = f"{summary[:597]}..."

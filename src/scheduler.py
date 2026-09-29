@@ -630,19 +630,16 @@ class ScheduleJobs:
                 source_key=source["source_key"],
             )
             if looks_like_stale_site_glitch(previous_current, snapshot):
+                # Админу это не шлём: живость сайта отдельно проверяет run_system_health_check
+                # (компонент "schedule_site"), и именно она тут же "восстанавливала" такой
+                # алерт — выходили пары "сбой/восстановлено" каждый час на каждый источник,
+                # который сайт отдаёт пустым.
                 logger.warning(
                     "Источник %s вернул пустое расписание при валидном кэше от %s — похоже на сбой сайта "
                     "после восстановления, не перезаписываю кэш.",
                     source["source_title"],
                     previous_current["fetched_at"],
                 )
-                if self.alert_manager is not None:
-                    await self.alert_manager.report_component_status(
-                        "schedule_site",
-                        False,
-                        "Сайт вернул пустое расписание при валидном кэше",
-                        details=f"Источник {source.get('source_title')}: подозрение на сбой сайта после восстановления",
-                    )
                 return None
 
         baseline = await self.db.get_latest_snapshot(

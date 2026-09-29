@@ -162,8 +162,12 @@ class TestSyncSource(unittest.IsolatedAsyncioTestCase):
         await jobs._sync_source(self.source)
 
         self.mock_broadcaster.broadcast.assert_not_called()
-        jobs.alert_manager.report_component_status.assert_awaited_once()
-        self.assertEqual(jobs.alert_manager.report_component_status.await_args.args[:2], ("schedule_site", False))
+        # Пустой ответ по одной группе — не сбой службы: админу алерт не шлём,
+        # иначе он получает пару "сбой/восстановлено" на каждый часовой проход.
+        jobs.alert_manager.report_component_status.assert_not_awaited()
+
+        await jobs._sync_source(self.source)
+        jobs.alert_manager.report_component_status.assert_not_awaited()
 
         current = await self.db.get_latest_snapshot("current", schedule_id=600)
         self.assertTrue(current["content"]["days"][0]["lessons"])
