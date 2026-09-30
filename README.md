@@ -1,5 +1,7 @@
 # Бот для просмотра расписания ОПК СТИ НИТУ МИСИС
 
+![Бот расписания ОПК СТИ НИТУ МИСИС, Старый Оскол](docs/media/banner-github.jpg)
+
 [![License](https://img.shields.io/badge/license-MIT-6B7280?style=for-the-badge)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.5.0-2563EB?style=for-the-badge)](pyproject.toml)
 [![CI](https://img.shields.io/github/actions/workflow/status/nekotyy/misis-rasp-bot/ci-cd.yml?branch=main&label=CI&style=for-the-badge)](https://github.com/nekotyy/misis-rasp-bot/actions/workflows/ci-cd.yml)
