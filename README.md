@@ -21,12 +21,11 @@
 [![VK](https://img.shields.io/badge/VK-%D0%9E%D1%82%D0%BA%D1%80%D1%8B%D1%82%D1%8C_%D0%B1%D0%BE%D1%82%D0%B0-4C75A3?style=for-the-badge&logo=vk&logoColor=white)](https://vk.ru/nekotyopk)
 
 <p>
-<a href="#-быстрый-старт-docker"><b>Быстрый старт</b></a> &nbsp;•&nbsp;
-<a href="#-возможности"><b>Возможности</b></a> &nbsp;•&nbsp;
-<a href="#-архитектура"><b>Архитектура</b></a> &nbsp;•&nbsp;
-<a href="#-деплой-и-прод"><b>Деплой</b></a> &nbsp;•&nbsp;
-<a href="#-переменные-окружения"><b>Переменные</b></a> &nbsp;•&nbsp;
-<a href="#-roadmap"><b>Roadmap</b></a> &nbsp;•&nbsp;
+<a href="#быстрый-старт-docker"><b>Быстрый старт</b></a> &nbsp;•&nbsp;
+<a href="#возможности"><b>Возможности</b></a> &nbsp;•&nbsp;
+<a href="#архитектура"><b>Архитектура</b></a> &nbsp;•&nbsp;
+<a href="#деплой-и-прод"><b>Деплой</b></a> &nbsp;•&nbsp;
+<a href="#переменные-окружения"><b>Переменные</b></a> &nbsp;•&nbsp;
 <a href="CONTRIBUTING.md"><b>Contributing</b></a> &nbsp;•&nbsp;
 <a href="SECURITY.md"><b>Security</b></a>
 </p>
@@ -34,41 +33,41 @@
 </div>
 
 <details>
-<summary><b>📑 Содержание</b></summary>
+<summary><b>Содержание</b></summary>
 
-- [📸 Превью](#-превью)
-- [✨ Возможности](#-возможности)
-- [📋 Требования](#-требования)
-- [🚀 Быстрый старт (Docker)](#-быстрый-старт-docker)
-- [💻 Локальный запуск (dev)](#-локальный-запуск-dev)
-- [🧩 Архитектура](#-архитектура)
-- [🧰 Стек](#-стек)
-- [📁 Структура проекта](#-структура-проекта)
-- [💾 Хранилища данных](#-хранилища-данных)
-- [🌍 Деплой и прод](#-деплой-и-прод)
-- [⚡ Прод-быстрый старт](#-прод-быстрый-старт)
-- [🔄 CI/CD](#-cicd)
-- [🔧 Переменные окружения](#-переменные-окружения)
-- [🔎 Как работает парсинг расписания](#-как-работает-парсинг-расписания)
-- [📷 Импорт расписания с фото (OCR через Gemini)](#-импорт-расписания-с-фото-ocr-через-gemini)
-- [🐇 Как работает RabbitMQ](#-как-работает-rabbitmq)
-- [⏰ Планировщик и фоновые задачи](#-планировщик-и-фоновые-задачи)
-- [🧮 Счетчики пар](#-счетчики-пар)
-- [📊 Веб-дашборд](#-веб-дашборд)
-- [🧭 Роуты веб-дашборда](#-роуты-веб-дашборда)
-- [🤖 Админка внутри ботов](#-админка-внутри-ботов)
-- [🩺 Надежность и отказоустойчивость](#-надежность-и-отказоустойчивость)
-- [💌 Автобекапы админу](#-автобекапы-админу)
-- [📝 Полезные команды](#-полезные-команды)
-- [✅ Рекомендации для прод-эксплуатации](#-рекомендации-для-прод-эксплуатации)
-- [🎯 Roadmap](#-roadmap)
-- [🤝 Contributing](#-contributing)
-- [🔐 Безопасность](#-безопасность)
-- [📄 Лицензия](#-лицензия)
+- [Превью](#превью)
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Быстрый старт (Docker)](#быстрый-старт-docker)
+- [Локальный запуск (dev)](#локальный-запуск-dev)
+- [Архитектура](#архитектура)
+- [Стек](#стек)
+- [Структура проекта](#структура-проекта)
+- [Хранилища данных](#хранилища-данных)
+- [Деплой и прод](#деплой-и-прод)
+- [Прод-быстрый старт](#прод-быстрый-старт)
+- [CI/CD](#cicd)
+- [Переменные окружения](#переменные-окружения)
+- [Как работает парсинг расписания](#как-работает-парсинг-расписания)
+- [Импорт расписания с фото (OCR через Gemini)](#импорт-расписания-с-фото-ocr-через-gemini)
+- [Как работает RabbitMQ](#как-работает-rabbitmq)
+- [Планировщик и фоновые задачи](#планировщик-и-фоновые-задачи)
+- [Счетчики пар](#счетчики-пар)
+- [Веб-дашборд](#веб-дашборд)
+- [Роуты веб-дашборда](#роуты-веб-дашборда)
+- [Админка внутри ботов](#админка-внутри-ботов)
+- [Надежность и отказоустойчивость](#надежность-и-отказоустойчивость)
+- [Автобекапы админу](#автобекапы-админу)
+- [Полезные команды](#полезные-команды)
+- [Рекомендации для прод-эксплуатации](#рекомендации-для-прод-эксплуатации)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Безопасность](#безопасность)
+- [Лицензия](#лицензия)
 
 </details>
 
-## 📸 Превью
+## Превью
 
 <table>
 <tr>
@@ -77,38 +76,38 @@
 </tr>
 </table>
 
-## ✨ Возможности
+## Возможности
 
 <table>
 <tr>
-<td width="50%" valign="top">📅 <b>Расписание по запросу</b><br>Группы, преподаватели и аудитории — прямо в Telegram и VK.</td>
-<td width="50%" valign="top">🔔 <b>Уведомления об изменениях</b><br>Бот следит за расписанием и сам рассылает замены подписчикам.</td>
+<td width="50%" valign="top"><b>Расписание по запросу</b><br>Группы, преподаватели и аудитории — прямо в Telegram и VK.</td>
+<td width="50%" valign="top"><b>Уведомления об изменениях</b><br>Бот следит за расписанием и сам рассылает замены подписчикам.</td>
 </tr>
 <tr>
-<td width="50%" valign="top">🧮 <b>Счётчики пар</b><br>Сколько пар по предмету уже прошло — считается автоматически.</td>
-<td width="50%" valign="top">📊 <b>Веб-дашборд</b><br>Метрики, управление ботом и веб-пользователями на FastAPI.</td>
+<td width="50%" valign="top"><b>Счётчики пар</b><br>Сколько пар по предмету уже прошло — считается автоматически.</td>
+<td width="50%" valign="top"><b>Веб-дашборд</b><br>Метрики, управление ботом и веб-пользователями на FastAPI.</td>
 </tr>
 <tr>
-<td width="50%" valign="top">📣 <b>Рассылки</b><br>Массовые и тестовые рассылки из админки.</td>
-<td width="50%" valign="top">📷 <b>Расписание с фото</b><br>Сайт недоступен? Админ присылает фото, а бот распознаёт его через Gemini.</td>
+<td width="50%" valign="top"><b>Рассылки</b><br>Массовые и тестовые рассылки из админки.</td>
+<td width="50%" valign="top"><b>Расписание с фото</b><br>Сайт недоступен? Админ присылает фото, а бот распознаёт его через Gemini.</td>
 </tr>
 <tr>
-<td width="50%" valign="top">🐇 <b>Очередь RabbitMQ</b><br>Справляется со всплесками уведомлений, но ядро работает и без неё.</td>
-<td width="50%" valign="top">🩺 <b>Отказоустойчивость</b><br>Падение одного канала — Telegram, VK или вебки — не останавливает остальные.</td>
+<td width="50%" valign="top"><b>Очередь RabbitMQ</b><br>Справляется со всплесками уведомлений, но ядро работает и без неё.</td>
+<td width="50%" valign="top"><b>Отказоустойчивость</b><br>Падение одного канала — Telegram, VK или вебки — не останавливает остальные.</td>
 </tr>
 <tr>
-<td width="50%" valign="top">💾 <b>SQLite в основе</b><br>Пользователи, подписки, снимки расписания и события в одной базе, миграции через alembic.</td>
-<td width="50%" valign="top">💌 <b>Автобэкапы админу</b><br>Раз в 2 дня база и JSON счётчиков приходят администратору в Telegram.</td>
+<td width="50%" valign="top"><b>SQLite в основе</b><br>Пользователи, подписки, снимки расписания и события в одной базе, миграции через alembic.</td>
+<td width="50%" valign="top"><b>Автобэкапы админу</b><br>Раз в 2 дня база и JSON счётчиков приходят администратору в Telegram.</td>
 </tr>
 </table>
 
-## 📋 Требования
+## Требования
 
 - Python 3.12+ (для локального запуска)
 - Docker / Docker Compose (для продового или простого запуска)
 - `uv` (рекомендуется для dev) или `pip`
 
-## 🚀 Быстрый старт (Docker)
+## Быстрый старт (Docker)
 
 1. Скопировать пример окружения:
 
@@ -133,7 +132,7 @@ docker compose up -d --build
 http://server-ip:8080
 ```
 
-## 💻 Локальный запуск (dev)
+## Локальный запуск (dev)
 
 1. Скопировать пример окружения:
 
@@ -161,19 +160,19 @@ uv run --frozen -m src.main
 uv run --frozen uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 ```
 
-## 🧩 Архитектура
+## Архитектура
 
 ```mermaid
 flowchart LR
-    student(["🎓 Студент<br/>Telegram · VK"])
-    bots["🤖 Боты<br/>aiogram · vkbottle"]
-    site[("🌐 Сайт<br/>расписания")]
-    parser["🔎 Парсер и планировщик<br/>httpx · APScheduler"]
-    db[("💾 SQLite<br/>пользователи · снимки · события")]
-    notifier["🔔 Уведомления"]
-    mq{{"🐇 RabbitMQ"}}
-    web["📊 Веб-дашборд<br/>FastAPI"]
-    ocr["📷 Фото расписания<br/>Gemini OCR"]
+    student(["Студент<br/>Telegram · VK"])
+    bots["Боты<br/>aiogram · vkbottle"]
+    site[("Сайт<br/>расписания")]
+    parser["Парсер и планировщик<br/>httpx · APScheduler"]
+    db[("SQLite<br/>пользователи · снимки · события")]
+    notifier["Уведомления"]
+    mq{{"RabbitMQ"}}
+    web["Веб-дашборд<br/>FastAPI"]
+    ocr["Фото расписания<br/>Gemini OCR"]
 
     student <--> bots
     bots <--> db
@@ -234,21 +233,21 @@ flowchart LR
 
 </details>
 
-## 🧰 Стек
+## Стек
 
 | Слой | Технологии |
 | :-- | :-- |
-| 🐍 **Язык** | ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white) |
-| 🤖 **Боты** | ![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=flat-square&logo=telegram&logoColor=white) ![vkbottle](https://img.shields.io/badge/vkbottle-4C75A3?style=flat-square&logo=vk&logoColor=white) |
-| 🌐 **Веб** | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2094F3?style=flat-square) |
-| 💾 **Данные** | ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white) ![aiosqlite](https://img.shields.io/badge/aiosqlite-003B57?style=flat-square) ![Alembic](https://img.shields.io/badge/Alembic-555555?style=flat-square) |
-| 📨 **Очереди** | ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?style=flat-square&logo=rabbitmq&logoColor=white) ![aio-pika](https://img.shields.io/badge/aio--pika-FF6600?style=flat-square) |
-| ⏰ **Планировщик** | ![APScheduler](https://img.shields.io/badge/APScheduler-555555?style=flat-square) |
-| 🔎 **Парсинг** | ![httpx](https://img.shields.io/badge/httpx-0B7285?style=flat-square) ![beautifulsoup4](https://img.shields.io/badge/beautifulsoup4-4B8BBE?style=flat-square) |
-| 🔧 **Конфигурация** | ![python-dotenv](https://img.shields.io/badge/python--dotenv-ECD53F?style=flat-square&logo=dotenv&logoColor=black) |
-| 📦 **Инфраструктура** | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white) ![nginx](https://img.shields.io/badge/nginx-009639?style=flat-square&logo=nginx&logoColor=white) — nginx для публичного reverse proxy по желанию |
+| **Язык** | ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat-square&logo=python&logoColor=white) |
+| **Боты** | ![aiogram](https://img.shields.io/badge/aiogram-2C5BB4?style=flat-square&logo=telegram&logoColor=white) ![vkbottle](https://img.shields.io/badge/vkbottle-4C75A3?style=flat-square&logo=vk&logoColor=white) |
+| **Веб** | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2094F3?style=flat-square) |
+| **Данные** | ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white) ![aiosqlite](https://img.shields.io/badge/aiosqlite-003B57?style=flat-square) ![Alembic](https://img.shields.io/badge/Alembic-555555?style=flat-square) |
+| **Очереди** | ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?style=flat-square&logo=rabbitmq&logoColor=white) ![aio-pika](https://img.shields.io/badge/aio--pika-FF6600?style=flat-square) |
+| **Планировщик** | ![APScheduler](https://img.shields.io/badge/APScheduler-555555?style=flat-square) |
+| **Парсинг** | ![httpx](https://img.shields.io/badge/httpx-0B7285?style=flat-square) ![beautifulsoup4](https://img.shields.io/badge/beautifulsoup4-4B8BBE?style=flat-square) |
+| **Конфигурация** | ![python-dotenv](https://img.shields.io/badge/python--dotenv-ECD53F?style=flat-square&logo=dotenv&logoColor=black) |
+| **Инфраструктура** | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white) ![nginx](https://img.shields.io/badge/nginx-009639?style=flat-square&logo=nginx&logoColor=white) — nginx для публичного reverse proxy по желанию |
 
-## 📁 Структура проекта
+## Структура проекта
 
 ```text
 src/
@@ -278,7 +277,7 @@ deploy/nginx/
   default.conf.template  шаблон nginx-конфига
 ```
 
-## 💾 Хранилища данных
+## Хранилища данных
 
 ### SQLite
 
@@ -301,7 +300,7 @@ JSON в проекте используется там, где он удобен
 - `storage/lesson_counters.json` или `runtime/lesson_counters.json` — конфигурация счетчиков пар;
 - `WEB_USERS_JSON_IMPORT_PATH` — optional путь к файлу для одноразового импорта веб-пользователей в SQLite, если нужно перенести существующие аккаунты.
 
-## 🌍 Деплой и прод
+## Деплой и прод
 
 Обычный запуск:
 
@@ -376,7 +375,7 @@ docker compose restart nginx
 4. Не оставлять тестовые пароли и секреты из `.env.example`.
 5. После выдачи сертификатов перезапустить `nginx`.
 
-## ⚡ Прод-быстрый старт
+## Прод-быстрый старт
 
 1. Подготовить `.env` с секретами и ID администратора.
 2. Убедиться, что `runtime/` лежит на постоянном диске.
@@ -395,7 +394,7 @@ docker compose logs -f bot
 
 Если нужен публичный дашборд через `nginx`, включить профиль `nginx` и проверить сертификаты.
 
-## 🔄 CI/CD
+## CI/CD
 
 В GitHub Actions уже настроены два базовых workflow:
 
@@ -431,7 +430,7 @@ docker compose up -d --build --remove-orphans
 - убедиться, что `docker compose up -d --build` вручную уже работает;
 - настроить доступ сервера к GitHub для `git pull`.
 
-## 🔧 Переменные окружения
+## Переменные окружения
 
 > Подробные комментарии уже есть в `.env.example`, а здесь — краткая карта.
 
@@ -500,7 +499,7 @@ docker compose up -d --build --remove-orphans
 
 </details>
 
-## 🔎 Как работает парсинг расписания
+## Как работает парсинг расписания
 
 > Как бот забирает расписание с сайта колледжа, сравнивает снимки и решает, кого и о чём уведомить.
 
@@ -712,7 +711,7 @@ docker compose exec bot python -m scripts.seed_pending_groups storage/groups_202
 
 </details>
 
-## 📷 Импорт расписания с фото (OCR через Gemini)
+## Импорт расписания с фото (OCR через Gemini)
 
 > Резервный источник на случай, когда сайт расписания недоступен: админ присылает фото, бот распознаёт его через Gemini и обновляет расписание.
 
@@ -900,7 +899,7 @@ JSON от Gemini обычно чистый, но всё равно проход�
 
 </details>
 
-## 🐇 Как работает RabbitMQ
+## Как работает RabbitMQ
 
 > Очереди для уведомлений и подсчёта пар: producer, consumer, ack/retry и прямая доставка как запасной путь.
 
@@ -946,7 +945,7 @@ Consumer:
 
 </details>
 
-## ⏰ Планировщик и фоновые задачи
+## Планировщик и фоновые задачи
 
 > Фоновые задачи на APScheduler: снимки расписания, сравнение, подсчёт пар и очистка старых данных.
 
@@ -969,7 +968,7 @@ Consumer:
 
 </details>
 
-## 🧮 Счетчики пар
+## Счетчики пар
 
 > Сколько пар по каждому предмету уже прошло: конфиг в JSON, автоматический подсчёт, валидация и быстрое добавление списком.
 
@@ -1028,7 +1027,7 @@ Consumer:
 
 </details>
 
-## 📊 Веб-дашборд
+## Веб-дашборд
 
 > Панель администратора на FastAPI: метрики, счётчики пар, управление ботом и Gemini, веб-пользователи.
 
@@ -1102,7 +1101,7 @@ OpenAPI и `/docs` отключены, чтобы не публиковать в
 
 </details>
 
-## 🧭 Роуты веб-дашборда
+## Роуты веб-дашборда
 
 > Справочник маршрутов: страницы, аутентификация, метрики, счётчики пар, веб-пользователи, управление ботом.
 
@@ -1151,7 +1150,7 @@ OpenAPI и `/docs` отключены, чтобы не публиковать в
 
 </details>
 
-## 🤖 Админка внутри ботов
+## Админка внутри ботов
 
 > Управление прямо из Telegram и VK: мониторинг, пользователи и рассылки, счётчики пар, служебные действия.
 
@@ -1177,7 +1176,7 @@ Telegram доступен только мониторинг, перепарси�
 
 </details>
 
-## 🩺 Надежность и отказоустойчивость
+## Надежность и отказоустойчивость
 
 > Что заложено в проект, чтобы сбой одного канала не ронял остальные, и как он ведёт себя при отказах.
 
@@ -1207,7 +1206,7 @@ Telegram доступен только мониторинг, перепарси�
 
 </details>
 
-## 💌 Автобекапы админу
+## Автобекапы админу
 
 Каждые 2 дня бот отправляет администратору в Telegram два файла:
 
@@ -1216,7 +1215,7 @@ Telegram доступен только мониторинг, перепарси�
 
 Требуются `TELEGRAM_BOT_TOKEN` и `ADMIN_TELEGRAM_ID`. Если файл не найден, в лог пишется предупреждение.
 
-## 📝 Полезные команды
+## Полезные команды
 
 Сборка и запуск:
 
@@ -1252,7 +1251,7 @@ python -m compileall src web_configurator tests
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## ✅ Рекомендации для прод-эксплуатации
+## Рекомендации для прод-эксплуатации
 
 - держать `runtime/` на постоянном диске;
 - регулярно бэкапить `runtime/bot.db`;
@@ -1263,15 +1262,15 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - для внешнего доступа к дашборду использовать HTTPS и reverse proxy;
 - перед выкладкой проверять `docker compose config`, `compileall` и базовые unit tests.
 
-## 🎯 Roadmap
+## Roadmap
 
 - расширить настройки расписания бэкапов из `.env`.
 
-## 🤝 Contributing
+## Contributing
 
 Правила участия и dev-setup описаны в [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 🔐 Безопасность
+## Безопасность
 
 - Веб-дашборд запускается без `/docs` и `/openapi.json` в продовой конфигурации.
 - Сессии веб-дашборда подписаны, ограничены по времени и используют защитные cookie-флаги.
@@ -1280,7 +1279,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 - Храните `.env` и TLS-ключи вне публичного доступа.
 - Используйте уникальные секреты и пароли для `WEB_CONFIG_SECRET` и суперпользователя.
 
-## 📄 Лицензия
+## Лицензия
 
 Проект распространяется по лицензии MIT. Подробнее см. [LICENSE](LICENSE).
 
@@ -1292,6 +1291,6 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 Вопросы и предложения: [Telegram](https://t.me/nekoty) · [VK](https://vk.ru/nekotyy)
 
-Если проект оказался полезным — поставь ⭐ репозиторию
+Если проект оказался полезным — поставь звезду репозиторию
 
 </div>
