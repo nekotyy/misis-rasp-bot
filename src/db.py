@@ -837,6 +837,29 @@ class Database:
             for row in rows
         ]
 
+    async def get_subscription_rows(self) -> list[dict[str, int | str | None]]:
+        """Подписки пользователей на группы и преподавателей — сырьё для статистики по курсам."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT platform, user_id, subscription_type, subscription_key, subscription_title, group_name
+                FROM users
+                WHERE subscription_type IN ('group', 'teacher')
+                """
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "platform": row[0],
+                "user_id": row[1],
+                "subscription_type": row[2],
+                "subscription_key": row[3],
+                "subscription_title": row[4],
+                "group_name": row[5],
+            }
+            for row in rows
+        ]
+
     async def get_active_sources(self) -> list[dict]:
         async with self._connect() as db:
             cursor = await db.execute(

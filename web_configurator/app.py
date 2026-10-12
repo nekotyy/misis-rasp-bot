@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src.config import Settings
+from src.course_stats import Audience, CourseStatsReport, GroupLine, collect_course_stats
 from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
@@ -250,6 +251,7 @@ PERMISSION_DESCRIPTIONS = {
     "stats_schedule": "Последний парсинг, активные группы и журнал изменений расписания по всем источникам.",
     "stats_delivery": "Сводка по доставке сообщений за сегодня и за всё время: RabbitMQ, direct fallback, Telegram и VK.",
     "stats_lesson_counters": "Метрики счетчиков пар: сколько настроено, что было учтено сегодня и какой сейчас прогресс.",
+    "stats_courses": "Отдельная страница со статистикой по курсам: сколько студентов бота на 1–4 курсах, в сумме и сколько преподавателей.",
     "config_lesson_counters": "Доступ к настройке счетчиков пар: группы, дисциплины, преподаватели, карточный режим и JSON-режим.",
     "manage_bot_admin": "Управление ботом из вебки: рассылки, тестовая доставка, перепарсинг и сохранение эталонов.",
     "manage_web_users": "Создание веб-пользователей, изменение их прав и удаление лишних учеток.",
@@ -382,6 +384,12 @@ async def api_metrics(user: Annotated[WebUser, Depends(current_user)]):
         schedule_url=fresh_settings.schedule_url,
     )
     return filter_metrics_for_user(metrics, user)
+
+
+@app.get("/courses", response_class=HTMLResponse)
+async def courses_page(user: Annotated[WebUser, Depends(require("stats_courses"))]) -> str:
+    db = await get_db()
+    return layout("Статистика по курсам", courses_html(await collect_course_stats(db)), user)
 
 
 @app.get("/lessons", response_class=HTMLResponse)
@@ -1048,6 +1056,111 @@ async def bot_control_html(report: str = "") -> str:
     """
 
 
+def courses_html(report: CourseStatsReport) -> str:
+    def stat_card(label: str, value: object, note: str) -> str:
+        return f"<div class='card'><span>{html_escape(label)}</span><b>{html_escape(value)}</b><small>{html_escape(note)}</small></div>"
+
+    def platforms_note(audience: Audience) -> str:
+        return f"TG {audience.tg_personal} / VK {audience.vk_personal}"
+
+    total = report.courses_audience
+    teachers = report.teachers
+    course_cards = "".join(
+        stat_card(
+            f"{course.course} курс",
+            course.audience.personal,
+            f"набор {course.admission_year} · {platforms_note(course.audience)} · групп {len(course.groups)}",
+        )
+        for course in report.courses
+    )
+    summary_cards = "".join(
+        [
+            stat_card("Всего за 4 курса", total.personal, f"{platforms_note(total)} · групп {report.courses_groups}"),
+            stat_card(
+                "Преподаватели",
+                teachers.audience.personal,
+                f"{platforms_note(teachers.audience)} · на сайте {teachers.known}",
+            ),
+            stat_card("Всего с преподавателями", report.everyone_personal, "личные аккаунты TG и VK"),
+            stat_card("Бесед и групповых чатов", total.chats + teachers.audience.chats, "считаются отдельно от студентов"),
+        ]
+    )
+
+    summary_rows = "".join(
+        f"<tr><td><b>{course.course} курс</b></td><td>{course.admission_year}</td><td><b>{course.audience.personal}</b></td>"
+        f"<td>{course.audience.tg_personal}</td><td>{course.audience.vk_personal}</td><td>{course.audience.chats}</td>"
+        f"<td>{len(course.groups)}</td><td>{course.groups_with_audience}</td></tr>"
+        for course in report.courses
+    )
+    summary_rows += (
+        f"<tr><td><b>Итого за 4 курса</b></td><td>—</td><td><b>{total.personal}</b></td><td>{total.tg_personal}</td>"
+        f"<td>{total.vk_personal}</td><td>{total.chats}</td><td>{report.courses_groups}</td>"
+        f"<td>{sum(course.groups_with_audience for course in report.courses)}</td></tr>"
+        f"<tr><td><b>Преподаватели</b></td><td>—</td><td><b>{teachers.audience.personal}</b></td>"
+        f"<td>{teachers.audience.tg_personal}</td><td>{teachers.audience.vk_personal}</td><td>{teachers.audience.chats}</td>"
+        f"<td>—</td><td>—</td></tr>"
+    )
+    teachers_note = (
+        f"Преподаватели: в справочнике сайта {teachers.known}, из них с подписчиками в боте — {teachers.with_subscribers}."
+    )
+
+    def group_table(lines: list[GroupLine]) -> str:
+        rows = "".join(
+            f"<tr><td>{html_escape(line.name)}</td><td><b>{line.audience.personal}</b></td>"
+            f"<td>{line.audience.tg_personal}</td><td>{line.audience.vk_personal}</td><td>{line.audience.chats}</td></tr>"
+            for line in lines
+        )
+        return (
+            "<div class='table-wrap'><table><tr><th>Группа</th><th>Студентов</th><th>TG</th><th>VK</th><th>Бесед</th></tr>"
+            f"{rows}</table></div>"
+        )
+
+    group_blocks = "".join(
+        f"""
+        <details class="nested-details">
+          <summary class="collapse-title"><h3>{course.course} курс · набор {course.admission_year}</h3><span class="chip">групп: {len(course.groups)}</span><span class="collapse-hint">Развернуть</span></summary>
+          {group_table(course.groups) if course.groups else "<div class='empty-state small'>Групп этого курса пока нет в каталоге.</div>"}
+        </details>
+        """
+        for course in report.courses
+    )
+    ignored_block = ""
+    if report.ignored_groups:
+        ignored_block = f"""
+        <details class="nested-details">
+          <summary class="collapse-title"><h3>Не учтено</h3><span class="chip">групп: {len(report.ignored_groups)}</span><span class="collapse-hint">Развернуть</span></summary>
+          <p class="muted" style="margin:0 12px 12px">Выпустившиеся, ещё не набранные группы и названия не вида «ИСП-25-1» / «ТЭС-26» в курсы не входят.</p>
+          {group_table(report.ignored_groups)}
+        </details>
+        """
+
+    return f"""
+    <section class="page-head compact-head">
+      <div>
+        <p class="eyebrow">Аудитория</p>
+        <h2>Статистика по курсам</h2>
+        <p>Курс определяется по году набора в названии группы: осенью 2026 года «-26» — 1 курс, «-25» — 2 курс и так далее до 4-го. Студенты — личные аккаунты бота (Telegram и VK) с подпиской на группу, беседы считаются отдельно.</p>
+      </div>
+      <div class="head-chips">
+        <span class="chip">Учебный год {html_escape(report.academic_year_label)}</span>
+        <span class="chip">Данные на {html_escape(report.today.strftime('%d.%m.%Y'))}</span>
+      </div>
+    </section>
+    <section class="dashboard-block"><div class="metric-grid">{course_cards}</div></section>
+    <section class="dashboard-block"><div class="metric-grid compact">{summary_cards}</div></section>
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('users')}</span><h3>Сводка</h3></div>
+      <div class="table-wrap"><table><tr><th>Категория</th><th>Набор</th><th>Студентов</th><th>TG</th><th>VK</th><th>Бесед</th><th>Групп</th><th>С подписчиками</th></tr>{summary_rows}</table></div>
+      <p class="muted summary-gap">{html_escape(teachers_note)}</p>
+    </section>
+    <section class="panel">
+      <div class="panel-title"><span class="icon">{icon('layers')}</span><h3>Группы по курсам</h3></div>
+      {group_blocks}
+      {ignored_block}
+    </section>
+    """
+
+
 async def gemini_status_html() -> str:
     db = await get_db()
     snapshot = await db.get_ocr_status_snapshot()
@@ -1273,6 +1386,8 @@ def delete_form(login: str) -> str:
 
 def layout(title: str, content: str, user: WebUser) -> str:
     nav_items = [nav_link("/", "Метрики", "dashboard")]
+    if can(user, "stats_courses"):
+        nav_items.append(nav_link("/courses", "Курсы", "users"))
     if can(user, "config_lesson_counters"):
         nav_items.append(nav_link("/lessons", "Счетчики пар", "counter"))
     if can(user, "manage_bot_admin"):
