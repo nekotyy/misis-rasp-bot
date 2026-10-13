@@ -13,6 +13,46 @@ from src.db import Database
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
 
 
+async def wait_for_teacher_syncs(jobs, timeout: float = 15.0) -> None:
+    """Дожидается, пока отложенные пересчёты преподов (`_schedule_teacher_sync`) отработают целиком.
+
+    Вместо фиксированного `asyncio.sleep(...)`: пересчёт — это debounce-таймер плюс несколько
+    обращений к SQLite, и его длительность зависит от машины. `IsolatedAsyncioTestCase` гоняет
+    цикл в debug-режиме asyncio, где на Windows каждое такое обращение в разы медленнее, чем
+    на Linux CI, — любой "запас" по времени рано или поздно оказывался гонкой: проверка шла
+    раньше рассылки, а недоработавшая задача ещё держала файл SQLite открытым.
+    """
+
+    async def drain() -> None:
+        while pending := [task for task in jobs._teacher_notify_tasks().values() if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    await asyncio.wait_for(drain(), timeout)
+
+
+async def cancel_teacher_syncs(jobs) -> None:
+    """Страховка для tearDown: не оставляет фоновых пересчётов, держащих файл SQLite.
+
+    На Windows открытый файл БД не удалить (`PermissionError: [WinError 32]` при очистке
+    временной папки), а упавшая раньше времени проверка оставляла такую задачу в полёте.
+    """
+    pending = [task for task in jobs._teacher_notify_tasks().values() if not task.done()]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def wait_until(predicate, timeout: float = 15.0, interval: float = 0.01) -> bool:
+    """Опрашивает `predicate`, пока он не станет истинным; False — если вышло время."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(interval)
+    return True
+
+
 class TestSyncSource(unittest.IsolatedAsyncioTestCase):
     """Тесты для _sync_source — центрального цикла синхронизации."""
 
@@ -389,6 +429,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         self._tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self._tmp.name) / "test_teacher_cascade.db")
         await self.db.initialize()
+        self._jobs: list = []
 
         self.mock_broadcaster = AsyncMock()
         self.mock_broadcaster.broadcast = AsyncMock()
@@ -439,14 +480,21 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         }
 
     async def asyncTearDown(self) -> None:
+        for jobs in self._jobs:
+            await cancel_teacher_syncs(jobs)
         self._tmp.cleanup()
 
-    async def test_teacher_matching_new_group_lesson_gets_notified_immediately(self) -> None:
+    def _make_jobs(self):
         from src.scheduler import ScheduleJobs
 
         jobs = ScheduleJobs.__new__(ScheduleJobs)
         jobs.db = self.db
         jobs.broadcaster = self.mock_broadcaster
+        self._jobs.append(jobs)
+        return jobs
+
+    async def test_teacher_matching_new_group_lesson_gets_notified_immediately(self) -> None:
+        jobs = self._make_jobs()
 
         new_group_snapshot = ScheduleSnapshot(
             group_name="ИСП-25-1",
@@ -458,7 +506,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
 
         with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
             await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new")
-            await asyncio.sleep(0.2)
+            await wait_for_teacher_syncs(jobs)
 
         self.assertEqual(self.mock_broadcaster.broadcast.await_count, 2)
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
@@ -476,8 +524,6 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         Это работает и без фикса на "замену/удаление" из прошлого коммита: механизм с
         самого начала сканирует НОВЫЙ снимок изменившейся группы и сразу находит там ФИО
         препода — баланс со старым снимком нужен только для обратного случая (пара исчезла)."""
-        from src.scheduler import ScheduleJobs
-
         # У Иванова уже 2 пары — обе в ИСП-25-1 (переопределяем однопарный снимок
         # из общего asyncSetUp).
         two_lesson_group_snapshot = ScheduleSnapshot(
@@ -517,9 +563,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
             source_type="group", source_key="group:102", source_title="МТО-25", source_url="rasp:102",
         )
 
-        jobs = ScheduleJobs.__new__(ScheduleJobs)
-        jobs.db = self.db
-        jobs.broadcaster = self.mock_broadcaster
+        jobs = self._make_jobs()
 
         new_mto_snapshot = ScheduleSnapshot(
             group_name="МТО-25", fetched_at=datetime(2026, 9, 14, 9, 0, 0),
@@ -530,7 +574,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
 
         with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
             await jobs.apply_snapshot(mto_source, new_mto_snapshot, "hash_mto_new")
-            await asyncio.sleep(0.2)
+            await wait_for_teacher_syncs(jobs)
 
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertIn("teacher:5", notified_keys, "Иванов должен узнать о новой (третьей) паре из другой группы")
@@ -541,11 +585,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         self.assertEqual(sorted(item["number"] for item in lessons), [1, 2, 3])
 
     async def test_unrelated_teacher_is_not_notified(self) -> None:
-        from src.scheduler import ScheduleJobs
-
-        jobs = ScheduleJobs.__new__(ScheduleJobs)
-        jobs.db = self.db
-        jobs.broadcaster = self.mock_broadcaster
+        jobs = self._make_jobs()
 
         new_group_snapshot = ScheduleSnapshot(
             group_name="ИСП-25-1",
@@ -560,6 +600,10 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         self.assertEqual(self.mock_broadcaster.broadcast.await_count, 1)
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertEqual(notified_keys, {"group:101"})
+        # Рассылка препода отложена на debounce, так что одной проверки рассылки сразу после
+        # apply_snapshot мало: она прошла бы, даже если бы постороннего препода всё-таки
+        # поставили в очередь. Незапланированный пересчёт виден по отложенной задаче.
+        self.assertEqual(jobs._teacher_notify_tasks(), {}, "Посторонний препод не должен попадать в очередь пересчёта")
 
     async def test_teacher_replaced_on_an_already_loaded_day_still_gets_notified(self) -> None:
         """Регресс: замену препода на уже загруженный день (например, повторным фото/OCR)
@@ -567,8 +611,6 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
         видел только новый снимок группы — а препод, которого заменили, из него уже пропал,
         так что раньше его личное расписание вообще не пересчитывалось и он не узнавал,
         что его пары больше нет, хотя это тоже реальное изменение из-за той же группы."""
-        from src.scheduler import ScheduleJobs
-
         await self.db.upsert_user(
             "telegram", 43, "prep2", "Петров П.П.",
             subscription_type="teacher", subscription_key="teacher:6",
@@ -603,9 +645,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
             source_type="group", source_key="group:101", source_title="ИСП-25-1", source_url="rasp:101",
         )
 
-        jobs = ScheduleJobs.__new__(ScheduleJobs)
-        jobs.db = self.db
-        jobs.broadcaster = self.mock_broadcaster
+        jobs = self._make_jobs()
 
         # Замена: пара №1 теперь у Сидорова, пара №2 у Петрова осталась как была.
         new_group_snapshot = ScheduleSnapshot(
@@ -618,7 +658,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
 
         with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.05):
             await jobs.apply_snapshot(self.group_source, new_group_snapshot, "hash_new3")
-            await asyncio.sleep(0.2)
+            await wait_for_teacher_syncs(jobs)
 
         notified_keys = {call.kwargs.get("subscription_key") for call in self.mock_broadcaster.broadcast.await_args_list}
         self.assertIn("teacher:6", notified_keys, "Петров, которого частично заменили, должен узнать об изменении")
@@ -656,6 +696,7 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         self.mock_broadcaster = AsyncMock()
         self.mock_broadcaster.broadcast = AsyncMock()
         self.today_iso = datetime.now().date().isoformat()
+        self._jobs: list = []
 
         # Студенты — иначе группы не попадут в get_active_sources() (он строится
         # из подписок пользователей, а не из самого факта существования группы).
@@ -697,6 +738,8 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
             )
 
     async def asyncTearDown(self) -> None:
+        for jobs in self._jobs:
+            await cancel_teacher_syncs(jobs)
         self._tmp.cleanup()
 
     def _make_jobs(self):
@@ -708,6 +751,7 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         jobs.alert_manager = None
         jobs.request_delay_seconds = 0.0
         jobs.request_jitter_seconds = 0.0
+        self._jobs.append(jobs)
         return jobs
 
     async def test_scheduling_the_same_teacher_twice_coalesces_into_one_sync(self) -> None:
@@ -729,7 +773,7 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
             jobs._schedule_teacher_sync(teacher_source)
             second_task = jobs._teacher_notify_tasks()["teacher:5"]
 
-            await asyncio.sleep(0.2)
+            await wait_for_teacher_syncs(jobs)
 
         self.assertIsNot(first_task, second_task)
         self.assertTrue(first_task.cancelled(), "Первая отложенная задача должна быть отменена вторым попаданием")
@@ -756,7 +800,7 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
 
         with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.2):
             await jobs._run_for_active_sources("sync", jobs._sync_source)
-            await asyncio.sleep(2.0)
+            await wait_for_teacher_syncs(jobs)
 
         self.assertTrue(self.mock_broadcaster.broadcast.await_args_list, "Препод должен получить хотя бы одно уведомление")
         teacher_current = await self.db.get_latest_snapshot("current", source_key="teacher:5")
@@ -791,30 +835,51 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
             ])],
         )
 
+        # "Я-99" изображает медленный/несвязанный источник где-то дальше по циклу. Он не
+        # завершится, пока тест сам его не отпустит, — так "цикл ещё идёт" не зависит от
+        # скорости машины (раньше это держалось на sleep(2.0) против sleep(0.5) в тесте).
+        release_slow_source = asyncio.Event()
+
         async def slow_parse(schedule_id):
             if schedule_id == 101:
                 return snapshot_a, "hash_a"
             if schedule_id == 102:
                 return ScheduleSnapshot(group_name="МТО-25", fetched_at=datetime(2026, 9, 14, 8, 0, 0), days=[]), "hash_empty"
-            # "Я-99" изображает медленный/несвязанный источник где-то дальше по циклу.
-            await asyncio.sleep(2.0)
+            await release_slow_source.wait()
             return ScheduleSnapshot(group_name="Я-99", fetched_at=datetime.now(), days=[]), "hash_slow_new"
 
         jobs.parser = MagicMock()
         jobs.parser.parse = AsyncMock(side_effect=slow_parse)
 
-        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.1):
-            run_task = asyncio.create_task(jobs._run_for_active_sources("sync", jobs._sync_source))
-            await asyncio.sleep(0.5)  # ИСП-25-1 уже применилась и таймер препода уже сработал, "Я-99" ещё тормозит
+        async def sync_groups_only(source, **kwargs):
+            # Препод сам тоже "активный источник" и стоит в списке цикла сразу за ИСП-25-1: если
+            # дать циклу пересчитать и его, уведомление пришлёт сам цикл, а не debounce — и тест
+            # проходил бы при любой реализации каскада, даже при debounce в минуту. Поэтому
+            # препода в цикле пропускаем: пересчитать его здесь может только каскад от группы.
+            if source["source_type"] != "teacher":
+                await jobs._sync_source(source, **kwargs)
 
-            teacher_broadcasts = [
+        def teacher_broadcasts() -> list:
+            return [
                 call for call in self.mock_broadcaster.broadcast.await_args_list
                 if call.kwargs.get("subscription_key") == "teacher:5"
             ]
-            self.assertEqual(len(teacher_broadcasts), 1, "Уведомление не должно ждать конца всего цикла")
-            self.assertFalse(run_task.done(), "На этот момент цикл синхронизации ещё не должен был закончиться")
 
-            await run_task
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.1):
+            run_task = asyncio.create_task(jobs._run_for_active_sources("sync", sync_groups_only))
+            try:
+                # Пока "Я-99" не отпущен, цикл завершиться не может: уведомление препода обязано
+                # прийти раньше этого — иначе оно ждёт конца цикла, и ожидание выйдет по таймауту.
+                notified = await wait_until(lambda: len(teacher_broadcasts()) >= 1)
+                self.assertTrue(notified, "Уведомление не должно ждать конца всего цикла")
+                self.assertFalse(run_task.done(), "На этот момент цикл синхронизации ещё не должен был закончиться")
+            finally:
+                release_slow_source.set()
+                await run_task
+
+            await wait_for_teacher_syncs(jobs)
+
+        self.assertEqual(len(teacher_broadcasts()), 1, "Препод должен получить ровно одно уведомление")
 
 
 class RunSystemHealthCheckTests(unittest.IsolatedAsyncioTestCase):

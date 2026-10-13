@@ -35,6 +35,7 @@ from aiogram.types import (
 )
 
 from src.config import Settings
+from src.course_stats import collect_course_stats, format_course_stats_report
 from src.db import Database
 from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
@@ -376,6 +377,7 @@ ADMIN_SECTION_KEYBOARDS: dict[str, InlineKeyboardMarkup] = {
         inline_keyboard=[
             [_admin_button("Статус", "status"), _admin_button("Ошибки за день", "daily_errors")],
             [_admin_button("Последнее изменение", "last_change"), _admin_button("Информация по группам", "group_info")],
+            [_admin_button("Статистика по курсам", "course_stats")],
             _ADMIN_BACK_TO_MENU_ROW,
         ]
     ),
@@ -415,7 +417,7 @@ ADMIN_SECTION_KEYBOARDS: dict[str, InlineKeyboardMarkup] = {
 }
 
 ADMIN_SECTION_TEXTS: dict[str, str] = {
-    "monitor": "<b>Мониторинг</b>\nСтатус бота, ошибки, последние изменения и группы.",
+    "monitor": "<b>Мониторинг</b>\nСтатус бота, ошибки, последние изменения, группы и статистика по курсам.",
     "schedule": "<b>Расписание и OCR</b>\nПерепарсинг с сайта, эталоны и загрузка расписания по фото или JSON.",
     "counters": "<b>Счётчики пар</b>\nРучной подсчёт и правка счётчиков по группам.",
     "people": "<b>Пользователи и рассылки</b>\nПоиск пользователей и рассылки сообщений.",
@@ -4090,6 +4092,9 @@ def build_dispatcher(
             reply_markup = ADMIN_BACK_KEYBOARD
         elif action == "group_info":
             text = format_group_user_stats(await db.get_group_user_stats())
+            reply_markup = ADMIN_BACK_KEYBOARD
+        elif action == "course_stats":
+            text = format_course_stats_report(await collect_course_stats(db), html=True)
             reply_markup = ADMIN_BACK_KEYBOARD
         else:
             if broadcaster is not None:

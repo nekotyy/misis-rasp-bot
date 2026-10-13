@@ -18,6 +18,7 @@ from vkbottle.exception_factory import ErrorHandler
 from vkbottle.tools import DocMessagesUploader
 
 from src.config import Settings
+from src.course_stats import collect_course_stats, format_course_stats_report
 from src.db import Database
 from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
@@ -162,10 +163,11 @@ VK_ADMIN_SECTION_BACK = "Назад в админку"
 
 VK_ADMIN_SECTIONS: dict[str, dict] = {
     "Мониторинг": {
-        "text": "Мониторинг\n\nСтатус бота, ошибки, последние изменения и группы.",
+        "text": "Мониторинг\n\nСтатус бота, ошибки, последние изменения, группы и статистика по курсам.",
         "rows": [
             ["Статус", "Ошибки за день"],
             ["Последнее изменение", "Информация по группам"],
+            ["Статистика по курсам"],
             [VK_ADMIN_SECTION_BACK],
         ],
     },
@@ -3325,6 +3327,13 @@ def build_vk_bot(
                 return
             if text == "Информация по группам":
                 await show_screen(peer_id, format_group_user_stats(await db.get_group_user_stats()), keyboard=admin_back_keyboard())
+                return
+            if text == "Статистика по курсам":
+                await show_screen(
+                    peer_id,
+                    format_course_stats_report(await collect_course_stats(db), html=False),
+                    keyboard=admin_back_keyboard(),
+                )
                 return
             if text == "Тестовая рассылка":
                 if broadcaster is None:
