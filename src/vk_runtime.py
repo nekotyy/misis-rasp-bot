@@ -17,11 +17,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
-from collections import OrderedDict
+import tempfile
+from collections import OrderedDict, deque
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, nullcontext, suppress
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
@@ -45,6 +48,8 @@ VK_HTTP_TIMEOUT = ClientTimeout(total=None, sock_connect=15, sock_read=60)
 # DNS на сервере (роутер) периодически не отвечает — держим адреса VK в кэше
 # дольше, чтобы кратковременный сбой резолвера не ронял запросы.
 VK_DNS_CACHE_SECONDS = 600
+VK_POLLING_SETUP_TIMEOUT = 30.0
+VK_POLLING_CALLBACK_TIMEOUT = 5.0
 
 # Временные ошибки VK API — есть смысл повторить запрос с паузой.
 VK_RETRYABLE_ERROR_CODES = frozenset({1, 6, 10, 603})
@@ -296,6 +301,7 @@ class ResilientBotPolling(BotPolling):
         max_backoff: float = 30.0,
         on_error: PollingErrorCallback | None = None,
         on_recovered: PollingRecoveryCallback | None = None,
+        checkpoint_path: Path | None = None,
     ) -> None:
         super().__init__(api=api, group_id=group_id, wait=wait)
         self.max_backoff = max_backoff
@@ -306,6 +312,48 @@ class ResilientBotPolling(BotPolling):
         self.consecutive_failures = 0
         self._failure_started_at: float | None = None
         self._ts: str | None = None
+        self.checkpoint_path = checkpoint_path
+        self._checkpoint_loaded = False
+        self._checkpoint_ts: str | None = None
+
+    def _load_checkpoint(self) -> None:
+        self._checkpoint_loaded = True
+        if self.checkpoint_path is None:
+            return
+        try:
+            data = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("group_id") != self.group_id:
+                return
+            ts = data.get("ts")
+            if isinstance(ts, (str, int)) and not isinstance(ts, bool) and str(ts).isdigit():
+                self._ts = self._checkpoint_ts = str(ts)
+                logger.info("VK long poll: восстановлена позиция чтения после перезапуска.")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            logger.warning("Не удалось прочитать позицию VK long poll: %s", self.checkpoint_path, exc_info=True)
+
+    def save_checkpoint(self, ts: str | int) -> None:
+        """Атомарно сохраняет позицию только после обработки всех предыдущих событий."""
+        if self.checkpoint_path is None or self.group_id is None or str(ts) == self._checkpoint_ts:
+            return
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.checkpoint_path.parent,
+                prefix=f".{self.checkpoint_path.name}.", suffix=".tmp", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                json.dump({"group_id": self.group_id, "ts": str(ts)}, stream)
+            temporary.replace(self.checkpoint_path)
+            self._checkpoint_ts = str(ts)
+        except OSError:
+            # Проблема с диском не должна останавливать текущий приём сообщений.
+            logger.warning("Не удалось сохранить позицию VK long poll: %s", self.checkpoint_path, exc_info=True)
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
 
     def construct(self, api: Any, error_handler: Any = None) -> ResilientBotPolling:
         # Bot.polling вызывает construct() на каждое обращение: API уже наш, error_handler не нужен.
@@ -313,14 +361,23 @@ class ResilientBotPolling(BotPolling):
 
     async def get_event(self, server: dict[str, Any]) -> dict[str, Any]:
         timeout = ClientTimeout(total=self.wait + 20, sock_connect=15, sock_read=self.wait + 20)
-        return await self.api.http_client.request_json(
-            url=f"{server['server']}?act=a_check&key={server['key']}&ts={server['ts']}&wait={self.wait}",
-            method="POST",
-            timeout=timeout,
-        )
+        async with asyncio.timeout(self.wait + 20):
+            return await self.api.http_client.request_json(
+                url=f"{server['server']}?act=a_check&key={server['key']}&ts={server['ts']}&wait={self.wait}",
+                method="POST",
+                timeout=timeout,
+            )
 
     async def _fresh_server(self, *, keep_ts: bool) -> dict[str, Any]:
-        server = dict(await self.get_server())
+        async with asyncio.timeout(VK_POLLING_SETUP_TIMEOUT):
+            server = dict(await self.get_server())
+        # get_server() сначала определяет group_id: чужую позицию после смены
+        # токена сообщества использовать нельзя.
+        if not self._checkpoint_loaded:
+            self._load_checkpoint()
+        if self._ts is None:
+            self._ts = server["ts"]
+            self.save_checkpoint(self._ts)
         if keep_ts and self._ts is not None:
             server["ts"] = self._ts
         return server
@@ -328,12 +385,15 @@ class ResilientBotPolling(BotPolling):
     async def _handle_failed(self, server: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         failed = event.get("failed")
         if failed == 1:
+            logger.warning("VK long poll: история для сохранённого ts недоступна, продолжаю с ts сервера.")
             server["ts"] = event.get("ts", server.get("ts"))
             self._ts = server["ts"]
             return server
         if failed == 2:
             return await self._fresh_server(keep_ts=True)
-        # 3 — информация о событиях потеряна, 4 — неверная версия: начинаем заново.
+        if failed != 3:
+            raise VkTransportError(f"VK long poll вернул failed={failed}")
+        # 3 — информация о событиях потеряна: начинаем заново.
         logger.warning("VK long poll вернул failed=%s — беру новый сервер и ts.", failed)
         fresh = await self._fresh_server(keep_ts=False)
         self._ts = fresh.get("ts")
@@ -349,7 +409,8 @@ class ResilientBotPolling(BotPolling):
             logger.info("VK long poll восстановлен после %s ошибок (%.0f с).", failures, outage)
             if self.on_recovered is not None:
                 try:
-                    await self.on_recovered(failures, outage)
+                    async with asyncio.timeout(VK_POLLING_CALLBACK_TIMEOUT):
+                        await self.on_recovered(failures, outage)
                 except Exception:
                     logger.warning("Обработчик восстановления VK long poll упал.", exc_info=True)
 
@@ -373,13 +434,13 @@ class ResilientBotPolling(BotPolling):
                     server = await self._handle_failed(server, event)
                     continue
                 if "ts" not in event:
-                    server = {}
-                    continue
+                    raise VkTransportError("VK long poll вернул ответ без ts")
                 server["ts"] = event["ts"]
                 self._ts = event["ts"]
                 await self._mark_ok()
-                if event.get("updates"):
-                    yield event
+                # Пустой ответ тоже продвигает позицию чтения. Сохранение делает
+                # диспетчер, когда закончены все более ранние обработчики.
+                yield event
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -397,7 +458,8 @@ class ResilientBotPolling(BotPolling):
                 )
                 if self.on_error is not None:
                     try:
-                        await self.on_error(exc, self.consecutive_failures)
+                        async with asyncio.timeout(VK_POLLING_CALLBACK_TIMEOUT):
+                            await self.on_error(exc, self.consecutive_failures)
                     except Exception:
                         logger.warning("Обработчик ошибок VK long poll упал.", exc_info=True)
                 await asyncio.sleep(delay)
@@ -452,6 +514,7 @@ class VkUpdateDispatcher:
         self._peer_locks: dict[int, asyncio.Lock] = {}
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._dedup_size = dedup_size
+        self._checkpoint_batches: deque[tuple[str | int, list[asyncio.Task]]] = deque()
 
     @property
     def pending_tasks(self) -> int:
@@ -506,15 +569,35 @@ class VkUpdateDispatcher:
                     logger.error("VK: обработка события упала.", exc_info=exc, extra={"skip_admin_report": True})
                 if self.on_failure is not None:
                     try:
-                        await self.on_failure(update, exc)
+                        async with asyncio.timeout(VK_POLLING_CALLBACK_TIMEOUT):
+                            await self.on_failure(update, exc)
                     except Exception:
                         logger.warning("Обработчик сбоев VK-событий упал.", exc_info=True)
 
     async def run(self, polling: ResilientBotPolling) -> None:
+        batches = self._checkpoint_batches
+
+        def advance_checkpoint(_task: asyncio.Task | None = None) -> None:
+            latest_ts: str | int | None = None
+            while batches:
+                ts, tasks = batches[0]
+                if any(not task.done() or task.cancelled() for task in tasks):
+                    break
+                latest_ts = ts
+                batches.popleft()
+            if latest_ts is not None:
+                polling.save_checkpoint(latest_ts)
+
         async for event in polling.listen():
+            tasks = []
             for update in event.get("updates", []) or []:
                 if isinstance(update, dict):
-                    self.dispatch(update)
+                    task = self.dispatch(update)
+                    if task is not None:
+                        tasks.append(task)
+                        task.add_done_callback(advance_checkpoint)
+            batches.append((event["ts"], tasks))
+            advance_checkpoint()
 
     async def drain(self, timeout: float = 10.0) -> None:
         if not self._tasks:

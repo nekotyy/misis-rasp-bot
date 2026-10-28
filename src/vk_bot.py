@@ -734,7 +734,10 @@ def build_vk_bot(
             text = f"VK long poll снова работает (было {failures} ошибок, ~{outage_seconds:.0f} с без связи)."
             await broadcaster.notify_admins(text, text)
 
-    polling = ResilientBotPolling(api, on_error=on_polling_error, on_recovered=on_polling_recovered)
+    polling = ResilientBotPolling(
+        api, on_error=on_polling_error, on_recovered=on_polling_recovered,
+        checkpoint_path=db.path.with_suffix(".vk_polling.json"),
+    )
     error_handler = ErrorHandler(redirect_arguments=True)
     bot = Bot(api=api, polling=polling, error_handler=error_handler)
     bot.resilient_polling = polling  # type: ignore[attr-defined]

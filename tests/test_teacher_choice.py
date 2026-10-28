@@ -36,10 +36,11 @@ class TeacherChoiceScenarios:
         for user_id in (USER_ID, NEW_USER_ID):
             await self.db.upsert_user(self.platform, user_id, None, "Тест")
         await self.db.set_user_subscription(self.platform, USER_ID, **make_group_subscription("ИСП-25-1", 600))
+        today = datetime.now()
         await self.db.save_snapshot(
             "current", "hash", ScheduleSnapshot(
-                group_name="ИСП-25-1", fetched_at=datetime(2026, 10, 28),
-                days=[DaySchedule(date_label="28 октября", date_iso="2026-10-28", lessons=[
+                group_name="ИСП-25-1", fetched_at=today,
+                days=[DaySchedule(date_label=today.strftime("%d.%m.%Y"), date_iso=today.date().isoformat(), lessons=[
                     Lesson(number=1, subject="Математика", teacher="Иванов И.И.", classroom="301"),
                     Lesson(number=2, subject="Физика", teacher="Иванов В.В.", classroom="302"),
                 ])],

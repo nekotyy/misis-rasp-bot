@@ -12,9 +12,7 @@ from time import monotonic, time
 import aio_pika
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.methods import GetUpdates
 
 from src.config import Settings
 from src.db import Database
@@ -34,6 +32,7 @@ from src.schedule_search import ScheduleSearchCatalog
 from src.scheduler import ScheduleJobs
 from src.system_status import DEFAULT_FAILURE_CONFIRMATIONS, SystemAlertManager
 from src.telegram_bot import build_dispatcher
+from src.telegram_runtime import TrackingAiohttpSession
 from src.vk_bot import build_vk_bot, vk_handler_timeout
 from src.vk_runtime import VkUpdateDispatcher
 
@@ -104,26 +103,13 @@ def start_background_task(name: str, coro) -> asyncio.Task:
     return task
 
 
-class TrackingAiohttpSession(AiohttpSession):
-    """Сессия aiogram, которая помнит время последнего успешного getUpdates — для мониторинга."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.started_at = monotonic()
-        self.last_updates_ok_at: float | None = None
-
-    async def make_request(self, bot, method, timeout=None):
-        result = await super().make_request(bot, method, timeout)
-        if isinstance(method, GetUpdates):
-            self.last_updates_ok_at = monotonic()
-        return result
-
-
 def telegram_polling_probe(session: TrackingAiohttpSession) -> Callable[[], tuple[bool, str]]:
     def probe() -> tuple[bool, str]:
         reference = session.last_updates_ok_at if session.last_updates_ok_at is not None else session.started_at
         age = monotonic() - reference
-        return age < TELEGRAM_POLLING_STALE_SECONDS, f"последний успешный getUpdates {age:.0f} с назад"
+        return age < TELEGRAM_POLLING_STALE_SECONDS, (
+            f"последний успешный getUpdates {age:.0f} с назад, ошибок подряд: {session.consecutive_failures}"
+        )
 
     return probe
 
@@ -186,7 +172,7 @@ def start_telegram_polling(
     async def _run_once() -> None:
         # Сигналы обрабатывает main(): иначе aiogram перехватывал SIGTERM, останавливал
         # только поллинг, а супервизор тут же поднимал его снова.
-        await dispatcher.start_polling(bot, handle_signals=False, close_bot_session=False)
+        await dispatcher.start_polling(bot, polling_timeout=25, handle_signals=False, close_bot_session=False)
 
     start_background_task("telegram-supervisor", run_forever("Telegram bot", _run_once))
     return bot

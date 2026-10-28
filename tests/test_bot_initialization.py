@@ -59,6 +59,7 @@ class BotInitializationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(vk_bot, "build_vk_bot returned None when vk_bot_token was set!")
         self.assertIsInstance(vk_bot, VkBot, "build_vk_bot must return a vkbottle.bot.Bot instance!")
+        self.assertEqual(vk_bot.resilient_polling.checkpoint_path, self.db_path.with_suffix(".vk_polling.json"))
 
     def test_build_telegram_bot_uses_configured_proxy(self):
         with (
