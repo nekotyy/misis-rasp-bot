@@ -56,27 +56,35 @@ class ScheduleSearchCatalog:
         self._ambiguous_preps: set[str] = set()
 
     async def find(self, query: str) -> SearchTarget | None:
+        matches = await self.find_all(query)
+        return matches[0] if len(matches) == 1 else None
+
+    async def find_all(self, query: str) -> list[SearchTarget]:
+        """Возвращает варианты преподавателей, если запрос неоднозначен."""
         normalized = self.normalize(query)
+        if not normalized:
+            return []
         group = await self.group_catalog.find_group(query)
         if group is not None:
-            return SearchTarget(kind="group", title=group.group_name, url=group.url)
+            return [SearchTarget(kind="group", title=group.group_name, url=group.url)]
 
         await self._ensure_preps_loaded()
         prep = self._preps.get(normalized)
         if prep is not None:
-            return prep
-        prep = self._find_partial(normalized, self._prep_items)
-        if prep is not None:
-            return prep
-        prep = await self._find_teacher_from_groups(query)
-        if prep is not None:
-            return prep
+            return [prep]
+        preps = self._find_partial_matches(normalized, self._prep_items)
+        if preps:
+            return preps
+        preps = await self._find_teachers_from_groups(query)
+        if preps:
+            return preps
 
         await self._ensure_auds_loaded()
         aud = self._auds.get(normalized)
         if aud is not None:
-            return aud
-        return self._find_partial(normalized, self._aud_items)
+            return [aud]
+        aud = self._find_partial(normalized, self._aud_items)
+        return [aud] if aud is not None else []
 
     async def _ensure_preps_loaded(self) -> None:
         if self._preps_loaded and self._prep_items:
@@ -148,7 +156,7 @@ class ScheduleSearchCatalog:
                 return target
         return None
 
-    async def _find_teacher_from_groups(self, raw_query: str) -> SearchTarget | None:
+    async def _find_teachers_from_groups(self, raw_query: str) -> list[SearchTarget]:
         """Резервный поиск препода по ФИО, встречающимся в уже известных группах в БД.
 
         Справочник `/prep` — это отдельная страница сайта, и он может быть недоступен
@@ -159,10 +167,10 @@ class ScheduleSearchCatalog:
         и для регистрации — не только для уже существующей подписки.
         """
         if self.db is None:
-            return None
+            return []
         query_norm = normalize_lesson_text(raw_query)
         if not query_norm:
-            return None
+            return []
 
         variants_by_name: dict[str, Counter[str]] = {}
         for group_snapshot in await self.db.get_latest_group_snapshots("current"):
@@ -181,12 +189,7 @@ class ScheduleSearchCatalog:
             for normalized_name, variants in variants_by_name.items()
             if teacher_matches(query_norm, variants.most_common(1)[0][0])
         }
-        if len(matches) != 1:
-            # Пусто — не нашли; больше одного — неоднозначная фамилия, как и в /prep,
-            # лучше попросить уточнить, чем угадать не того человека.
-            return None
-        best_raw_name = next(iter(matches.values()))
-        return SearchTarget(kind="teacher", title=best_raw_name, url="")
+        return [SearchTarget(kind="teacher", title=name, url="") for _, name in sorted(matches.items())]
 
     def _populate_preps(self, pairs: list[tuple[str, str]]) -> None:
         self._preps = {}
@@ -266,8 +269,12 @@ class ScheduleSearchCatalog:
         return await get_with_retry(client, url, retries=self.request_retries, backoff_seconds=self.retry_backoff_seconds)
 
     def _find_partial(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
+        matches = self._find_partial_matches(normalized, items)
+        return matches[0] if len(matches) == 1 else None
+
+    def _find_partial_matches(self, normalized: str, items: list[tuple[str, SearchTarget]]) -> list[SearchTarget]:
         if not normalized:
-            return None
+            return []
         normalized_compact = self._compact_name_key(normalized)
         exact_word_matches: list[SearchTarget] = []
         startswith_matches: list[SearchTarget] = []
@@ -289,12 +296,12 @@ class ScheduleSearchCatalog:
                 contains_matches.append(target)
         for matches in (exact_word_matches, startswith_matches, contains_matches):
             unique_matches = {match.url: match for match in matches}
-            if len(unique_matches) == 1:
-                return next(iter(unique_matches.values()))
+            if unique_matches:
+                return sorted(unique_matches.values(), key=lambda target: (self.normalize(target.title), target.url))
         fuzzy_match = self._find_fuzzy(normalized_compact, items)
         if fuzzy_match is not None:
-            return fuzzy_match
-        return None
+            return [fuzzy_match]
+        return []
 
     def _find_fuzzy(self, normalized_compact: str, items: list[tuple[str, SearchTarget]]) -> SearchTarget | None:
         if len(normalized_compact) < 5:

@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
+from secrets import token_hex
 from time import monotonic
 from typing import Any
 
@@ -68,7 +69,7 @@ from src.ocr_schedule import (
     compress_image_for_ocr,
 )
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
-from src.schedule_search import ScheduleSearchCatalog
+from src.schedule_search import ScheduleSearchCatalog, SearchTarget
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
     make_audience_subscription,
@@ -1043,6 +1044,7 @@ def build_dispatcher(
     reporter = error_reporter or AdminErrorReporter(broadcaster.notify_admins if broadcaster is not None else None)
     context_messages: dict[int, dict[str, list[int]]] = defaultdict(dict)
     search_results: dict[int, dict[str, object]] = {}
+    teacher_choices: dict[tuple[int, int], tuple[str, str, list[SearchTarget]]] = {}
     awaiting_schedule_search: set[int] = set()
     awaiting_group_subscription_input: set[int] = set()
     awaiting_audience_subscription_input: set[int] = set()
@@ -1175,7 +1177,9 @@ def build_dispatcher(
         status = str(getattr(member, "status", ""))
         return status in {"administrator", "creator"}
 
-    async def resolve_subscription_input(raw_text: str) -> tuple[dict | None, str | None]:
+    async def resolve_subscription_input(
+        raw_text: str, *, teacher_targets: list[SearchTarget] | None = None,
+    ) -> tuple[dict | None, str | None]:
         g_cat = group_catalog
         s_cat = search_catalog
         group = None
@@ -1194,7 +1198,10 @@ def build_dispatcher(
 
         if s_cat is not None:
             try:
-                target = await s_cat.find(raw_text)
+                targets = await s_cat.find_all(raw_text)
+                if teacher_targets is not None:
+                    teacher_targets.extend(targets)
+                target = targets[0] if len(targets) == 1 else None
                 if target is not None and target.kind == "teacher":
                     return make_teacher_subscription(target), None
             except Exception as exc:
@@ -2110,6 +2117,8 @@ def build_dispatcher(
             admin_user_search_state,
         ):
             drafts.pop(user_id, None)
+        for key in [key for key in teacher_choices if key[1] == user_id]:
+            teacher_choices.pop(key, None)
 
     async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> None:
         callback_id = getattr(callback, "id", None)
@@ -2243,6 +2252,7 @@ def build_dispatcher(
         return False
 
     async def prompt_schedule_search(bot: Bot, chat_id: int, user_id: int, error_text: str | None = None) -> None:
+        teacher_choices.pop((chat_id, user_id), None)
         awaiting_schedule_search.add(user_id)
         await send_new_context_message(
             bot,
@@ -2252,12 +2262,71 @@ def build_dispatcher(
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu:start")]]),
         )
 
-    async def perform_schedule_search(bot: Bot, chat_id: int, user_id: int, query: str) -> bool:
+    async def show_teacher_choices(bot: Bot, chat_id: int, user_id: int, page: int = 0) -> None:
+        token, _, targets = teacher_choices[(chat_id, user_id)]
+        start = page * 8
+        rows = [
+            [InlineKeyboardButton(text=target.title, callback_data=f"teacher:pick:{token}:{index}")]
+            for index, target in enumerate(targets[start:start + 8], start=start)
+        ]
+        navigation = []
+        if page > 0:
+            navigation.append(InlineKeyboardButton(text="Предыдущая страница", callback_data=f"teacher:page:{token}:{page - 1}"))
+        if start + 8 < len(targets):
+            navigation.append(InlineKeyboardButton(text="Следующая страница", callback_data=f"teacher:page:{token}:{page + 1}"))
+        if navigation:
+            rows.append(navigation)
+        rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
+        await send_new_context_message(
+            bot, chat_id, "schedule", "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+
+    @dispatcher.callback_query(F.data.startswith("teacher:"))
+    async def handle_teacher_choice(callback: CallbackQuery) -> None:
+        await wait_callback_rate_limit(callback)
+        await register_callback_user(callback)
+        if callback.message is None:
+            await safe_callback_answer(callback)
+            return
+        chat_id = callback.message.chat.id
+        key = (chat_id, callback.from_user.id)
+        choice = teacher_choices.get(key)
+        parts = (callback.data or "").split(":")
+        if choice is None or len(parts) != 4 or choice[0] != parts[2] or not parts[3].isdigit():
+            await safe_callback_answer(callback, "Этот выбор устарел. Введи запрос заново.", show_alert=True)
+            return
+        _, action, targets = choice
+        index = int(parts[3])
+        if parts[1] == "page" and index * 8 < len(targets):
+            await show_teacher_choices(callback.bot, chat_id, callback.from_user.id, index)
+        elif parts[1] == "pick" and index < len(targets):
+            target = targets[index]
+            teacher_choices.pop(key, None)
+            if action == "search":
+                await perform_schedule_search(callback.bot, chat_id, callback.from_user.id, target.title, target=target)
+            else:
+                await handle_subscription_input(callback.bot, chat_id, callback.from_user.id, target.title, target=target)
+        else:
+            await safe_callback_answer(callback, "Этот выбор устарел. Введи запрос заново.", show_alert=True)
+            return
+        await safe_callback_answer(callback)
+
+    async def perform_schedule_search(
+        bot: Bot, chat_id: int, user_id: int, query: str, *, target: SearchTarget | None = None,
+    ) -> bool:
+        teacher_choices.pop((chat_id, user_id), None)
         if search_catalog is None:
             await bot.send_message(chat_id, "Поиск временно недоступен.")
             return False
         try:
-            target = await search_catalog.find(query)
+            if target is None:
+                targets = await search_catalog.find_all(query)
+                if len(targets) > 1:
+                    teacher_choices[(chat_id, user_id)] = (token_hex(4), "search", targets)
+                    await show_teacher_choices(bot, chat_id, user_id)
+                    return False
+                target = targets[0] if targets else None
         except httpx.HTTPError:
             await send_new_context_message(
                 bot,
@@ -2402,9 +2471,20 @@ def build_dispatcher(
             html=True,
         )
 
-    async def handle_subscription_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
-        subscription_data, error_text = await resolve_subscription_input(raw_text)
+    async def handle_subscription_input(
+        bot: Bot, chat_id: int, user_id: int, raw_text: str, *, target: SearchTarget | None = None,
+    ) -> bool:
+        teacher_choices.pop((chat_id, user_id), None)
+        targets: list[SearchTarget] = []
+        subscription_data, error_text = (
+            (make_teacher_subscription(target), None)
+            if target is not None else await resolve_subscription_input(raw_text, teacher_targets=targets)
+        )
         if subscription_data is None:
+            if len(targets) > 1:
+                teacher_choices[(chat_id, user_id)] = (token_hex(4), "subscribe", targets)
+                await show_teacher_choices(bot, chat_id, user_id)
+                return False
             await prompt_group_selection(bot, chat_id, error_text)
             return False
         existing_user = await db.get_user("telegram", user_id)
