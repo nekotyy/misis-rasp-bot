@@ -45,6 +45,14 @@ class ScheduleSearchDbPersistenceTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.db.get_search_targets("teacher")
         self.assertEqual(rows, [{"title": "Иванов И.И.", "url": "http://test-schedule.local/raspprep/1"}])
 
+    async def test_ambiguous_surname_returns_choices_from_saved_directory(self) -> None:
+        pairs = [("Иванов И.И.", "http://test/raspprep/1"), ("Иванов В.В.", "http://test/raspprep/2")]
+        await self.db.save_search_targets("teacher", [{"title": title, "url": url} for title, url in pairs])
+        catalog = ScheduleSearchCatalog("http://test", _mock_group_catalog(), db=self.db)
+        with patch.object(catalog, "_fetch_pairs", AsyncMock(side_effect=RuntimeError("сайт недоступен"))):
+            matches = await catalog.find_all("Иванов")
+        self.assertEqual({target.url for target in matches}, {url for _, url in pairs})
+
     async def test_failed_prep_fetch_falls_back_to_db(self) -> None:
         # Тёплый каталог успешно грузится с сайта и сохраняет снимок в БД.
         warm_catalog = ScheduleSearchCatalog(

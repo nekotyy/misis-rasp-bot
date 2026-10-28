@@ -123,6 +123,68 @@ class TestFindFuzzy(unittest.TestCase):
 class TestTeacherAmbiguity(unittest.IsolatedAsyncioTestCase):
     """Тесты на разрешение неоднозначности при одинаковых фамилиях преподавателей."""
 
+    def setUp(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        group_catalog = MagicMock()
+        group_catalog.find_group = AsyncMock(return_value=None)
+        self.catalog = ScheduleSearchCatalog("http://test", group_catalog)
+        self.catalog._fetch_pairs = AsyncMock(return_value=[])
+        self.catalog._populate_preps([
+            ("Иванов И.И.", "/prep/1"),
+            ("Иванов В.В.", "/prep/2"),
+            ("Швабрин К.К.", "/prep/3"),
+        ])
+        self.catalog._preps_loaded = True
+
+    async def test_find_all_returns_sorted_distinct_teachers(self) -> None:
+        matches = await self.catalog.find_all("ИВАНОВ")
+        self.assertEqual([target.title for target in matches], ["Иванов В.В.", "Иванов И.И."])
+        self.catalog._fetch_pairs.assert_not_awaited()
+
+    async def test_initials_select_one_teacher(self) -> None:
+        for query in ("Иванов И.И.", "иванов и. и.", "ИвановИИ"):
+            with self.subTest(query=query):
+                matches = await self.catalog.find_all(query)
+                self.assertEqual([target.url for target in matches], ["/prep/1"])
+
+    async def test_unique_surname_selects_one_teacher(self) -> None:
+        matches = await self.catalog.find_all("швабрин")
+        self.assertEqual([target.title for target in matches], ["Швабрин К.К."])
+
+    async def test_ambiguous_site_matches_do_not_fall_back_to_one_group_teacher(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        self.catalog.db = MagicMock()
+        self.catalog.db.get_latest_group_snapshots = AsyncMock()
+        self.assertIsNone(await self.catalog.find("Иванов"))
+        self.catalog.db.get_latest_group_snapshots.assert_not_awaited()
+
+    async def test_weaker_match_cannot_override_an_ambiguous_surname(self) -> None:
+        self.catalog._populate_preps([
+            ("Иванов И.И.", "/prep/1"), ("Иванов В.В.", "/prep/2"), ("Иванова А.А.", "/prep/3"),
+        ])
+        matches = await self.catalog.find_all("Иванов")
+        self.assertEqual({target.url for target in matches}, {"/prep/1", "/prep/2"})
+
+    async def test_empty_query_returns_no_matches(self) -> None:
+        self.assertEqual(await self.catalog.find_all("  "), [])
+        self.catalog.group_catalog.find_group.assert_not_awaited()
+
+    async def test_group_search_keeps_priority(self) -> None:
+        from types import SimpleNamespace
+
+        self.catalog.group_catalog.find_group.return_value = SimpleNamespace(group_name="ИСП-25-1", url="rasp:600")
+        matches = await self.catalog.find_all("ИСП-25-1")
+        self.assertEqual(matches, [SearchTarget(kind="group", title="ИСП-25-1", url="rasp:600")])
+        self.catalog._fetch_pairs.assert_not_awaited()
+
+    async def test_audience_search_still_returns_one_target(self) -> None:
+        self.catalog._populate_auds([("301", "/aud/301")])
+        self.catalog._auds_loaded = True
+        matches = await self.catalog.find_all("301")
+        self.assertEqual(matches, [SearchTarget(kind="audience", title="301", url="/aud/301")])
+
     async def test_ambiguous_teacher_last_name_in_find(self) -> None:
         from unittest.mock import AsyncMock, MagicMock
 

@@ -85,6 +85,9 @@ class TeacherDiscoveryFromGroupsTests(unittest.IsolatedAsyncioTestCase):
         target = await catalog.find("Коврижных")
 
         self.assertIsNone(target, "Две разные Коврижных — неоднозначно, нельзя угадывать")
+        matches = await catalog.find_all("Коврижных")
+        self.assertEqual({target.title for target in matches}, {"Коврижных А.Б.", "Коврижных О.А."})
+        self.assertTrue(all(target.kind == "teacher" and not target.url for target in matches))
 
     async def test_no_match_returns_none(self) -> None:
         catalog = self._catalog_with_empty_prep()
@@ -110,6 +113,7 @@ class TeacherDiscoveryFromGroupsTests(unittest.IsolatedAsyncioTestCase):
         target = await catalog.find("Коврижных О.А.")
 
         self.assertIsNotNone(target, "Мелкие OCR-отличия в написании — тот же человек, а не неоднозначность")
+        self.assertEqual(len(await catalog.find_all("Коврижных")), 1)
 
 
 class MakeTeacherSubscriptionWithoutUrlTests(unittest.TestCase):

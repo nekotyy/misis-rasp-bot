@@ -51,7 +51,7 @@ from src.ocr_schedule import (
     compress_image_for_ocr,
 )
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
-from src.schedule_search import ScheduleSearchCatalog
+from src.schedule_search import ScheduleSearchCatalog, SearchTarget
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
 from src.subscription_utils import (
     make_audience_subscription,
@@ -740,6 +740,7 @@ def build_vk_bot(
     bot.resilient_polling = polling  # type: ignore[attr-defined]
     bot.error_reporter = reporter  # type: ignore[attr-defined]
     search_results: dict[int, dict[str, object]] = {}
+    teacher_choices: dict[int, tuple[str, list[SearchTarget], int]] = {}
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     admin_user_search_state: dict[int, dict[str, str]] = {}
@@ -1508,7 +1509,28 @@ def build_vk_bot(
         await prompt_group_selection(peer_id)
         return False
 
-    async def handle_subscription_input(peer_id: int, user_id: int, text: str) -> bool:
+    async def show_teacher_choices(peer_id: int, action: str, targets: list[SearchTarget], page: int = 0) -> None:
+        teacher_choices[peer_id] = (action, targets, page)
+        peer_modes[peer_id] = "teacher_choice"
+        start = page * 8
+        rows = [[target.title] for target in targets[start:start + 8]]
+        navigation = []
+        if page > 0:
+            navigation.append("Предыдущая страница")
+        if start + 8 < len(targets):
+            navigation.append("Следующая страница")
+        if navigation:
+            rows.append(navigation)
+        rows.append(["Назад в меню"])
+        await show_screen(
+            peer_id, "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.",
+            keyboard=make_keyboard(rows),
+        )
+
+    async def handle_subscription_input(
+        peer_id: int, user_id: int, text: str, *, target: SearchTarget | None = None,
+    ) -> bool:
+        teacher_choices.pop(peer_id, None)
         is_chat = peer_id >= VK_CHAT_PEER_ID_THRESHOLD and user_id == peer_id
         existing_user = await db.get_user("vk", user_id)
         if existing_user is None and is_chat:
@@ -1526,7 +1548,7 @@ def build_vk_bot(
             await prompt_group_selection_screen(target_peer_id, error_text)
 
         group = None
-        if group_catalog is not None:
+        if target is None and group_catalog is not None:
             try:
                 group = await group_catalog.find_group(text)
             except Exception as exc:
@@ -1538,7 +1560,7 @@ def build_vk_bot(
             await db.set_user_subscription("vk", user_id, **make_group_subscription(group.group_name, group.schedule_id))
             await db.clear_user_audience_subscription("vk", user_id)
         else:
-            if group_catalog is not None and getattr(group_catalog, "last_error", None) is not None and not getattr(group_catalog, "_groups_by_name", {}):
+            if target is None and group_catalog is not None and getattr(group_catalog, "last_error", None) is not None and not getattr(group_catalog, "_groups_by_name", {}):
                 await prompt_group_selection(peer_id, "Такая группа не найдена. Сайт расписания сейчас недоступен, а среди ранее сохранённых групп её тоже нет — если группа новая, попробуйте еще раз, когда сайт заработает.")
                 return False
 
@@ -1546,7 +1568,12 @@ def build_vk_bot(
                 await prompt_group_selection(peer_id, "Справочник сейчас недоступен. Попробуйте позже.")
                 return False
             try:
-                target = await search_catalog.find(text)
+                if target is None:
+                    targets = await search_catalog.find_all(text)
+                    if len(targets) > 1 and not is_chat:
+                        await show_teacher_choices(peer_id, "subscribe", targets)
+                        return False
+                    target = targets[0] if len(targets) == 1 else None
             except Exception as exc:
                 logger.warning("VK error in search_catalog.find: %s", exc)
                 await prompt_group_selection(peer_id, "Сайт расписания колледжа сейчас временно недоступен. Попробуйте еще раз через несколько минут.")
@@ -1645,13 +1672,19 @@ def build_vk_bot(
             "created_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
         }
 
-    async def perform_schedule_search(peer_id: int, query: str) -> bool:
+    async def perform_schedule_search(peer_id: int, query: str, *, target: SearchTarget | None = None) -> bool:
+        teacher_choices.pop(peer_id, None)
         if search_catalog is None:
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Поиск временно недоступен."), keyboard=search_prompt_keyboard())
             return False
         try:
-            target = await search_catalog.find(query)
+            if target is None:
+                targets = await search_catalog.find_all(query)
+                if len(targets) > 1:
+                    await show_teacher_choices(peer_id, "search", targets)
+                    return False
+                target = targets[0] if targets else None
         except httpx.HTTPError:
             peer_modes[peer_id] = "schedule_search"
             await show_screen(peer_id, schedule_search_prompt_text("Сайт расписания временно недоступен. Попробуй еще раз через минуту."), keyboard=search_prompt_keyboard())
@@ -1965,6 +1998,7 @@ def build_vk_bot(
             return
 
         if normalized in {"/start", "start", "начать"}:
+            teacher_choices.pop(peer_id, None)
             admin_broadcast_drafts.pop(peer_id, None)
             user = await db.get_user("vk", user_id)
             if user is None or not user.subscription_key or not user.subscription_title:
@@ -2875,6 +2909,28 @@ def build_vk_bot(
                 "Быстрая настройка беседы\n\nПришлите название вашей учебной группы одним сообщением (например: ИСП-25-1 или МТО-25):"
             )
             return
+
+        if mode == "teacher_choice":
+            choice = teacher_choices.pop(peer_id, None)
+            if text == "Назад в меню":
+                await show_main_menu(peer_id, user_id)
+                return
+            if choice is not None:
+                action, targets, page = choice
+                if text in {"Предыдущая страница", "Следующая страница"}:
+                    page += 1 if text == "Следующая страница" else -1
+                    page = max(0, min(page, (len(targets) - 1) // 8))
+                    await show_teacher_choices(peer_id, action, targets, page)
+                    return
+                target = next((target for target in targets[page * 8:page * 8 + 8] if target.title == text), None)
+                if target is not None:
+                    if action == "search":
+                        await perform_schedule_search(peer_id, target.title, target=target)
+                    else:
+                        await handle_subscription_input(peer_id, user_id, target.title, target=target)
+                    return
+                mode = "schedule_search" if action == "search" else "group_select"
+                peer_modes[peer_id] = mode
 
         user = await db.get_user("vk", user_id)
         if user is None or not user.subscription_key or not user.subscription_title:
