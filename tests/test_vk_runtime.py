@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientConnectionError
@@ -106,6 +108,55 @@ class JsonValidatorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PollingTests(unittest.IsolatedAsyncioTestCase):
+    async def _receive_one(self, polling: ResilientBotPolling) -> dict:
+        async for event in polling.listen():
+            polling.stop()
+            return event
+        self.fail("VK long poll остановился до получения события")
+
+    async def test_hung_server_setup_is_timed_out_and_retried(self) -> None:
+        polling = ResilientBotPolling(MagicMock())
+        attempts = 0
+
+        async def get_server():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                await asyncio.Event().wait()
+            return {"server": "s", "key": "k", "ts": "100"}
+
+        polling.get_server = get_server
+        polling.get_event = AsyncMock(return_value={"ts": "101", "updates": []})
+        with patch("src.vk_runtime.VK_POLLING_SETUP_TIMEOUT", 0.01), patch("src.vk_runtime.asyncio.sleep", AsyncMock()):
+            event = await asyncio.wait_for(self._receive_one(polling), timeout=1)
+        self.assertEqual(event["ts"], "101")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(polling.consecutive_failures, 0)
+
+    async def test_hung_error_and_recovery_reports_cannot_stop_receiving(self) -> None:
+        async def hung_report(*args):
+            await asyncio.Event().wait()
+
+        on_error = AsyncMock(side_effect=hung_report)
+        on_recovered = AsyncMock(side_effect=hung_report)
+        polling = ResilientBotPolling(MagicMock(), on_error=on_error, on_recovered=on_recovered)
+        polling.get_server = AsyncMock(side_effect=[ClientConnectionError("down"), {"server": "s", "key": "k", "ts": "100"}])
+        polling.get_event = AsyncMock(return_value={"ts": "101", "updates": [{"type": "message_new"}]})
+        with patch("src.vk_runtime.VK_POLLING_CALLBACK_TIMEOUT", 0.01), patch("src.vk_runtime.asyncio.sleep", AsyncMock()):
+            event = await asyncio.wait_for(self._receive_one(polling), timeout=1)
+        self.assertEqual(len(event["updates"]), 1)
+        on_error.assert_awaited_once()
+        on_recovered.assert_awaited_once()
+
+    async def test_malformed_polling_response_has_backoff_and_does_not_reset_ts(self) -> None:
+        polling = ResilientBotPolling(MagicMock())
+        polling.get_server = AsyncMock(return_value={"server": "s", "key": "k", "ts": "100"})
+        polling.get_event = AsyncMock(side_effect=[{}, {"ts": "101", "updates": []}])
+        with patch("src.vk_runtime.asyncio.sleep", AsyncMock()) as sleep:
+            event = await self._receive_one(polling)
+        self.assertEqual(event["ts"], "101")
+        sleep.assert_awaited_once()
+
     async def test_ts_survives_network_error_so_messages_are_not_lost(self) -> None:
         polling = ResilientBotPolling(MagicMock())
         servers = iter([
@@ -202,6 +253,159 @@ class DispatcherTests(unittest.IsolatedAsyncioTestCase):
         dispatcher._route = done
         await dispatcher.dispatch(self._update(1, 2))
         done.assert_awaited_once()
+
+    async def test_hung_failure_report_does_not_lock_the_dialog(self) -> None:
+        async def hung_report(update, error):
+            await asyncio.Event().wait()
+
+        route = AsyncMock(side_effect=[RuntimeError("failed"), None])
+        dispatcher = VkUpdateDispatcher(route, on_failure=hung_report)
+        with patch("src.vk_runtime.VK_POLLING_CALLBACK_TIMEOUT", 0.01):
+            await asyncio.wait_for(dispatcher.dispatch(self._update(1, 1)), timeout=1)
+        await asyncio.wait_for(dispatcher.dispatch(self._update(1, 2)), timeout=1)
+        self.assertEqual(route.await_count, 2)
+
+
+class PollingCheckpointTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "bot.vk_polling.json"
+        self.requested_ts: dict[ResilientBotPolling, list[str]] = {}
+
+    async def asyncTearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _polling(self, events: list[dict], *, server_ts: str = "100", group_id: int = 123) -> ResilientBotPolling:
+        polling = ResilientBotPolling(MagicMock(), group_id=group_id, checkpoint_path=self.path)
+        polling.get_server = AsyncMock(return_value={"server": "s", "key": "k", "ts": server_ts})
+        responses = iter(events)
+        self.requested_ts[polling] = []
+
+        async def get_event(server):
+            self.requested_ts[polling].append(server["ts"])
+            event = next(responses)
+            if event is events[-1]:
+                polling.stop()
+            return event
+
+        polling.get_event = AsyncMock(side_effect=get_event)
+        return polling
+
+    async def _run(self, polling: ResilientBotPolling, route=None) -> VkUpdateDispatcher:
+        dispatcher = VkUpdateDispatcher(route or AsyncMock())
+        await dispatcher.run(polling)
+        await dispatcher.drain()
+        return dispatcher
+
+    def _saved_ts(self) -> str:
+        return json.loads(self.path.read_text(encoding="utf-8"))["ts"]
+
+    async def test_restart_resumes_at_saved_position_instead_of_current_server_ts(self) -> None:
+        # Даже пустой ответ сохраняется: последний запрос перед остановкой
+        # обычно не содержит сообщений. Во время простоя появляется запрос.
+        await self._run(self._polling([{"ts": "101", "updates": []}]))
+        update = DispatcherTests._update(1, 1, "Расписание на завтра")
+        restarted = self._polling([{"ts": "102", "updates": [update]}], server_ts="999")
+        route = AsyncMock()
+
+        await self._run(restarted, route)
+
+        self.assertEqual(self.requested_ts[restarted], ["101"])
+        route.assert_awaited_once_with(update)
+        self.assertEqual(json.loads(self.path.read_text()), {"group_id": 123, "ts": "102"})
+
+    async def test_checkpoint_from_another_community_is_ignored(self) -> None:
+        await self._run(self._polling([{"ts": "101", "updates": []}]))
+        other = self._polling([{"ts": "1000", "updates": []}], server_ts="999", group_id=456)
+
+        await self._run(other)
+
+        self.assertEqual(self.requested_ts[other], ["999"])
+        self.assertEqual(json.loads(self.path.read_text()), {"group_id": 456, "ts": "1000"})
+
+    async def test_expired_key_keeps_saved_position(self) -> None:
+        self.path.write_text('{"group_id":123,"ts":"100"}', encoding="utf-8")
+        polling = self._polling([{"failed": 2}, {"ts": "101", "updates": []}], server_ts="999")
+        await self._run(polling)
+        self.assertEqual(self.requested_ts[polling], ["100", "100"])
+        self.assertEqual(self._saved_ts(), "101")
+
+    async def test_expired_history_resumes_from_vk_ts(self) -> None:
+        self.path.write_text('{"group_id":123,"ts":"100"}', encoding="utf-8")
+        polling = self._polling([{"failed": 1, "ts": "999"}, {"ts": "1000", "updates": []}])
+        await self._run(polling)
+        self.assertEqual(self.requested_ts[polling], ["100", "999"])
+        self.assertEqual(self._saved_ts(), "1000")
+
+    async def test_invalid_checkpoint_does_not_prevent_startup(self) -> None:
+        for content in ('{"broken', "[]", '{"group_id":123,"ts":false}', '{"group_id":123,"ts":{}}'):
+            with self.subTest(content=content):
+                self.path.write_text(content, encoding="utf-8")
+                polling = self._polling([{"ts": "101", "updates": []}])
+                await self._run(polling)
+                self.assertEqual(self.requested_ts[polling], ["100"])
+                self.assertEqual(self._saved_ts(), "101")
+
+    async def test_failed_atomic_write_preserves_checkpoint_and_message_processing(self) -> None:
+        self.path.write_text('{"group_id":123,"ts":"100"}', encoding="utf-8")
+        update = DispatcherTests._update(1, 1)
+        route = AsyncMock()
+        with patch("src.vk_runtime.Path.replace", side_effect=PermissionError("disk unavailable")):
+            await self._run(self._polling([{"ts": "101", "updates": [update]}]), route)
+
+        route.assert_awaited_once_with(update)
+        self.assertEqual(self._saved_ts(), "100")
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    async def test_slow_peer_does_not_block_others_or_let_checkpoint_skip_pending_messages(self) -> None:
+        release_slow = asyncio.Event()
+        fast_done = asyncio.Event()
+
+        async def route(update):
+            if update["object"]["message"]["peer_id"] == 1:
+                await release_slow.wait()
+            else:
+                fast_done.set()
+
+        polling = self._polling([
+            {"ts": "101", "updates": [DispatcherTests._update(1, 1)]},
+            {"ts": "102", "updates": [DispatcherTests._update(2, 1)]},
+            {"ts": "103", "updates": []},
+        ])
+        dispatcher = VkUpdateDispatcher(route)
+        await dispatcher.run(polling)
+        try:
+            await asyncio.wait_for(fast_done.wait(), timeout=1)
+            self.assertEqual(self._saved_ts(), "100")
+        finally:
+            release_slow.set()
+            await dispatcher.drain()
+
+        self.assertEqual(self._saved_ts(), "103")
+
+    async def test_cancelled_message_is_replayed_after_restart(self) -> None:
+        started = asyncio.Event()
+
+        async def interrupted_route(update):
+            started.set()
+            await asyncio.Event().wait()
+
+        update = DispatcherTests._update(1, 1)
+        dispatcher = VkUpdateDispatcher(interrupted_route)
+        await dispatcher.run(self._polling([{"ts": "101", "updates": [update]}]))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        tasks = set(dispatcher._tasks)
+        await dispatcher.drain(timeout=0)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.assertEqual(self._saved_ts(), "100")
+
+        restarted = self._polling([{"ts": "101", "updates": [update]}], server_ts="999")
+        route = AsyncMock()
+        await self._run(restarted, route)
+
+        self.assertEqual(self.requested_ts[restarted], ["100"])
+        route.assert_awaited_once_with(update)
+        self.assertEqual(self._saved_ts(), "101")
 
 
 if __name__ == "__main__":

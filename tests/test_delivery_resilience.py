@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
+from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.methods import SendMessage
 from vkbottle.exception_factory.base_exceptions import VKAPIError
 
@@ -17,6 +18,7 @@ from src.notifier import (
     Broadcaster,
     DeliveryUnavailableError,
 )
+from src.telegram_runtime import TrackingAiohttpSession
 
 METHOD = SendMessage(chat_id=1, text="x")
 
@@ -83,6 +85,33 @@ class VkDeliveryTests(DeliveryTestCase):
 
 
 class TelegramDeliveryTests(DeliveryTestCase):
+    async def test_transport_retries_are_not_multiplied_by_broadcast_retries(self) -> None:
+        session = TrackingAiohttpSession()
+        bot = Bot("123456:FAKE-TOKEN", session=session)
+        broadcaster = Broadcaster(db=self.db, telegram_bot=bot)
+        request = AsyncMock(side_effect=TelegramNetworkError(METHOD, "hosting unavailable"))
+        try:
+            with patch("aiogram.client.session.aiohttp.AiohttpSession.make_request", request), patch(
+                "src.telegram_runtime.asyncio.sleep", AsyncMock()
+            ), self.assertRaises(TelegramNetworkError):
+                await broadcaster._send_telegram(
+                    1, "x", campaign_type=CAMPAIGN_NOTIFICATION, via_broker=True, raise_on_failure=True
+                )
+            self.assertEqual(request.await_count, 3)
+        finally:
+            await session.close()
+
+    async def test_server_error_is_retried_without_disabling_notifications(self) -> None:
+        await self.db.upsert_user("telegram", 1, None, "Студент")
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=[TelegramServerError(METHOD, "Bad Gateway"), MagicMock()])
+        broadcaster = Broadcaster(db=self.db, telegram_bot=bot)
+        with patch("src.notifier.asyncio.sleep", AsyncMock()):
+            ok = await broadcaster._send_telegram(1, "x", campaign_type=CAMPAIGN_NOTIFICATION, via_broker=False)
+        self.assertTrue(ok)
+        self.assertEqual(bot.send_message.await_count, 2)
+        self.assertFalse((await self.db.get_user("telegram", 1)).delivery_disabled_auto)
+
     async def test_retry_after_is_respected(self) -> None:
         bot = MagicMock()
         bot.send_message = AsyncMock(side_effect=[TelegramRetryAfter(METHOD, "flood", 3), MagicMock()])

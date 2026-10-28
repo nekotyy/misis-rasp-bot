@@ -21,6 +21,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
@@ -86,6 +87,7 @@ from src.system_status import (
     format_uptime,
     get_memory_usage_mb,
 )
+from src.telegram_runtime import telegram_retry_attempts
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -1992,7 +1994,7 @@ def build_dispatcher(
                 return
             except TelegramForbiddenError:
                 return
-            except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter):
+            except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError):
                 pass
         sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
         context_messages[chat_id][context] = [sent.message_id] if sent is not None else message_ids
@@ -2014,7 +2016,7 @@ def build_dispatcher(
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
     ) -> Message | None:
-        retries = 3
+        retries = telegram_retry_attempts(bot)
         for attempt in range(1, retries + 1):
             try:
                 return await bot.send_message(chat_id, text, reply_markup=reply_markup)
@@ -2027,8 +2029,8 @@ def build_dispatcher(
                 if attempt >= retries:
                     logger.warning("Telegram flood control for chat %s: %s", chat_id, exc)
                     return None
-                await asyncio.sleep(min(float(exc.retry_after) + 0.5, 30.0))
-            except TelegramNetworkError as exc:
+                await asyncio.sleep(max(0.0, float(exc.retry_after)) + 0.5)
+            except (TelegramNetworkError, TelegramServerError) as exc:
                 if attempt >= retries:
                     logger.warning("Telegram send_message failed for chat %s: %s", chat_id, exc)
                     return None
@@ -2036,14 +2038,14 @@ def build_dispatcher(
         return None
 
     async def safe_delete_message(bot: Bot, chat_id: int, message_id: int) -> bool:
-        retries = 3
+        retries = telegram_retry_attempts(bot)
         for attempt in range(1, retries + 1):
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=message_id)
                 return True
             except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return False
-            except TelegramNetworkError as exc:
+            except (TelegramNetworkError, TelegramServerError) as exc:
                 if attempt >= retries:
                     logger.warning(
                         "Telegram delete_message failed for chat %s message %s: %s",
@@ -2063,14 +2065,14 @@ def build_dispatcher(
     async def try_delete_message(message: Message | None) -> None:
         if message is None:
             return
-        retries = 3
+        retries = telegram_retry_attempts(getattr(message, "bot", None))
         for attempt in range(1, retries + 1):
             try:
                 await message.delete()
                 return
             except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return
-            except TelegramNetworkError:
+            except (TelegramNetworkError, TelegramServerError):
                 if attempt >= retries:
                     return
                 await asyncio.sleep(0.5 * attempt)
@@ -2127,14 +2129,14 @@ def build_dispatcher(
                 # На нажатие уже ответили (например, авто-ответ по таймеру) — второй ответ Telegram отклонит.
                 return
             answered_callback_ids.add(callback_id)
-        retries = 3
+        retries = telegram_retry_attempts(getattr(callback, "bot", None))
         for attempt in range(1, retries + 1):
             try:
                 await callback.answer(*args, **kwargs)
                 return
             except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter):
                 return
-            except TelegramNetworkError:
+            except (TelegramNetworkError, TelegramServerError):
                 if attempt >= retries:
                     return
                 await asyncio.sleep(0.5 * attempt)
@@ -2157,7 +2159,7 @@ def build_dispatcher(
     ) -> bool:
         if message is None:
             return False
-        retries = 3
+        retries = telegram_retry_attempts(getattr(message, "bot", None))
         for attempt in range(1, retries + 1):
             try:
                 await message.edit_text(text, reply_markup=reply_markup)
@@ -2169,8 +2171,8 @@ def build_dispatcher(
             except TelegramRetryAfter as exc:
                 if attempt >= retries:
                     return False
-                await asyncio.sleep(min(float(exc.retry_after) + 0.5, 30.0))
-            except TelegramNetworkError:
+                await asyncio.sleep(max(0.0, float(exc.retry_after)) + 0.5)
+            except (TelegramNetworkError, TelegramServerError):
                 if attempt >= retries:
                     return False
                 await asyncio.sleep(0.5 * attempt)

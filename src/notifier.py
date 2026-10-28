@@ -21,6 +21,7 @@ from vkbottle.bot import Bot as VkBot
 
 from src.db import Database
 from src.message_broker import OutboundMessage, RabbitMQBroker
+from src.telegram_runtime import telegram_retry_attempts
 from src.vk_runtime import is_permanent_vk_delivery_error, split_vk_text, vk_send_message
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,6 @@ def build_vk_notification_keyboard() -> str:
 
 VK_NOTIFICATION_KEYBOARD = build_vk_notification_keyboard()
 
-TELEGRAM_SEND_ATTEMPTS = 3
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 
@@ -539,18 +539,19 @@ class Broadcaster:
 
     async def _send_telegram_chunk(self, chat_id: int, text: str, reply_markup: InlineKeyboardMarkup | None) -> None:
         delay = 1.0
-        for attempt in range(1, TELEGRAM_SEND_ATTEMPTS + 1):
+        attempts = telegram_retry_attempts(self.telegram_bot)
+        for attempt in range(1, attempts + 1):
             try:
                 await self.telegram_bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
                 return
             except TelegramRetryAfter as exc:
-                if attempt >= TELEGRAM_SEND_ATTEMPTS:
+                if attempt >= attempts:
                     raise
-                wait_for = min(float(exc.retry_after) + 0.5, 60.0)
+                wait_for = max(0.0, float(exc.retry_after)) + 0.5
                 logger.warning("Telegram просит подождать %.0f с перед отправкой в %s.", wait_for, chat_id)
                 await asyncio.sleep(wait_for)
             except (TelegramNetworkError, TelegramServerError) as exc:
-                if attempt >= TELEGRAM_SEND_ATTEMPTS:
+                if attempt >= attempts:
                     raise
                 logger.warning("Telegram send to %s: временная ошибка (попытка %s): %s", chat_id, attempt, exc)
                 await asyncio.sleep(delay)
