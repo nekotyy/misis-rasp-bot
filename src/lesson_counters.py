@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -427,27 +428,23 @@ async def resolve_teacher_snapshot(db: Database, parser: ScheduleParser, title: 
 
 
 def snapshot_to_search_content(snapshot: ScheduleSnapshot) -> dict:
-    """Приводит ScheduleSnapshot к тому же dict-формату, в котором снимки хранятся в БД."""
-    return {
-        "group_name": snapshot.group_name,
-        "fetched_at": snapshot.fetched_at.isoformat(timespec="seconds"),
-        "days": [
-            {
-                "date_label": day.date_label,
-                "date_iso": day.date_iso,
-                "lessons": [
-                    {
-                        "number": lesson.number,
-                        "subject": lesson.subject,
-                        "teacher": lesson.teacher,
-                        "classroom": lesson.classroom,
-                    }
-                    for lesson in day.lessons
-                ],
-            }
-            for day in snapshot.days
-        ],
-    }
+    """Формат снимка в БД и поиске, включая вариант недели университета."""
+    return snapshot.to_dict()
+
+
+async def _preview_content(parser: ScheduleParser, url: str, stored: dict | None) -> dict:
+    if stored is not None and (not university_kind(url) or any(
+        day.get("week_variant") in (1, 2) for day in stored["content"].get("days", [])
+    )):
+        return stored["content"]
+    try:
+        async with asyncio.timeout(3.0 if stored is not None else None):
+            snapshot, _ = await parser.parse_from_url(url)
+    except (httpx.HTTPError, ValueError, TimeoutError):
+        if stored is not None:
+            return stored["content"]
+        raise
+    return snapshot_to_search_content(snapshot)
 
 
 async def resolve_group_preview_content(db: Database, parser: ScheduleParser, group_url: str) -> dict:
@@ -460,10 +457,7 @@ async def resolve_group_preview_content(db: Database, parser: ScheduleParser, gr
     """
     schedule_id = extract_numeric_id(group_url)
     stored = await db.get_latest_snapshot("current", schedule_id=schedule_id) if schedule_id is not None else None
-    if stored is not None:
-        return stored["content"]
-    snapshot_obj, _ = await parser.parse_from_url(group_url)
-    return snapshot_to_search_content(snapshot_obj)
+    return await _preview_content(parser, group_url, stored)
 
 
 async def resolve_audience_preview_content(db: Database, parser: ScheduleParser, audience_url: str) -> dict:
@@ -476,10 +470,7 @@ async def resolve_audience_preview_content(db: Database, parser: ScheduleParser,
     """
     source_key = source_key_from_url("audience", audience_url)
     stored = await db.get_latest_snapshot("current", source_key=source_key)
-    if stored is not None:
-        return stored["content"]
-    snapshot_obj, _ = await parser.parse_from_url(audience_url)
-    return snapshot_to_search_content(snapshot_obj)
+    return await _preview_content(parser, audience_url, stored)
 
 
 class LessonCounterService:

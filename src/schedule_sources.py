@@ -7,18 +7,12 @@ import re
 from urllib.parse import urlsplit
 
 UNIVERSITY_SCHEDULE_URL = "http://r.sf-misis.ru"
-UNIVERSITY_BELLS_TEXT = "\n".join(
-    (
-        "Звонки СТИ НИТУ МИСИС (университет)",
-        "",
-        "1 пара: 09:00–10:30",
-        "2 пара: 10:40–12:10",
-        "3 пара: 12:40–14:10",
-        "4 пара: 14:20–15:50",
-        "5 пара: 16:00–17:30",
-        "6 пара: 18:30–20:00",
-        "7 пара: 20:10–21:40",
-    )
+UNIVERSITY_BELL_TIMES = ("09:00–10:30", "10:40–12:10", "12:40–14:10", "14:20–15:50", "16:00–17:30", "18:30–20:00", "20:10–21:40")
+UNIVERSITY_BELLS_TEXT = "🔔 Звонки СТИ НИТУ МИСИС\nУниверситет\n\n" + "\n".join(
+    f"{number} пара: {time}" for number, time in enumerate(UNIVERSITY_BELL_TIMES, 1)
+)
+UNIVERSITY_BELLS_HTML = "🔔 <b>Звонки СТИ НИТУ МИСИС</b>\nУниверситет\n\n" + "\n".join(
+    f"<b>{number} пара</b>   <code>{time}</code>" for number, time in enumerate(UNIVERSITY_BELL_TIMES, 1)
 )
 
 

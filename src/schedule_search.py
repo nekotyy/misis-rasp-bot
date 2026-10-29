@@ -30,7 +30,8 @@ class SearchTarget:
 
 
 def search_choice_label(target: SearchTarget, targets: list[SearchTarget]) -> str:
-    if sum(item.title == target.title for item in targets) < 2:
+    mixed_sources = len({bool(university_kind(item.url)) for item in targets}) > 1
+    if not mixed_sources and sum(item.title == target.title for item in targets) < 2:
         return target.title
     source = "университет" if university_kind(target.url) else "колледж"
     return f"{target.title} ({source})"
@@ -382,6 +383,9 @@ class ScheduleSearchCatalog:
         parts = normalized.split()
         if parts:
             keys.add(parts[0])
+        if len(parts) >= 2:
+            initials = parts[0] + " " + " ".join(part[0] + "." for part in parts[1:])
+            keys.update((initials, self._compact_name_key(initials)))
         return {key for key in keys if key}
 
     @staticmethod

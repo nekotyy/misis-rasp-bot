@@ -1641,26 +1641,7 @@ class Database:
         return len(ids_to_delete)
 
     def _snapshot_to_dict(self, snapshot: ScheduleSnapshot) -> dict:
-        return {
-            "group_name": snapshot.group_name,
-            "fetched_at": snapshot.fetched_at.isoformat(timespec="seconds"),
-            "days": [
-                {
-                    "date_label": day.date_label,
-                    "date_iso": day.date_iso,
-                    "lessons": [
-                        {
-                            "number": lesson.number,
-                            "subject": lesson.subject,
-                            "teacher": lesson.teacher,
-                    "classroom": lesson.classroom,
-                        }
-                        for lesson in day.lessons
-                    ],
-                }
-                for day in snapshot.days
-            ],
-        }
+        return snapshot.to_dict()
 
     async def record_star_donation(
         self,

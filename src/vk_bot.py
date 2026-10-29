@@ -56,8 +56,10 @@ from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choi
 from src.schedule_service import (
     ScheduleFormatter,
     get_day_by_offset_from_content,
+    university_current_week,
     university_day_variant,
     university_subscription_url,
+    university_week_name,
 )
 from src.schedule_sources import UNIVERSITY_BELLS_TEXT
 from src.subscription_utils import (
@@ -1257,14 +1259,18 @@ def build_vk_bot(
             ["Отменить"],
         ])
 
-    def build_welcome_text(user, is_admin: bool) -> str:
-        lines = ["Бот расписания колледжа и университета", ""]
+    async def build_welcome_text(user, is_admin: bool) -> str:
+        lines = ["Привет! Я бот расписания колледжа и университета", ""]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
             user.audience_subscription_title if user else None,
         )
         lines.append(subscription_line if subscription_line else "Подписка пока не выбрана.")
+        if isinstance(getattr(user, "user_id", None), int) and university_subscription_url(user, parser):
+            saved = await get_or_fetch_subscription_snapshot(user.user_id)
+            current = university_current_week(saved["content"]) if saved else None
+            lines.append(f"Учимся по: {university_week_name(current)}")
         lines.extend(["", "Используй кнопки ниже для расписания."])
         if is_admin:
             lines.append("Кнопка «Админка» доступна тебе как администратору.")
@@ -1478,7 +1484,7 @@ def build_vk_bot(
         is_admin = user_is_admin(user_id)
         await show_screen(
             peer_id,
-            build_welcome_text(user, is_admin),
+            await build_welcome_text(user, is_admin),
             keyboard=menu_keyboard(user, is_editor, is_admin),
         )
 
@@ -1653,28 +1659,31 @@ def build_vk_bot(
         if user is None or not user.subscription_key or not user.subscription_title:
             return None
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
+        cached_day = get_day_by_offset_from_content(snapshot["content"], 0) if snapshot else None
         if snapshot is not None and (
-            not university_subscription_url(user, parser) or get_day_by_offset_from_content(snapshot["content"], 0) is not None
+            not university_subscription_url(user, parser) or (cached_day is not None and cached_day.week_variant in (1, 2))
         ):
             return snapshot
         try:
-            if user.subscription_type == "teacher" and user.subscription_title:
-                snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
-                snapshot_hash = compute_snapshot_hash(snapshot_obj)
-            elif user.subscription_type == "audience" and user.subscription_url:
-                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
-            elif user.schedule_id is not None:
-                snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-            else:
-                return None
-        except httpx.HTTPError as exc:
-            logger.warning(
+            async with asyncio.timeout(3.0 if cached_day is not None else None):
+                if user.subscription_type == "teacher" and user.subscription_title:
+                    snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
+                    snapshot_hash = compute_snapshot_hash(snapshot_obj)
+                elif user.subscription_type == "audience" and user.subscription_url:
+                    snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+                elif user.schedule_id is not None:
+                    snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+                else:
+                    return None
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+            logger.log(
+                logging.DEBUG if cached_day is not None else logging.WARNING,
                 "Failed to fetch VK subscription snapshot for user %s (%s): %s",
                 user_id,
                 user.subscription_key,
                 exc,
             )
-            return None
+            return snapshot if cached_day is not None else None
         return {
             "source_type": user.subscription_type,
             "source_key": user.subscription_key,
@@ -1683,26 +1692,7 @@ def build_vk_bot(
             "group_name": user.group_name or snapshot_obj.group_name,
             "schedule_id": user.schedule_id,
             "snapshot_hash": snapshot_hash,
-            "content": {
-                "group_name": snapshot_obj.group_name,
-                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
-                "days": [
-                    {
-                        "date_label": day.date_label,
-                        "date_iso": day.date_iso,
-                        "lessons": [
-                            {
-                                "number": lesson.number,
-                                "subject": lesson.subject,
-                                "teacher": lesson.teacher,
-                                "classroom": lesson.classroom,
-                            }
-                            for lesson in day.lessons
-                        ],
-                    }
-                    for day in snapshot_obj.days
-                ],
-            },
+            "content": snapshot_obj.to_dict(),
             "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
             "created_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
         }
@@ -3154,8 +3144,7 @@ def build_vk_bot(
                 if not url:
                     raise ValueError("Варианты доступны для университета")
                 day = await university_day_variant(parser, url, date_iso, variant)
-                heading = "Актуальное расписание" if variant == 0 else name
-                await show_screen(peer_id, heading + "\n\n" + schedule_text(day, date_iso), keyboard=schedule_keyboard(date_iso))
+                await show_screen(peer_id, schedule_text(day, date_iso), keyboard=schedule_keyboard(date_iso))
             except (ValueError, httpx.HTTPError):
                 await show_screen(peer_id, "Не удалось загрузить вариант расписания. Попробуй позже.", keyboard=schedule_keyboard())
             return
@@ -3181,7 +3170,7 @@ def build_vk_bot(
             day_text = schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label)
             await show_screen(
                 peer_id,
-                ("Актуальное расписание\n\n" if url else "") + day_text,
+                day_text,
                 keyboard=schedule_keyboard(date_iso),
             )
             return

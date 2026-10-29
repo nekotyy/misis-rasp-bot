@@ -45,6 +45,8 @@ def compute_snapshot_hash(snapshot: ScheduleSnapshot) -> str:
     normalized_parts: list[str] = [snapshot.group_name]
     for day in snapshot.days:
         normalized_parts.append(day.date_iso)
+        if day.week_variant in (1, 2):
+            normalized_parts.append(f"week_variant:{day.week_variant}")
         # Сортировка по полному кортежу, а не только по номеру: у личного расписания
         # препода несколько групп могут иметь пару с одинаковым номером в один день,
         # и без этого порядок (а значит и хеш) при одинаковом содержимом зависел бы
@@ -276,7 +278,9 @@ class ScheduleParser:
                         )
                     )
             day = monday + timedelta(days=weekdays.index(name))
-            days.append(DaySchedule(day.isoformat(), day.isoformat(), lessons))
+            variants = {"числителю": 1, "знаменателю": 2}
+            days.append(DaySchedule(day.isoformat(), day.isoformat(), lessons,
+                                    week_variant=variants[parity[2]], current_week_variant=variants[parity[1]]))
         if len(days) != 7 or len({day.date_iso for day in days}) != 7:
             raise ValueError("Неполная неделя расписания университета")
         group_name = title.get_text(" ", strip=True).removeprefix("Расписание для ")

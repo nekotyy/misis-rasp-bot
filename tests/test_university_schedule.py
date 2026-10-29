@@ -73,11 +73,15 @@ class UniversityParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 подгруппа", lessons[0].subject)
         self.assertIn("Лабораторная работа", lessons[0].subject)
         self.assertEqual(lessons[1].classroom, "1/406")
+        self.assertEqual(snapshot.days[0].week_variant, 1)
+        self.assertEqual(snapshot.days[0].current_week_variant, 1)
 
     def test_parity_comes_from_site_and_handles_year_boundary(self) -> None:
         soup = BeautifulSoup(weekly_html(1, 2), "html.parser")
         snapshot = self.parser._parse_university_html(soup, datetime(2026, 12, 31))
         self.assertEqual(snapshot.days[0].date_iso, "2027-01-04")
+        self.assertEqual(snapshot.days[0].week_variant, 1)
+        self.assertEqual(snapshot.days[0].current_week_variant, 2)
 
     async def test_empty_subgroup_marker_from_it26_does_not_break_either_week(self) -> None:
         empty = '<div class="table-subgroup-item"><div class="table-sg-name">3 подгруппа</div><span class="schedule-subgroup-empty">————</span></div>'
@@ -207,7 +211,7 @@ class UniversityIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_subscriptions_preview_and_background_sync_share_existing_storage(self) -> None:
         parser = ScheduleParser("http://college/rasp")
         today = datetime.now().date().isoformat()
-        snapshot = ScheduleSnapshot("ТЭ/ПТ-26д", datetime.now(), [DaySchedule(today, today, [Lesson(1, "Физика", "Иванов", "1/405")])])
+        snapshot = ScheduleSnapshot("ТЭ/ПТ-26д", datetime.now(), [DaySchedule(today, today, [Lesson(1, "Физика", "Иванов", "1/405")], 1, 1)])
         parser.parse = AsyncMock(return_value=(snapshot, compute_snapshot_hash(snapshot)))
         parser.parse_from_url = AsyncMock(return_value=(snapshot, compute_snapshot_hash(snapshot)))
         subscription = make_group_subscription("ТЭ/ПТ-26д", -3917)
@@ -262,10 +266,10 @@ class UniversityBotVariantTests(unittest.IsolatedAsyncioTestCase):
         self.settings.database_path = self.db.path
         date_iso = datetime.now().date().isoformat()
         self.snapshot = ScheduleSnapshot(
-            "ТЭ/ПТ-26д", datetime.now(), [DaySchedule(date_iso, date_iso, [Lesson(1, "Актуальная физика", "Иванов", "1/405")])]
+            "ТЭ/ПТ-26д", datetime.now(), [DaySchedule(date_iso, date_iso, [Lesson(1, "Актуальная физика", "Иванов", "1/405")], 1, 1)]
         )
         alternate = ScheduleSnapshot(
-            "ТЭ/ПТ-26д", datetime.now(), [DaySchedule(date_iso, date_iso, [Lesson(1, "Другой вариант", "Петров", "1/406")])]
+            "ТЭ/ПТ-26д", datetime.now(), [DaySchedule(date_iso, date_iso, [Lesson(1, "Другой вариант", "Петров", "1/406")], 2, 1)]
         )
         self.parser = ScheduleParser("http://college/rasp")
         self.parser.parse_university_variant = AsyncMock(return_value=alternate)
@@ -299,6 +303,9 @@ class UniversityBotVariantTests(unittest.IsolatedAsyncioTestCase):
             )
             await handler(callback)
             self.assertIn(expected, bot.send_message.call_args.args[1])
+            message_text = bot.send_message.call_args.args[1]
+            self.assertIn("Учимся по: <b>Числитель</b>", message_text)
+            self.assertIn(f"Выбрано: <b>{'Знаменатель' if action.endswith(':2') else 'Числитель'}</b>", message_text)
             keyboard = bot.send_message.call_args.kwargs["reply_markup"]
             self.assertIn("Числитель", [button.text for row in keyboard.inline_keyboard for button in row])
         self.assertEqual((await self.db.get_latest_snapshot("current", source_key="group:-3917"))["snapshot_hash"], "original")
@@ -322,6 +329,8 @@ class UniversityBotVariantTests(unittest.IsolatedAsyncioTestCase):
             await handler(SimpleNamespace(peer_id=42, from_id=42, text=text, action=None, attachments=[]))
             sent = [call.args[1] for call in bot.api.request.await_args_list if call.args[0] == "messages.send"][-1]
             self.assertIn(expected, sent["message"])
+            self.assertIn("Учимся по: Числитель", sent["message"])
+            self.assertIn(f"Выбрано: {'Знаменатель' if text.startswith('Знаменатель') else 'Числитель'}", sent["message"])
             labels = [b["action"]["label"] for row in json.loads(sent["keyboard"])["buttons"] for b in row]
             self.assertIn(f"Числитель на {date_label}", labels)
         self.parser.parse_university_variant.assert_awaited_once_with(ROOT + "/group/3917", 2, date_iso)
@@ -332,3 +341,32 @@ class UniversityBotVariantTests(unittest.IsolatedAsyncioTestCase):
         self.parser.parse_university_variant.return_value.days[0].date_iso = requested
         day = await university_day_variant(self.parser, ROOT + "/group/3917", requested, 1)
         self.assertEqual(day.date_iso, requested)
+
+    async def test_telegram_start_includes_current_week_and_readable_bells(self) -> None:
+        dispatcher = build_dispatcher(self.settings, self.db, self.parser, None, None, None)
+        bot = AsyncMock()
+        bot.send_message.return_value = SimpleNamespace(message_id=1)
+        message = SimpleNamespace(bot=bot, chat=SimpleNamespace(id=42, type="private"),
+                                  from_user=SimpleNamespace(id=42, first_name="Тест", last_name=None, username=None))
+        start = next(h.callback for h in dispatcher.message.handlers if h.callback.__name__ == "handle_start")
+        await start(message)
+        text = bot.send_message.call_args.args[1]
+        self.assertIn("Привет! Я бот расписания колледжа и университета", text)
+        self.assertIn("Твоя группа: <b>ТЭ/ПТ-26д</b>", text)
+        self.assertIn("Учимся по: <b>Числитель</b>", text)
+        self.assertIn("/rasp — посмотреть расписание", text)
+        callback = SimpleNamespace(data="schedule:bells", message=message, from_user=message.from_user, bot=bot, answer=AsyncMock())
+        bells = next(h.callback for h in dispatcher.callback_query.handlers if h.callback.__name__ == "handle_schedule_callback")
+        await bells(callback)
+        text = bot.send_message.call_args.args[1]
+        self.assertIn("<b>Звонки СТИ НИТУ МИСИС</b>", text)
+        self.assertIn("<b>7 пара</b>   <code>20:10–21:40</code>", text)
+
+    async def test_vk_start_includes_current_week(self) -> None:
+        bot = build_vk_bot(self.settings, self.db, self.parser, None)
+        bot.api.request = AsyncMock(return_value={"response": 1})
+        handler = next(h.handler for h in bot.labeler.message_view.handlers if h.handler.__name__ == "all_messages_handler")
+        await handler(SimpleNamespace(peer_id=42, from_id=42, text="Начать", action=None, attachments=[]))
+        text = [call.args[1]["message"] for call in bot.api.request.await_args_list if call.args[0] == "messages.send"][-1]
+        self.assertIn("Привет! Я бот расписания колледжа и университета", text)
+        self.assertIn("Учимся по: Числитель", text)

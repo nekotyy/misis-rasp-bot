@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot, UserRecord
@@ -55,6 +55,45 @@ MONTHS_RU = {
 }
 
 
+def university_week_name(variant: int | None) -> str:
+    return {1: "Числитель", 2: "Знаменатель"}.get(variant, "неделя не определена")
+
+
+def university_current_week(content: dict, *, today: date | None = None) -> int | None:
+    """Неделя с сайта с календарным сдвигом от даты сохранённого снимка."""
+    variant = next((day.get("current_week_variant") for day in content.get("days", [])
+                    if day.get("current_week_variant") in (1, 2)), None)
+    if variant is None:
+        return None
+    try:
+        fetched = datetime.fromisoformat(content["fetched_at"]).date()
+    except (KeyError, TypeError, ValueError):
+        return None
+    current = today or datetime.now().date()
+    delta = ((current - timedelta(days=current.weekday())) - (fetched - timedelta(days=fetched.weekday()))).days // 7
+    return 3 - variant if delta % 2 else variant
+
+
+def day_from_content(raw: dict, *, fetched_at: str | None = None) -> DaySchedule:
+    return DaySchedule(
+        date_label=raw["date_label"], date_iso=raw["date_iso"],
+        lessons=[Lesson(number=item["number"], subject=item["subject"], teacher=item["teacher"], classroom=item["classroom"])
+                 for item in raw.get("lessons", [])],
+        week_variant=raw.get("week_variant"),
+        current_week_variant=university_current_week({"days": [raw], "fetched_at": fetched_at}),
+    )
+
+
+def university_week_header(day: DaySchedule, *, html: bool = False) -> str:
+    if day.week_variant not in (1, 2):
+        return ""
+    selected = university_week_name(day.week_variant)
+    current = university_week_name(day.current_week_variant)
+    if html:
+        return f"<b>{selected}</b>\nУчимся по: <b>{current}</b>\nВыбрано: <b>{selected}</b>\n\n"
+    return f"{selected}\nУчимся по: {current}\nВыбрано: {selected}\n\n"
+
+
 def format_human_date(date_val: str | None, default_year: int | None = None) -> str:
     if not date_val:
         return ""
@@ -107,7 +146,7 @@ class ScheduleFormatter:
     def format_day_card(day: DaySchedule, title: str) -> str:
         human_label = escape(format_human_date(day.date_label or day.date_iso))
         if not day.lessons:
-            return f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day, html=True) + f"Расписание на {human_label}\n\nПар нет."
 
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
@@ -115,17 +154,17 @@ class ScheduleFormatter:
                 f"<b>{lesson.number}.</b> в <b>{escape(lesson.classroom)}</b> "
                 f"по <b>{escape(lesson.subject)}</b> у <b>{escape(lesson.teacher)}</b>"
             )
-        return "\n".join(lines)
+        return university_week_header(day, html=True) + "\n".join(lines)
 
     @staticmethod
     def format_day_plain(day: DaySchedule) -> str:
         human_label = format_human_date(day.date_label or day.date_iso)
         if not day.lessons:
-            return f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day) + f"Расписание на {human_label}\n\nПар нет."
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
-        return "\n".join(lines)
+        return university_week_header(day) + "\n".join(lines)
 
     @staticmethod
     def format_range(days: list[DaySchedule], title: str | None = None) -> str:
@@ -162,6 +201,11 @@ class ScheduleFormatter:
             if not lessons:
                 continue
             added_any = True
+            if day.get("week_variant") in (1, 2):
+                parsed = day_from_content(day, fetched_at=content.get("fetched_at"))
+                lines.append(ScheduleFormatter.format_day_card(parsed, "") if html else ScheduleFormatter.format_day_plain(parsed))
+                lines.append("")
+                continue
             raw_date = day.get("date_label") or day.get("date_iso") or ""
             human_date = format_human_date(raw_date)
             lines.append(escape(human_date) if html else human_date)
@@ -285,19 +329,7 @@ def get_day_by_offset_from_content(content: dict, offset: int) -> DaySchedule | 
     for day in content.get("days", []):
         if day.get("date_iso", "") != target_date:
             continue
-        return DaySchedule(
-            date_label=day["date_label"],
-            date_iso=day["date_iso"],
-            lessons=[
-                Lesson(
-                    number=lesson["number"],
-                    subject=lesson["subject"],
-                    teacher=lesson["teacher"],
-                    classroom=lesson["classroom"],
-                )
-                for lesson in day.get("lessons", [])
-            ],
-        )
+        return day_from_content(day, fetched_at=content.get("fetched_at"))
     return None
 
 
