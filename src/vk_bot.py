@@ -8,6 +8,7 @@ from collections.abc import Awaitable
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
+from secrets import randbelow
 from time import monotonic
 from typing import Any
 
@@ -1358,6 +1359,18 @@ def build_vk_bot(
     async def send_admin_document(peer_id: int, path: Path, title: str) -> None:
         if not path.exists():
             await show_screen(peer_id, f"{title} не найден.", keyboard=admin_keyboard())
+            return
+        if bot.api.outbox is not None:
+            from aiogram.types import FSInputFile
+            notice = await bot.api.outbox.prepare_vk("messages.send", {
+                "peer_id": peer_id, "message": f"Загружаю {title}...", "random_id": randbelow(2**31 - 1) + 1,
+            })
+            document = await bot.api.outbox.prepare_vk("outbox.sendDocument", {
+                "peer_id": peer_id, "message": title, "document": FSInputFile(path, filename=path.name),
+                "keyboard": admin_keyboard(), "random_id": randbelow(2**31 - 1) + 1,
+            })
+            rows = await bot.api.outbox.enqueue_many([notice, document])
+            await bot.api.outbox.wait(rows[-1]["delivery_id"])
             return
         await show_screen(peer_id, f"Загружаю {title}...")
         uploader = DocMessagesUploader(bot.api)
@@ -3402,7 +3415,8 @@ def build_vk_bot(
                 async def run_test_broadcast() -> None:
                     progress = await broadcaster.broadcast_test_message()
                     summary = (
-                        f"Тестовая рассылка завершена.\n\nУспешно: {progress.success_count}, ошибок: {progress.failed_count}."
+                        (f"Тестовая рассылка принята в доставку.\n\nВ очереди: {progress.queued_count}."
+                         if progress.queued_count else f"Тестовая рассылка завершена.\n\nУспешно: {progress.success_count}, ошибок: {progress.failed_count}.")
                         if progress is not None
                         else "Тестовая рассылка завершена."
                     )

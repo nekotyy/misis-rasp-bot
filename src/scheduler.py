@@ -485,6 +485,18 @@ class ScheduleJobs:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         try:
+            if self.broadcaster.outbox is not None:
+                from aiogram.methods import SendDocument, SendMessage
+                bot = self.broadcaster.telegram_bot
+                prepared = [await self.broadcaster.outbox.prepare_telegram(
+                    bot, SendMessage(chat_id=self.admin_telegram_id, text=f"Автобекап за {timestamp}."),
+                )]
+                for label, path in files:
+                    prepared.append(await self.broadcaster.outbox.prepare_telegram(
+                        bot, SendDocument(chat_id=self.admin_telegram_id, document=FSInputFile(path), caption=label),
+                    ))
+                await self.broadcaster.outbox.enqueue_many(prepared)
+                return
             await self.broadcaster.telegram_bot.send_message(
                 chat_id=self.admin_telegram_id,
                 text=f"Автобекап за {timestamp}.",
@@ -752,6 +764,9 @@ class ScheduleJobs:
     def _teacher_notify_tasks(self) -> dict[str, asyncio.Task]:
         if not hasattr(self, "_teacher_notify_tasks_map"):
             self._teacher_notify_tasks_map: dict[str, asyncio.Task] = {}
+        if not hasattr(self, "_teacher_notify_running"):
+            self._teacher_notify_running: set[str] = set()
+            self._teacher_notify_rerun: dict[str, SourceRow] = {}
         return self._teacher_notify_tasks_map
 
     def _schedule_teacher_sync(self, teacher_source: SourceRow) -> None:
@@ -765,6 +780,11 @@ class ScheduleJobs:
         key = teacher_source["source_key"]
         existing = tasks.get(key)
         if existing is not None and not existing.done():
+            if key in self._teacher_notify_running:
+                # Отменять можно debounce-таймер, но не активную работу с SQLite
+                # и доставкой. Последние изменения пересчитаются следующим проходом.
+                self._teacher_notify_rerun[key] = teacher_source
+                return
             existing.cancel()
         tasks[key] = asyncio.create_task(self._debounced_teacher_sync(teacher_source))
 
@@ -773,8 +793,16 @@ class ScheduleJobs:
             await asyncio.sleep(TEACHER_NOTIFY_DEBOUNCE_SECONDS)
         except asyncio.CancelledError:
             return
-        await self._sync_teacher_source_safely(teacher_source)
-        self._teacher_notify_tasks().pop(teacher_source["source_key"], None)
+        key = teacher_source["source_key"]
+        self._teacher_notify_running.add(key)
+        try:
+            await self._sync_teacher_source_safely(teacher_source)
+        finally:
+            self._teacher_notify_running.discard(key)
+            self._teacher_notify_tasks().pop(key, None)
+            rerun = self._teacher_notify_rerun.pop(key, None)
+            if rerun is not None and not asyncio.current_task().cancelling():
+                self._schedule_teacher_sync(rerun)
 
     async def _sync_teacher_source_safely(self, teacher_source: SourceRow) -> None:
         try:

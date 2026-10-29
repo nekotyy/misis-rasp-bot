@@ -37,6 +37,8 @@ from vkbottle.http import AiohttpClient
 from vkbottle.modules import json as vk_json
 from vkbottle.polling import BotPolling
 
+from src.outbox_context import delivery_context
+
 logger = logging.getLogger(__name__)
 
 VK_MESSAGE_LIMIT = 4096
@@ -133,8 +135,19 @@ class ResilientAiohttpClient(AiohttpClient):
             yield response
 
 
+class OutboxVKAPI(API):
+    outbox = None
+
+    async def request(self, method: str, data: dict[str, Any], version: str | None = None):
+        action = method.rsplit(".", 1)[-1]
+        read_only = action.startswith(("get", "search", "is", "are", "check", "resolve"))
+        if self.outbox is not None and not read_only:
+            return await self.outbox.execute_vk(self, method, data, version)
+        return await super().request(method, data, version)
+
+
 def build_vk_api(token: str, *, verify_ssl: bool = True) -> API:
-    api = API(token, http_client=ResilientAiohttpClient(verify_ssl=verify_ssl))
+    api = OutboxVKAPI(token, http_client=ResilientAiohttpClient(verify_ssl=verify_ssl))
     # Список валидаторов по умолчанию — общий объект модуля vkbottle, поэтому
     # подменяем его копией только у своего API.
     api.response_validators = [StrictJSONResponseValidator(), VKAPIErrorResponseValidator()]
@@ -230,7 +243,7 @@ async def vk_send_message(
         return _extract_message_id(await vk_call_with_retry(api, "messages.send", params, max_attempts=max_attempts, base_delay=base_delay))
 
     chunks = split_vk_text(message or "") if message else [""]
-    last_id: int | None = None
+    requests: list[dict[str, Any]] = []
     for index, chunk in enumerate(chunks):
         is_last = index == len(chunks) - 1
         params: dict[str, Any] = {"peer_id": peer_id, "message": chunk, "random_id": _random_id()}
@@ -238,8 +251,21 @@ async def vk_send_message(
             params["keyboard"] = keyboard
         if attachment and index == 0:
             params["attachment"] = attachment
+        requests.append(params)
+    outbox = api.outbox if isinstance(api, OutboxVKAPI) else None
+    queued = []
+    if outbox is not None:
+        prepared = []
+        for params in requests:
+            prepared.append(await outbox.prepare_vk("messages.send", params))
+        queued = await outbox.enqueue_many(prepared)
+    last_id: int | None = None
+    for index, params in enumerate(requests):
         try:
-            response = await vk_call_with_retry(api, "messages.send", params, max_attempts=max_attempts, base_delay=base_delay)
+            response = (
+                await outbox.wait(queued[index]["delivery_id"]) if outbox is not None
+                else await vk_call_with_retry(api, "messages.send", params, max_attempts=max_attempts, base_delay=base_delay)
+            )
         except VKAPIError as exc:
             if vk_error_code(exc) not in VK_KEYBOARD_ERROR_CODES or "keyboard" not in params:
                 raise
@@ -554,7 +580,10 @@ class VkUpdateDispatcher:
     async def _process(self, update: dict[str, Any]) -> None:
         async with self._lock_for(extract_update_peer_id(update)):
             try:
-                await asyncio.wait_for(self._route(update), timeout=self.handler_timeout)
+                event_id = update_dedup_key(update)
+                context_id = f"vk:{update.get('group_id')}:{event_id}" if event_id else None
+                with delivery_context(context_id, str(extract_update_peer_id(update))):
+                    await asyncio.wait_for(self._route(update), timeout=self.handler_timeout)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

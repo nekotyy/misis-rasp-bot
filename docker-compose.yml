@@ -3,9 +3,7 @@ services:
     build: .
     container_name: misis-rasp-bot
     restart: unless-stopped
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+    stop_grace_period: 45s
     env_file:
       - .env
     environment:
@@ -26,11 +24,9 @@ services:
     build: .
     container_name: misis-web-configurator
     restart: unless-stopped
+    stop_grace_period: 45s
     env_file:
       - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
     environment:
       TZ: ${APP_TIMEZONE:-Europe/Moscow}
       DATABASE_PATH: /app/runtime/bot.db

@@ -17,12 +17,14 @@ from aiogram.enums import ParseMode
 from src.config import Settings
 from src.db import Database
 from src.db_migrations import apply_migrations
+from src.delivery_outbox import DEFAULT_DELIVERY_TTL, DeliveryOutbox
 from src.error_reporting import AdminErrorReporter, install_error_reporting
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import LessonCounterService
 from src.message_broker import (
     AutoDailyLessonCounterJobBroker,
     DatabaseCleanupJobBroker,
+    OutboxBroker,
     RabbitMQBroker,
 )
 from src.notifier import Broadcaster
@@ -156,6 +158,8 @@ def start_telegram_polling(
     # старая сессия закрывалась, а рассылка продолжала слать через неё
     # ("Connector is closed") — уведомления терялись.
     bot = build_telegram_bot(settings)
+    if broadcaster.outbox is not None:
+        broadcaster.outbox.bind_telegram(bot)
     broadcaster.telegram_bot = bot
     dispatcher = build_dispatcher(
         settings,
@@ -210,11 +214,13 @@ def start_vk_polling(
     # Бот нужен рассылке сразу, ещё до первого события long poll: консьюмер
     # RabbitMQ стартует следом и может получить VK-сообщение немедленно.
     broadcaster.vk_bot = vk_bot
+    if broadcaster.outbox is not None:
+        broadcaster.outbox.bind_vk(vk_bot.api)
     polling = vk_bot.resilient_polling
     router = vk_bot.router
     dispatcher = VkUpdateDispatcher(
         lambda update: router.route(update, vk_bot.api),
-        handler_timeout=vk_handler_timeout(settings),
+        handler_timeout=max(vk_handler_timeout(settings), DEFAULT_DELIVERY_TTL + 120) if broadcaster.outbox is not None else vk_handler_timeout(settings),
         on_failure=vk_bot.report_update_failure,
     )
 
@@ -333,7 +339,7 @@ async def warm_up_ocr_and_notify(
 async def main() -> None:
     settings = Settings.from_env()
     if not settings.rabbitmq_url:
-        logging.error("RABBITMQ_URL is not set. RabbitMQ consumers are disabled; direct delivery fallback remains available.")
+        logging.warning("RABBITMQ_URL is not set. RabbitMQ consumers are disabled; durable SQLite outbox delivery remains available.")
     if not settings.telegram_bot_token and not settings.vk_bot_token:
         logging.error("Neither TELEGRAM_BOT_TOKEN nor VK_BOT_TOKEN is set. Bot polling is disabled, background jobs keep running.")
 
@@ -382,6 +388,9 @@ async def main() -> None:
         admin_telegram_id=settings.admin_telegram_id,
         admin_vk_id=settings.admin_vk_id,
         broker=broker,
+        outbox=DeliveryOutbox(db, OutboxBroker(
+            settings.rabbitmq_url, settings.rabbitmq_queue, settings.rabbitmq_prefetch_count,
+        )),
     )
     error_reporter.set_notifier(broadcaster.notify_admins)
     alert_manager = SystemAlertManager(
@@ -422,6 +431,8 @@ async def main() -> None:
     )
     if vk_probe is not None:
         jobs.liveness_probes["vk_polling"] = vk_probe
+    await broadcaster.outbox.start()
+    jobs.liveness_probes["delivery_outbox"] = broadcaster.outbox.probe
     jobs.start()
 
     ocr_available, ocr_message = ocr_importer.availability()
@@ -455,7 +466,7 @@ async def main() -> None:
     try:
         await broadcaster.start()
     except (aio_pika.exceptions.AMQPError, ConnectionError, OSError) as exc:
-        logging.exception("RabbitMQ consumer failed on startup. Direct delivery fallback remains available.")
+        logging.exception("RabbitMQ consumer failed on startup. Durable SQLite outbox delivery remains available.")
         await alert_manager.report_component_status("rabbitmq", False, str(exc), details="Сбой запуска consumer RabbitMQ")
     try:
         await jobs.start_db_cleanup_consumer()

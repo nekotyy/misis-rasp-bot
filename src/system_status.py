@@ -114,6 +114,7 @@ COMPONENT_TITLES = {
     "database": "База данных SQLite",
     "scheduler": "Фоновый планировщик",
     "delivery": "Служба доставки уведомлений",
+    "delivery_outbox": "Надёжная очередь исходящих сообщений",
     "ocr": "Распознавание расписания с фото",
     "vk_polling": "Приём сообщений VK (long poll)",
     "telegram_polling": "Приём сообщений Telegram (polling)",
