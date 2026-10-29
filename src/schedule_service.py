@@ -6,6 +6,7 @@ from html import escape
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot, UserRecord
 from src.parser import ScheduleParser
 from src.schedule_sources import university_kind
+from src.university_subgroups import filter_content, filter_day, filter_snapshot
 
 # Насколько долго валидный непустой кэш защищает источник от перезаписи пустым
 # результатом с сайта: после падения сайт иногда отвечает 200 с пустой таблицей
@@ -84,14 +85,15 @@ def day_from_content(raw: dict, *, fetched_at: str | None = None) -> DaySchedule
     )
 
 
-def university_week_header(day: DaySchedule, *, html: bool = False) -> str:
+def university_week_header(day: DaySchedule, *, html: bool = False, subgroup: int | None = None) -> str:
     if day.week_variant not in (1, 2):
         return ""
     selected = university_week_name(day.week_variant)
     current = university_week_name(day.current_week_variant)
+    personal = (f"\nПодгруппа: <b>{subgroup}</b>" if html else f"\nПодгруппа: {subgroup}") if subgroup is not None else ""
     if html:
-        return f"<b>{selected}</b>\nУчимся по: <b>{current}</b>\nВыбрано: <b>{selected}</b>\n\n"
-    return f"{selected}\nУчимся по: {current}\nВыбрано: {selected}\n\n"
+        return f"<b>{selected}</b>\nУчимся по: <b>{current}</b>\nВыбрано: <b>{selected}</b>{personal}\n\n"
+    return f"{selected}\nУчимся по: {current}\nВыбрано: {selected}{personal}\n\n"
 
 
 def format_human_date(date_val: str | None, default_year: int | None = None) -> str:
@@ -143,10 +145,11 @@ class ScheduleFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_day_card(day: DaySchedule, title: str) -> str:
+    def format_day_card(day: DaySchedule, title: str, *, subgroup: int | None = None) -> str:
+        day = filter_day(day, subgroup)
         human_label = escape(format_human_date(day.date_label or day.date_iso))
         if not day.lessons:
-            return university_week_header(day, html=True) + f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day, html=True, subgroup=subgroup) + f"Расписание на {human_label}\n\nПар нет."
 
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
@@ -154,17 +157,18 @@ class ScheduleFormatter:
                 f"<b>{lesson.number}.</b> в <b>{escape(lesson.classroom)}</b> "
                 f"по <b>{escape(lesson.subject)}</b> у <b>{escape(lesson.teacher)}</b>"
             )
-        return university_week_header(day, html=True) + "\n".join(lines)
+        return university_week_header(day, html=True, subgroup=subgroup) + "\n".join(lines)
 
     @staticmethod
-    def format_day_plain(day: DaySchedule) -> str:
+    def format_day_plain(day: DaySchedule, *, subgroup: int | None = None) -> str:
+        day = filter_day(day, subgroup)
         human_label = format_human_date(day.date_label or day.date_iso)
         if not day.lessons:
-            return university_week_header(day) + f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day, subgroup=subgroup) + f"Расписание на {human_label}\n\nПар нет."
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
-        return university_week_header(day) + "\n".join(lines)
+        return university_week_header(day, subgroup=subgroup) + "\n".join(lines)
 
     @staticmethod
     def format_range(days: list[DaySchedule], title: str | None = None) -> str:
@@ -230,9 +234,13 @@ class ScheduleFormatter:
 
 class ScheduleComparator:
     @staticmethod
-    def compare(previous: dict | None, current: ScheduleSnapshot) -> ChangeSummary | None:
+    def compare(previous: dict | None, current: ScheduleSnapshot, *, subgroup: int | None = None,
+                notify_cancellations: bool = False) -> ChangeSummary | None:
         if previous is None:
             return None
+        if subgroup is not None:
+            previous = dict(previous, content=filter_content(previous["content"], subgroup))
+            current = filter_snapshot(current, subgroup)
 
         prev_days = {day["date_iso"]: day for day in previous["content"]["days"]}
         current_days = {day.date_iso: day for day in current.days}
@@ -250,12 +258,12 @@ class ScheduleComparator:
         for date_iso, day in current_days.items():
             if date_iso not in allowed_dates:
                 continue
-            if not day.lessons:
-                continue
             prev_day = prev_days.get(date_iso)
-            if ScheduleComparator._day_changed(prev_day, day):
+            if not day.lessons and (not notify_cancellations or not prev_day or not prev_day.get("lessons")):
+                continue
+            if (notify_cancellations and not day.lessons) or ScheduleComparator._day_changed(prev_day, day):
                 changed_dates.append(day.date_label)
-                payload[day.date_label] = ScheduleFormatter.format_day_plain(day)
+                payload[day.date_label] = ScheduleFormatter.format_day_plain(day, subgroup=subgroup)
                 changed_days.append(day)
 
         if not changed_dates:
@@ -265,7 +273,7 @@ class ScheduleComparator:
         telegram_blocks = ["<b>Обнаружены изменения в расписании!</b>"]
         for day in changed_days:
             plain_blocks.extend(["", payload[day.date_label]])
-            telegram_blocks.extend(["", ScheduleFormatter.format_day_card(day, day.date_label)])
+            telegram_blocks.extend(["", ScheduleFormatter.format_day_card(day, day.date_label, subgroup=subgroup)])
 
         return ChangeSummary(
             changed_dates=changed_dates,

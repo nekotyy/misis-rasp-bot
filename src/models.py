@@ -64,6 +64,7 @@ class UserRecord:
     created_at: str
     last_seen_at: str
     custom_sticker_file_id: str | None = None
+    university_subgroup: int | None = None
 
 
 @dataclass(slots=True)

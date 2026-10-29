@@ -669,7 +669,8 @@ class ScheduleJobs:
             await save("daily_baseline")
             return None
 
-        change_summary = ScheduleComparator.compare(baseline, snapshot)
+        university_group = source["source_type"] == "group" and (source.get("schedule_id") or 0) < 0
+        change_summary = ScheduleComparator.compare(baseline, snapshot, notify_cancellations=True) if university_group else ScheduleComparator.compare(baseline, snapshot)
         if change_summary is None:
             return None
 
@@ -698,13 +699,22 @@ class ScheduleJobs:
             await save("daily_baseline")
             return change_summary
 
-        await self.broadcaster.broadcast(
-            change_summary.message,
-            telegram_message=change_summary.telegram_message,
-            vk_message=change_summary.vk_message,
-            schedule_id=source["schedule_id"],
-            subscription_key=source["source_key"],
-        )
+        if university_group:
+            for subgroup in await self.db.get_university_notification_subgroups(source["source_key"]):
+                personal = ScheduleComparator.compare(baseline, snapshot, subgroup=subgroup, notify_cancellations=True)
+                if personal is not None:
+                    await self.broadcaster.broadcast(
+                        personal.message, telegram_message=personal.telegram_message, vk_message=personal.vk_message,
+                        schedule_id=source["schedule_id"], subscription_key=source["source_key"], subgroup_filter=(subgroup,),
+                    )
+        else:
+            await self.broadcaster.broadcast(
+                change_summary.message,
+                telegram_message=change_summary.telegram_message,
+                vk_message=change_summary.vk_message,
+                schedule_id=source["schedule_id"],
+                subscription_key=source["source_key"],
+            )
         await save("daily_baseline")
         if source["source_type"] == "group":
             try:

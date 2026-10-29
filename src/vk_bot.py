@@ -78,6 +78,7 @@ from src.system_status import (
     get_memory_usage_mb,
 )
 from src.telegram_bot import format_broadcast_progress_status, format_user_profile_link
+from src.university_subgroups import available_subgroups, is_university_group, personal_subgroup
 from src.vk_runtime import (
     ResilientBotPolling,
     build_vk_api,
@@ -1040,6 +1041,9 @@ def build_vk_bot(
             self.message_id = await send_vk_message(self.peer_id, text, keyboard=keyboard)
     def menu_keyboard(user, is_editor: bool, is_admin: bool) -> str:
         rows = [["Расписание"], ["Дополнительно"]]
+        if is_university_group(user):
+            selected = personal_subgroup(user)
+            rows.insert(1, [f"Подгруппа: {selected}" if selected is not None else "Выбрать подгруппу"])
         if user and user.subscription_type == "teacher":
             rows.insert(1, ["Изменить кабинет" if user.audience_subscription_key else "Подписаться на кабинет"])
         if is_admin:
@@ -1271,6 +1275,8 @@ def build_vk_bot(
             saved = await get_or_fetch_subscription_snapshot(user.user_id)
             current = university_current_week(saved["content"]) if saved else None
             lines.append(f"Учимся по: {university_week_name(current)}")
+            if is_university_group(user):
+                lines.append(f"Подгруппа: {personal_subgroup(user) or 'все'}")
         lines.extend(["", "Используй кнопки ниже для расписания."])
         if is_admin:
             lines.append("Кнопка «Админка» доступна тебе как администратору.")
@@ -1469,10 +1475,10 @@ def build_vk_bot(
             lines.append(f"{index}. {g_name} — {u_count} подп. (Личных: {p_count}{chat_info}).")
         return "\n".join(lines)
 
-    def schedule_text(day, fallback: str) -> str:
+    def schedule_text(day, fallback: str, subgroup: int | None = None) -> str:
         if day is None:
             return f"Расписание на {fallback}\n\nПар нет."
-        return ScheduleFormatter.format_day_plain(day)
+        return ScheduleFormatter.format_day_plain(day, subgroup=subgroup)
 
     async def admin_status_text() -> str:
         return await build_vk_admin_status_text(db, settings, ocr_service)
@@ -3134,6 +3140,30 @@ def build_vk_bot(
             await show_bells_schedule(peer_id, user_id)
             return
 
+        if text == "Выбрать подгруппу" or text.startswith("Подгруппа:") or re.fullmatch(r"\d+ подгруппа", text) or text == "Все подгруппы":
+            user = await db.get_user("vk", user_id)
+            if peer_id != user_id or not is_university_group(user):
+                await show_screen(peer_id, "Выбор подгруппы доступен для своей группы университета в личном чате.")
+                return
+            saved = await get_or_fetch_subscription_snapshot(user_id)
+            options = available_subgroups(saved["content"]) if saved else []
+            if text == "Выбрать подгруппу" or text.startswith("Подгруппа:"):
+                rows = [[f"{number} подгруппа"] for number in options] + [["Все подгруппы"], ["Назад в меню"]]
+                prompt = "Твоя подгруппа\n\nОбщие пары показываются всегда. Полное расписание доступно через поиск."
+                if not options:
+                    prompt += "\n\nВ сохранённом расписании пока нет данных о подгруппах."
+                await show_screen(peer_id, prompt, keyboard=make_keyboard(rows))
+            else:
+                selected = None if text == "Все подгруппы" else int(text.split()[0])
+                if selected is not None and selected not in options:
+                    await show_screen(peer_id, "Выбор устарел. Открой подгруппы заново.")
+                    return
+                if not await db.set_university_subgroup("vk", user_id, user.schedule_id, selected):
+                    await show_screen(peer_id, "Подписка изменилась. Открой подгруппы заново.")
+                    return
+                await show_main_menu(peer_id, user_id)
+            return
+
         if text.startswith(("Числитель на ", "Знаменатель на ", "Актуальное на ")):
             user = await db.get_user("vk", user_id)
             url = university_subscription_url(user, parser)
@@ -3144,7 +3174,7 @@ def build_vk_bot(
                 if not url:
                     raise ValueError("Варианты доступны для университета")
                 day = await university_day_variant(parser, url, date_iso, variant)
-                await show_screen(peer_id, schedule_text(day, date_iso), keyboard=schedule_keyboard(date_iso))
+                await show_screen(peer_id, schedule_text(day, date_iso, personal_subgroup(user)), keyboard=schedule_keyboard(date_iso))
             except (ValueError, httpx.HTTPError):
                 await show_screen(peer_id, "Не удалось загрузить вариант расписания. Попробуй позже.", keyboard=schedule_keyboard())
             return
@@ -3167,7 +3197,7 @@ def build_vk_bot(
             user = await db.get_user("vk", user_id)
             url = university_subscription_url(user, parser)
             date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat() if url else None
-            day_text = schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label)
+            day_text = schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label, personal_subgroup(user))
             await show_screen(
                 peer_id,
                 day_text,

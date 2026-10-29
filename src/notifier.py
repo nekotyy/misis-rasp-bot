@@ -140,6 +140,7 @@ class Broadcaster:
         target_platform: str = "all",
         target_audience: str = "all",
         progress_callback: Callable[[BroadcastProgress], Awaitable[None]] | None = None,
+        subgroup_filter: tuple[int | None, ...] | None = None,
     ) -> BroadcastProgress:
         started_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         tg_users = []
@@ -164,6 +165,9 @@ class Broadcaster:
                 target_audience=target_audience,
             )
 
+        if subgroup_filter is not None:
+            tg_users = [user for user in tg_users if user.university_subgroup in subgroup_filter]
+            vk_users = [user for user in vk_users if user.university_subgroup in subgroup_filter]
         total_users = len(tg_users) + len(vk_users)
         processed = 0
         success = 0

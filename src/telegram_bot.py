@@ -97,6 +97,7 @@ from src.system_status import (
     get_memory_usage_mb,
 )
 from src.telegram_runtime import telegram_retry_attempts
+from src.university_subgroups import available_subgroups, is_university_group, personal_subgroup
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -1384,6 +1385,11 @@ def build_dispatcher(
             [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
             [InlineKeyboardButton(text="Дополнительно", callback_data="menu:settings")],
         ]
+        if is_university_group(user):
+            selected = personal_subgroup(user)
+            rows.insert(1, [InlineKeyboardButton(
+                text=f"Подгруппа: {selected}" if selected is not None else "Выбрать подгруппу", callback_data="menu:subgroup",
+            )])
         if user and user.subscription_type == "teacher":
             rows.insert(
                 1,
@@ -2416,6 +2422,8 @@ def build_dispatcher(
             saved = await get_saved_snapshot(user.user_id)
             current = university_current_week(saved["content"]) if saved else None
             lines.append(f"Учимся по: <b>{university_week_name(current)}</b>")
+            if is_university_group(user):
+                lines.append(f"Подгруппа: <b>{personal_subgroup(user) or 'все'}</b>")
         if user and user.subscription_type == "teacher" and not user.audience_subscription_key:
             lines.extend(["", "Ниже можно быстро привязать кабинет, чтобы следить за обновлениями аудитории отдельно."])
         lines.extend(["", "/rasp — посмотреть расписание", "/settings — дополнительно"])
@@ -2607,7 +2615,7 @@ def build_dispatcher(
                 if not university_url or variant not in (0, 1, 2):
                     raise ValueError("Недоступный вариант расписания")
                 day = await university_day_variant(parser, university_url, date_iso, variant)
-                text = ScheduleFormatter.format_day_card(day, date_iso) if day else "На эту дату нет данных."
+                text = ScheduleFormatter.format_day_card(day, date_iso, subgroup=personal_subgroup(user)) if day else "На эту дату нет данных."
             except (ValueError, httpx.HTTPError):
                 await send_new_context_message(bot, chat_id, "schedule", "Не удалось загрузить вариант расписания. Попробуй позже.",
                                                reply_markup=SCHEDULE_KEYBOARD)
@@ -2628,13 +2636,13 @@ def build_dispatcher(
 
         if action == "today":
             day = get_day_by_offset_from_content(snapshot_row["content"], 0)
-            text = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
+            text = ScheduleFormatter.format_day_card(day, "сегодня", subgroup=personal_subgroup(user)) if day else empty_day_text("сегодня")
         elif action == "tomorrow":
             day = get_day_by_offset_from_content(snapshot_row["content"], 1)
-            text = ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
+            text = ScheduleFormatter.format_day_card(day, "завтра", subgroup=personal_subgroup(user)) if day else empty_day_text("завтра")
         elif action == "day_after":
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
-            text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
+            text = ScheduleFormatter.format_day_card(day, "2 дня", subgroup=personal_subgroup(user)) if day else empty_day_text("2 дня")
         else:
             await send_schedule_menu(bot, chat_id)
             return
@@ -3058,6 +3066,46 @@ def build_dispatcher(
                 await build_welcome_text(user, is_editor=editor),
                 reply_markup=await build_start_keyboard(callback.from_user.id),
             )
+        await safe_callback_answer(callback)
+
+    @dispatcher.callback_query((F.data == "menu:subgroup") | F.data.startswith("subgroup:"))
+    async def handle_university_subgroup(callback: CallbackQuery) -> None:
+        if callback.message is None or callback.message.chat.id != callback.from_user.id:
+            await safe_callback_answer(callback, "Выбери подгруппу в личном чате с ботом.", show_alert=True)
+            return
+        await register_callback_user(callback)
+        user = await get_user_record(callback.from_user.id)
+        if not is_university_group(user):
+            await safe_callback_answer(callback, "Сначала выбери свою группу университета.", show_alert=True)
+            return
+        saved = await get_saved_snapshot(user.user_id)
+        options = available_subgroups(saved["content"]) if saved else []
+        if callback.data == "menu:subgroup":
+            rows = [[InlineKeyboardButton(text=f"{number} подгруппа", callback_data=f"subgroup:{user.schedule_id}:{number}")]
+                    for number in options]
+            rows.extend([[InlineKeyboardButton(text="Все подгруппы", callback_data=f"subgroup:{user.schedule_id}:all")],
+                         [InlineKeyboardButton(text="Назад", callback_data="menu:start")]])
+            prompt = ("<b>Твоя подгруппа</b>\n\nОбщие пары показываются всегда. Выбери свою подгруппу; "
+                      "полное расписание всех подгрупп доступно через поиск.")
+            if not options:
+                prompt += "\n\nВ сохранённом расписании пока нет данных о подгруппах."
+            await send_new_context_message(callback.bot, callback.message.chat.id, "menu", prompt,
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        else:
+            try:
+                _, raw_group, raw_subgroup = callback.data.split(":")
+                group = int(raw_group)
+                selected = None if raw_subgroup == "all" else int(raw_subgroup)
+                if group != user.schedule_id or (selected is not None and selected not in options):
+                    raise ValueError("Устаревшая кнопка")
+                if not await db.set_university_subgroup("telegram", user.user_id, group, selected):
+                    raise ValueError("Подписка изменилась")
+            except (ValueError, TypeError):
+                await safe_callback_answer(callback, "Выбор устарел. Открой подгруппы заново.", show_alert=True)
+                return
+            updated = await get_user_record(user.user_id)
+            await send_new_context_message(callback.bot, callback.message.chat.id, "menu", await build_welcome_text(updated),
+                                           reply_markup=await build_start_keyboard(user.user_id))
         await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "menu:settings")
