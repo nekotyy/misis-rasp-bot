@@ -24,7 +24,9 @@ _FILE_MARKER = "__outbox_file__"
 
 def json_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
-        return value.model_dump(mode="json", exclude_none=True)
+        # Модели ответа SDK тоже имеют Default-сентинелы (LinkPreviewOptions).
+        # Сохраняем полученные поля API, исключая незаданные настройки SDK.
+        return value.model_dump(mode="json", exclude_none=True, exclude_unset=True)
     if isinstance(value, list):
         return [json_value(item) for item in value]
     if isinstance(value, dict):

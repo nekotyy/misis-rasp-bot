@@ -262,7 +262,7 @@ class ScheduleParser:
 
                     subject = value(".table-subject")
                     if not subject:
-                        if "table-empty" not in cell.get("class", []):
+                        if "table-empty" not in cell.get("class", []) and block.select_one(".schedule-subgroup-empty") is None:
                             raise ValueError("Не удалось прочитать занятие университета")
                         continue
                     details = [value(".table-lessontype"), value(".table-sg-name")]

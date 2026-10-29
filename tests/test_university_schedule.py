@@ -79,6 +79,21 @@ class UniversityParserTests(unittest.IsolatedAsyncioTestCase):
         snapshot = self.parser._parse_university_html(soup, datetime(2026, 12, 31))
         self.assertEqual(snapshot.days[0].date_iso, "2027-01-04")
 
+    async def test_empty_subgroup_marker_from_it26_does_not_break_either_week(self) -> None:
+        empty = '<div class="table-subgroup-item"><div class="table-sg-name">3 подгруппа</div><span class="schedule-subgroup-empty">————</span></div>'
+        pages = [weekly_html(variant).replace('</td><td class="table-empty">', empty + '</td><td class="table-empty">') for variant in (1, 2)]
+        self.parser.fetch_html_from_url = AsyncMock(side_effect=pages)
+        snapshot, _ = await self.parser.parse_from_url(ROOT + "/group/3910")
+        self.assertEqual(len(snapshot.days), 14)
+        self.assertTrue(all(len(day.lessons) == 2 for day in snapshot.days))
+        self.assertTrue(all("3 подгруппа" not in lesson.subject for day in snapshot.days for lesson in day.lessons))
+
+    def test_missing_subject_without_explicit_empty_marker_is_still_rejected(self) -> None:
+        invalid = '<div class="table-subgroup-item"><div class="table-sg-name">3 подгруппа</div></div>'
+        html = weekly_html().replace('</td><td class="table-empty">', invalid + '</td><td class="table-empty">')
+        with self.assertRaisesRegex(ValueError, "прочитать занятие"):
+            self.parser.parse_html(html)
+
     async def test_default_loads_current_and_next_week(self) -> None:
         self.parser.fetch_html_from_url = AsyncMock(side_effect=[weekly_html(2, 2), weekly_html(1, 2)])
         with patch("src.parser.datetime", wraps=datetime) as clock:

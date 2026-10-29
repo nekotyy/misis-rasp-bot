@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock, patch
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.methods import AnswerCallbackQuery, SendDocument, SendMessage
-from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from src.db import Database
 from src.delivery_outbox import DeliveryExpiredError, DeliveryOutbox
@@ -76,9 +76,10 @@ class DeliveryOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.sessions.append(session)
         bot = Bot("123456:FAKE-TOKEN", session=session, default=DefaultBotProperties(parse_mode="HTML"))
         service.bind_telegram(bot)
-        session.direct_request = AsyncMock(return_value={
+        session.direct_request = AsyncMock(return_value=Message.model_validate({
             "message_id": 7, "date": int(time()), "chat": {"id": 1, "type": "private"}, "text": "ответ",
-        })
+            "link_preview_options": {"is_disabled": True},
+        }, context={"bot": bot}))
         return bot
 
     async def test_real_bot_session_uses_outbox_and_returns_real_message_with_keyboard(self):
@@ -103,6 +104,24 @@ class DeliveryOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.message_id, 7)
         self.assertFalse(service._broker_ok)
         self.assertEqual(await service.store.counts(), {"sent": 1})
+
+    async def test_sdk_response_defaults_are_saved_without_resending_successful_message(self):
+        service = self.make()
+        bot = self.telegram(service)
+        method = SendMessage(chat_id=1, text="Ответ с отключённым превью")
+        with delivery_context("telegram:123456:response-defaults"):
+            row = await service.enqueue_telegram(bot, method)
+        await service.process(row["delivery_id"])
+        saved = await service.store.get(row["delivery_id"])
+        self.assertEqual(saved["status"], "sent")
+        self.assertEqual(json.loads(saved["result_json"])["link_preview_options"], {"is_disabled": True})
+        await service.process(row["delivery_id"])
+        with delivery_context("telegram:123456:response-defaults"):
+            restored = await service.execute_telegram(bot, method)
+        self.assertEqual(restored.message_id, 7)
+        self.assertTrue(restored.link_preview_options.is_disabled)
+        self.assertIs(restored.bot, bot)
+        bot.session.direct_request.assert_awaited_once()
 
     async def test_cancelled_waiter_and_stopped_worker_leave_request_for_new_process(self):
         service = self.make()
@@ -277,6 +296,29 @@ class DeliveryOutboxTests(unittest.IsolatedAsyncioTestCase):
         saved = await service.store.get(row["delivery_id"])
         self.assertGreaterEqual(saved["next_attempt_at"], before + 3600)
         self.assertEqual(saved["status"], "pending")
+
+    async def test_unreachable_chat_is_excluded_from_future_notifications_without_restart(self):
+        service = self.make()
+        bot = self.telegram(service)
+        await self.db.upsert_user("telegram", 88, None, "Студент", subscription_type="group", subscription_key="group:1")
+        method = SendMessage(chat_id=88, text="Замены")
+        bot.session.direct_request.side_effect = TelegramBadRequest(method, "Bad Request: chat not found")
+        row = await service.enqueue_telegram(bot, method, metadata={"campaign_type": CAMPAIGN_NOTIFICATION})
+        await service.process(row["delivery_id"])
+        self.assertEqual((await service.store.get(row["delivery_id"]))["status"], "failed")
+        self.assertEqual(await self.db.get_users_for_notifications("telegram"), [])
+        self.assertEqual(await self.db.count_auto_disabled_users("telegram"), 1)
+
+    async def test_invalid_message_markup_does_not_disable_reachable_recipient(self):
+        service = self.make()
+        bot = self.telegram(service)
+        await self.db.upsert_user("telegram", 89, None, "Студент", subscription_type="group", subscription_key="group:1")
+        method = SendMessage(chat_id=89, text="<bad>")
+        bot.session.direct_request.side_effect = TelegramBadRequest(method, "Bad Request: can't parse entities")
+        row = await service.enqueue_telegram(bot, method, metadata={"campaign_type": CAMPAIGN_NOTIFICATION})
+        await service.process(row["delivery_id"])
+        self.assertEqual(await self.db.count_auto_disabled_users("telegram"), 0)
+        self.assertEqual(len(await self.db.get_users_for_notifications("telegram")), 1)
 
     async def test_expired_callback_is_not_replayed_after_hour(self):
         service = self.make()

@@ -262,6 +262,8 @@ def classify_gemini_failure(error: BaseException | str) -> GeminiFailureInfo:
             "connection reset",
             "recv failure",
             "curl: (35)",
+            "curl: (7)",
+            "could not connect to server",
             "сетевой сбой",
         )
     ):
@@ -830,7 +832,8 @@ class GeminiOcrEngine:
         except OcrEngineError:
             raise
         except Exception as exc:
-            raise OcrEngineError(f"Не удалось проверить маршрут Gemini через DoH: {exc}") from exc
+            route = "маршрут Gemini через DoH" if self.doh_url else "сетевой маршрут Gemini"
+            raise OcrEngineError(f"Не удалось проверить {route}: {exc}") from exc
         finally:
             await session.close()
 

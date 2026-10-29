@@ -9,7 +9,7 @@ from time import monotonic
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import ClientDecodeError, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
+from aiogram.exceptions import ClientDecodeError, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.methods import GetUpdates
 from aiohttp import ClientError, ClientTimeout
 
@@ -19,6 +19,14 @@ TELEGRAM_REQUEST_ATTEMPTS = 3
 TELEGRAM_MAX_BACKOFF_SECONDS = 30.0
 TELEGRAM_CONNECT_TIMEOUT_SECONDS = 15.0
 TELEGRAM_POLLING_TIMEOUT_MARGIN = 20.0
+
+
+def is_permanent_telegram_delivery_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return isinstance(error, TelegramForbiddenError) or any(marker in text for marker in (
+        "bot was blocked by the user", "chat not found", "user is deactivated",
+        "have no rights to send a message", "chat_id is empty", "group chat was upgraded to a supergroup chat",
+    ))
 
 
 class TrackingAiohttpSession(AiohttpSession):
