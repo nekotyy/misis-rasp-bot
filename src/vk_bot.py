@@ -25,11 +25,11 @@ from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
-    build_teacher_schedule_snapshot,
     format_counter_sync_report,
     normalize_lesson_text,
     resolve_audience_preview_content,
     resolve_group_preview_content,
+    resolve_teacher_snapshot,
     snapshot_to_search_content,
     subject_matches,
     sync_lesson_counters_for_date,
@@ -52,8 +52,14 @@ from src.ocr_schedule import (
     compress_image_for_ocr,
 )
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
-from src.schedule_search import ScheduleSearchCatalog, SearchTarget
-from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
+from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choice_label
+from src.schedule_service import (
+    ScheduleFormatter,
+    get_day_by_offset_from_content,
+    university_day_variant,
+    university_subscription_url,
+)
+from src.schedule_sources import UNIVERSITY_BELLS_TEXT
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
@@ -1042,7 +1048,7 @@ def build_vk_bot(
         lines = [
             "Укажи свою группу",
             "",
-            "Напиши ее в формате, как на сайте колледжа.",
+            "Напиши её как на сайте: например, ИСП-25-1 или ТЭ/ПТ-26д.",
             "Например: ИСП-25-1",
             "",
             "Регистр не важен.",
@@ -1105,9 +1111,13 @@ def build_vk_bot(
             text,
         ])
 
-    def schedule_keyboard() -> str:
+    def schedule_keyboard(date_iso: str | None = None) -> str:
+        variants = []
+        if date_iso:
+            label = datetime.fromisoformat(date_iso).strftime("%d.%m.%Y")
+            variants = [[f"Числитель на {label}", f"Знаменатель на {label}"], [f"Актуальное на {label}"]]
         return make_keyboard(
-            [
+            variants + [
                 ["Расписание на сегодня"],
                 ["Расписание на завтра"],
                 ["Расписание на 2 дня"],
@@ -1117,7 +1127,11 @@ def build_vk_bot(
             ]
         )
 
-    async def show_bells_schedule(peer_id: int) -> None:
+    async def show_bells_schedule(peer_id: int, user_id: int) -> None:
+        user = await db.get_user("vk", user_id)
+        if university_subscription_url(user, parser):
+            await show_screen(peer_id, UNIVERSITY_BELLS_TEXT, keyboard=schedule_keyboard())
+            return
         await show_screen(peer_id, WEEKDAY_BELLS_TEXT)
         await show_screen(peer_id, SATURDAY_BELLS_TEXT)
         peer_modes[peer_id] = "schedule_menu"
@@ -1244,7 +1258,7 @@ def build_vk_bot(
         ])
 
     def build_welcome_text(user, is_admin: bool) -> str:
-        lines = ["Бот расписания колледжа", ""]
+        lines = ["Бот расписания колледжа и университета", ""]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
@@ -1379,7 +1393,7 @@ def build_vk_bot(
 
     async def sync_lesson_counters_from_file() -> None:
         try:
-            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
             await active_catalog.ensure_loaded()
             counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
             await lesson_counter_service.sync_config(counters)
@@ -1529,7 +1543,7 @@ def build_vk_bot(
         teacher_choices[peer_id] = (action, targets, page)
         peer_modes[peer_id] = "teacher_choice"
         start = page * 8
-        rows = [[target.title] for target in targets[start:start + 8]]
+        rows = [[search_choice_label(target, targets)] for target in targets[start:start + 8]]
         navigation = []
         if page > 0:
             navigation.append("Предыдущая страница")
@@ -1538,8 +1552,11 @@ def build_vk_bot(
         if navigation:
             rows.append(navigation)
         rows.append(["Назад в меню"])
+        prompt = ("Нашлось несколько аудиторий. Выбери нужную кнопку или уточни запрос."
+                  if targets[0].kind == "audience"
+                  else "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.")
         await show_screen(
-            peer_id, "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.",
+            peer_id, prompt,
             keyboard=make_keyboard(rows),
         )
 
@@ -1636,11 +1653,13 @@ def build_vk_bot(
         if user is None or not user.subscription_key or not user.subscription_title:
             return None
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
-        if snapshot is not None:
+        if snapshot is not None and (
+            not university_subscription_url(user, parser) or get_day_by_offset_from_content(snapshot["content"], 0) is not None
+        ):
             return snapshot
         try:
             if user.subscription_type == "teacher" and user.subscription_title:
-                snapshot_obj = await build_teacher_schedule_snapshot(db, user.subscription_title)
+                snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
                 snapshot_hash = compute_snapshot_hash(snapshot_obj)
             elif user.subscription_type == "audience" and user.subscription_url:
                 snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
@@ -1711,7 +1730,7 @@ def build_vk_bot(
             return False
         try:
             if target.kind == "teacher":
-                content = snapshot_to_search_content(await build_teacher_schedule_snapshot(db, target.title))
+                content = snapshot_to_search_content(await resolve_teacher_snapshot(db, parser, target.title, target.url))
             elif target.kind == "group":
                 content = await resolve_group_preview_content(db, parser, target.url)
             else:
@@ -1786,7 +1805,7 @@ def build_vk_bot(
                 await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 elif source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
@@ -1821,7 +1840,7 @@ def build_vk_bot(
                 await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
                 if source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 elif source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
@@ -2604,7 +2623,7 @@ def build_vk_bot(
             draft = admin_lesson_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -2685,7 +2704,7 @@ def build_vk_bot(
                     total=total,
                 )
 
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 normalized, problems = await validate_lesson_config(
                     payload,
@@ -2715,7 +2734,7 @@ def build_vk_bot(
             draft = admin_lesson_delete_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -2788,7 +2807,7 @@ def build_vk_bot(
             draft = admin_lesson_delete_one_drafts.get(peer_id, {"step": "group"})
             step = str(draft.get("step") or "group")
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -2938,7 +2957,7 @@ def build_vk_bot(
                     page = max(0, min(page, (len(targets) - 1) // 8))
                     await show_teacher_choices(peer_id, action, targets, page)
                     return
-                target = next((target for target in targets[page * 8:page * 8 + 8] if target.title == text), None)
+                target = next((target for target in targets[page * 8:page * 8 + 8] if search_choice_label(target, targets) == text), None)
                 if target is not None:
                     if action == "search":
                         await perform_schedule_search(peer_id, target.title, target=target)
@@ -3122,7 +3141,23 @@ def build_vk_bot(
             return
 
         if text == "Расписание звонков":
-            await show_bells_schedule(peer_id)
+            await show_bells_schedule(peer_id, user_id)
+            return
+
+        if text.startswith(("Числитель на ", "Знаменатель на ", "Актуальное на ")):
+            user = await db.get_user("vk", user_id)
+            url = university_subscription_url(user, parser)
+            try:
+                name, raw_date = text.split(" на ", 1)
+                date_iso = datetime.strptime(raw_date, "%d.%m.%Y").date().isoformat()
+                variant = {"Актуальное": 0, "Числитель": 1, "Знаменатель": 2}[name]
+                if not url:
+                    raise ValueError("Варианты доступны для университета")
+                day = await university_day_variant(parser, url, date_iso, variant)
+                heading = "Актуальное расписание" if variant == 0 else name
+                await show_screen(peer_id, heading + "\n\n" + schedule_text(day, date_iso), keyboard=schedule_keyboard(date_iso))
+            except (ValueError, httpx.HTTPError):
+                await show_screen(peer_id, "Не удалось загрузить вариант расписания. Попробуй позже.", keyboard=schedule_keyboard())
             return
 
         if text in {"Расписание на сегодня", "Расписание на завтра", "Расписание на 2 дня"}:
@@ -3140,10 +3175,14 @@ def build_vk_bot(
                 "Расписание на 2 дня": (2, "2 дня"),
             }[text]
             peer_modes[peer_id] = "schedule_menu"
+            user = await db.get_user("vk", user_id)
+            url = university_subscription_url(user, parser)
+            date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat() if url else None
+            day_text = schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label)
             await show_screen(
                 peer_id,
-                schedule_text(get_day_by_offset_from_content(snapshot["content"], offset), label),
-                keyboard=schedule_keyboard(),
+                ("Актуальное расписание\n\n" if url else "") + day_text,
+                keyboard=schedule_keyboard(date_iso),
             )
             return
 

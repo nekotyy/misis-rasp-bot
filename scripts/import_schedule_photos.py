@@ -51,7 +51,7 @@ async def run(paths: list[Path], *, summary: bool, apply: bool, notify: bool) ->
     settings = Settings.from_env()
     db = Database(settings.database_path)
     await db.initialize()
-    group_catalog = GroupCatalog(settings.schedule_url, db=db)
+    group_catalog = GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,
@@ -61,7 +61,7 @@ async def run(paths: list[Path], *, summary: bool, apply: bool, notify: bool) ->
     )
     jobs = ScheduleJobs.__new__(ScheduleJobs)
     jobs.db = db
-    jobs.parser = ScheduleParser(settings.schedule_url)
+    jobs.parser = ScheduleParser(settings.schedule_url, university_url=settings.university_schedule_url)
     jobs.broadcaster = broadcaster
     importer = build_ocr_importer(settings, db, jobs, group_catalog)
     images = read_images(paths)

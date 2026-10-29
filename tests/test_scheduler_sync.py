@@ -489,6 +489,7 @@ class TestApplySnapshotNotifiesAffectedTeachers(unittest.IsolatedAsyncioTestCase
 
         jobs = ScheduleJobs.__new__(ScheduleJobs)
         jobs.db = self.db
+        jobs.parser = MagicMock(parse_from_url=AsyncMock(side_effect=AssertionError("Расписание колледжа берётся из БД")))
         jobs.broadcaster = self.mock_broadcaster
         self._jobs.append(jobs)
         return jobs
@@ -747,6 +748,7 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
 
         jobs = ScheduleJobs.__new__(ScheduleJobs)
         jobs.db = self.db
+        jobs.parser = MagicMock(parse_from_url=AsyncMock(side_effect=AssertionError("Расписание колледжа берётся из БД")))
         jobs.broadcaster = self.mock_broadcaster
         jobs.alert_manager = None
         jobs.request_delay_seconds = 0.0

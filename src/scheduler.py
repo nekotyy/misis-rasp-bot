@@ -16,8 +16,8 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
-    build_teacher_schedule_snapshot,
     normalize_lesson_text,
+    resolve_teacher_snapshot,
     sync_lesson_counters_for_date,
     teacher_matches,
 )
@@ -557,7 +557,7 @@ class ScheduleJobs:
 
     async def _parse_source(self, source: SourceRow):
         if source["source_type"] == "teacher":
-            snapshot = await build_teacher_schedule_snapshot(self.db, str(source.get("source_title") or ""))
+            snapshot = await resolve_teacher_snapshot(self.db, self.parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
             return snapshot, compute_snapshot_hash(snapshot)
         if source["source_type"] == "audience":
             return await self.parser.parse_from_url(source["source_url"])

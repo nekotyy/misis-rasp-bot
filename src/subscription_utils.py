@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 from src.group_catalog import GroupCatalog
+from src.schedule_sources import schedule_numeric_id, source_key_from_url
 
 if TYPE_CHECKING:
     # Только для аннотаций типов: настоящий импорт создал бы цикл, т.к.
@@ -46,8 +46,7 @@ def make_teacher_subscription(target: SearchTarget) -> dict[str, str | int | Non
 
 
 def make_audience_subscription(target: SearchTarget) -> dict[str, str | None]:
-    audience_id = extract_numeric_id(target.url)
-    key = f"audience:{audience_id}" if audience_id is not None else f"audience:{target.url}"
+    key = source_key_from_url("audience", target.url)
     return {
         "audience_subscription_key": key,
         "audience_subscription_title": target.title,
@@ -56,11 +55,7 @@ def make_audience_subscription(target: SearchTarget) -> dict[str, str | None]:
 
 
 def extract_numeric_id(url: str) -> int | None:
-    path = urlsplit(url).path.rstrip("/")
-    if not path:
-        return None
-    tail = path.rsplit("/", 1)[-1]
-    return int(tail) if tail.isdigit() else None
+    return schedule_numeric_id(url)
 
 
 def subscription_caption(

@@ -16,6 +16,7 @@ from src.db import Database
 from src.group_catalog import GroupCatalog
 from src.http_retry import get_with_retry
 from src.lesson_counters import normalize_lesson_text, teacher_matches
+from src.schedule_sources import parse_university_directory, university_kind
 from src.text_normalize import LATIN_TO_CYRILLIC, normalize_dashes, strip_non_word_chars
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,13 @@ class SearchTarget:
     url: str
 
 
+def search_choice_label(target: SearchTarget, targets: list[SearchTarget]) -> str:
+    if sum(item.title == target.title for item in targets) < 2:
+        return target.title
+    source = "университет" if university_kind(target.url) else "колледж"
+    return f"{target.title} ({source})"
+
+
 class ScheduleSearchCatalog:
     def __init__(
         self,
@@ -37,6 +45,7 @@ class ScheduleSearchCatalog:
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
         db: Database | None = None,
+        university_url: str = "",
     ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
@@ -45,6 +54,7 @@ class ScheduleSearchCatalog:
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self.db = db
+        self.university_url = university_url.rstrip("/")
         self._prep_lock = asyncio.Lock()
         self._aud_lock = asyncio.Lock()
         self._preps_loaded = False
@@ -83,8 +93,7 @@ class ScheduleSearchCatalog:
         aud = self._auds.get(normalized)
         if aud is not None:
             return [aud]
-        aud = self._find_partial(normalized, self._aud_items)
-        return [aud] if aud is not None else []
+        return self._find_partial_matches(normalized, self._aud_items)
 
     async def _ensure_preps_loaded(self) -> None:
         if self._preps_loaded and self._prep_items:
@@ -237,13 +246,48 @@ class ScheduleSearchCatalog:
     def _populate_auds(self, pairs: list[tuple[str, str]]) -> None:
         self._auds = {}
         self._aud_items = []
+        ambiguous: set[str] = set()
         for title, url in pairs:
             normalized_title = self.normalize(title)
             target = SearchTarget(kind="audience", title=title, url=url)
-            self._auds[normalized_title] = target
+            if normalized_title in self._auds and self._auds[normalized_title].url != url:
+                ambiguous.add(normalized_title)
+                self._auds.pop(normalized_title, None)
+            elif normalized_title not in ambiguous:
+                self._auds[normalized_title] = target
             self._aud_items.append((normalized_title, target))
 
     async def _fetch_pairs(self, path: str, link_selector: str) -> list[tuple[str, str]]:
+        if not self.university_url:
+            return await self._fetch_college_pairs(path, link_selector)
+        kind = "teacher" if path == "/prep" else "audience"
+        directory, route = ("teachers", "teacher") if kind == "teacher" else ("rooms", "room")
+        items = self._prep_items if kind == "teacher" else self._aud_items
+        cached = {(target.title, target.url) for _, target in items}
+        if self.db is not None:
+            cached.update((row["title"], row["url"]) for row in await self.db.get_search_targets(kind))
+        pairs: list[tuple[str, str]] = []
+        errors: list[Exception] = []
+        try:
+            pairs.extend(await self._fetch_college_pairs(path, link_selector))
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning("Каталог %s колледжа недоступен: %s", kind, exc)
+            pairs.extend(pair for pair in sorted(cached) if university_kind(pair[1]) is None)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await self._get_with_retry(client, f"{self.university_url}/json/{directory}")
+                rows = parse_university_directory(response.content.decode("utf-8"), directory)
+            pairs.extend((row["content"].strip(), f"{self.university_url}/{route}/{row['value']}") for row in rows)
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning("Каталог %s университета недоступен: %s", kind, exc)
+            pairs.extend(pair for pair in sorted(cached) if university_kind(pair[1]) is not None)
+        if len(errors) == 2 and not pairs:
+            raise errors[0]
+        return list(dict.fromkeys(pairs))
+
+    async def _fetch_college_pairs(self, path: str, link_selector: str) -> list[tuple[str, str]]:
         """Скачивает справочник (преподаватели/аудитории) и достаёт из него пары (название, ссылка)."""
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await self._get_with_retry(client, f"{self.base_origin}{path}")

@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from html import escape
 
-from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
+from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot, UserRecord
+from src.parser import ScheduleParser
+from src.schedule_sources import university_kind
 
 # Насколько долго валидный непустой кэш защищает источник от перезаписи пустым
 # результатом с сайта: после падения сайт иногда отвечает 200 с пустой таблицей
@@ -297,3 +299,22 @@ def get_day_by_offset_from_content(content: dict, offset: int) -> DaySchedule | 
             ],
         )
     return None
+
+
+def university_subscription_url(user: UserRecord | None, parser: ScheduleParser) -> str:
+    if user is None:
+        return ""
+    if user.schedule_id is not None and user.schedule_id < 0:
+        return parser.build_schedule_url(user.schedule_id)
+    url = user.subscription_url or ""
+    return url if university_kind(url) else ""
+
+
+async def university_day_variant(parser: ScheduleParser, url: str, date_iso: str, variant: int) -> DaySchedule | None:
+    # Дата зашита в кнопку: после полуночи она всё ещё открывает тот же день.
+    datetime.strptime(date_iso, "%Y-%m-%d")
+    if variant == 0:
+        snapshot, _ = await parser.parse_from_url(url)
+    else:
+        snapshot = await parser.parse_university_variant(url, variant, date_iso)
+    return next((day for day in snapshot.days if day.date_iso == date_iso), None)

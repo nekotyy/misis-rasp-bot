@@ -43,11 +43,11 @@ from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
-    build_teacher_schedule_snapshot,
     format_counter_sync_report,
     normalize_lesson_text,
     resolve_audience_preview_content,
     resolve_group_preview_content,
+    resolve_teacher_snapshot,
     snapshot_to_search_content,
     subject_matches,
     sync_lesson_counters_for_date,
@@ -71,8 +71,14 @@ from src.ocr_schedule import (
 )
 from src.outbox_context import delivery_context
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
-from src.schedule_search import ScheduleSearchCatalog, SearchTarget
-from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
+from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choice_label
+from src.schedule_service import (
+    ScheduleFormatter,
+    get_day_by_offset_from_content,
+    university_day_variant,
+    university_subscription_url,
+)
+from src.schedule_sources import UNIVERSITY_BELLS_TEXT
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
@@ -284,6 +290,15 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
+
+
+def university_schedule_keyboard(date_iso: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"schedule:week:{date_iso}:{variant}")
+         for label, variant in (("Числитель", 1), ("Знаменатель", 2))],
+        [InlineKeyboardButton(text="Актуальное", callback_data=f"schedule:week:{date_iso}:0")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows + SCHEDULE_KEYBOARD.inline_keyboard)
 
 WEEKDAY_BELLS_TEXT = "\n".join(
     [
@@ -1289,11 +1304,13 @@ def build_dispatcher(
         if user is None or not user.subscription_key or not user.subscription_title:
             return None
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
-        if snapshot is not None:
+        if snapshot is not None and (
+            not university_subscription_url(user, parser) or get_day_by_offset_from_content(snapshot["content"], 0) is not None
+        ):
             return snapshot
         try:
             if user.subscription_type == "teacher" and user.subscription_title:
-                snapshot_obj = await build_teacher_schedule_snapshot(db, user.subscription_title)
+                snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
                 snapshot_hash = compute_snapshot_hash(snapshot_obj)
             elif user.subscription_type == "audience" and user.subscription_url:
                 # Как в VK: без этой ветки подписка на кабинет без кэша давала «не удалось получить».
@@ -1346,7 +1363,7 @@ def build_dispatcher(
         lines = [
             "<b>Укажи свою группу</b>",
             "",
-            "Напиши ее в формате, как на сайте колледжа.",
+            "Напиши её как на сайте: например, ИСП-25-1 или ТЭ/ПТ-26д.",
             "Например: <b>ИСП-25-1</b>",
             "",
             "Регистр не важен.",
@@ -1595,7 +1612,7 @@ def build_dispatcher(
 
     async def sync_lesson_counters_from_file() -> None:
         try:
-            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
             await active_catalog.ensure_loaded()
             counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
             await lesson_counter_service.sync_config(counters)
@@ -1932,7 +1949,7 @@ def build_dispatcher(
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
                 elif source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 else:
                     snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -1967,7 +1984,7 @@ def build_dispatcher(
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
                 elif source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 else:
                     snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -2285,7 +2302,7 @@ def build_dispatcher(
         token, _, targets = teacher_choices[(chat_id, user_id)]
         start = page * 8
         rows = [
-            [InlineKeyboardButton(text=target.title, callback_data=f"teacher:pick:{token}:{index}")]
+            [InlineKeyboardButton(text=search_choice_label(target, targets), callback_data=f"teacher:pick:{token}:{index}")]
             for index, target in enumerate(targets[start:start + 8], start=start)
         ]
         navigation = []
@@ -2296,8 +2313,11 @@ def build_dispatcher(
         if navigation:
             rows.append(navigation)
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
+        prompt = ("Нашлось несколько аудиторий. Выбери нужную кнопку или уточни запрос."
+                  if targets[0].kind == "audience"
+                  else "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.")
         await send_new_context_message(
-            bot, chat_id, "schedule", "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.",
+            bot, chat_id, "schedule", prompt,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
@@ -2359,7 +2379,7 @@ def build_dispatcher(
             return False
         try:
             if target.kind == "teacher":
-                content = snapshot_to_search_content(await build_teacher_schedule_snapshot(db, target.title))
+                content = snapshot_to_search_content(await resolve_teacher_snapshot(db, parser, target.title, target.url))
             elif target.kind == "group":
                 content = await resolve_group_preview_content(db, parser, target.url)
             else:
@@ -2392,7 +2412,7 @@ def build_dispatcher(
         return await handle_subscription_input(bot, chat_id, user_id, raw_text)
 
     def build_welcome_text(user, is_editor: bool = False) -> str:
-        lines = ["<b>Привет! Я бот расписания колледжа</b>"]
+        lines = ["<b>Привет! Я бот расписания колледжа и университета</b>"]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
@@ -2555,6 +2575,11 @@ def build_dispatcher(
         await clear_context_messages(bot, chat_id, "schedule")
         message_ids: list[int] = []
 
+        user = await get_user_record(chat_id)
+        if university_subscription_url(user, parser):
+            await send_new_context_message(bot, chat_id, "schedule", UNIVERSITY_BELLS_TEXT, reply_markup=SCHEDULE_KEYBOARD)
+            return
+
         weekday_message = await safe_send_message(bot, chat_id, WEEKDAY_BELLS_TEXT)
         if weekday_message is not None:
             message_ids.append(weekday_message.message_id)
@@ -2583,6 +2608,24 @@ def build_dispatcher(
             await send_bells_schedule(bot, chat_id)
             return
 
+        user = await get_user_record(user_id)
+        university_url = university_subscription_url(user, parser)
+        if action.startswith("week:"):
+            try:
+                _, date_iso, raw_variant = action.split(":")
+                variant = int(raw_variant)
+                if not university_url or variant not in (0, 1, 2):
+                    raise ValueError("Недоступный вариант расписания")
+                day = await university_day_variant(parser, university_url, date_iso, variant)
+                heading = ("Актуальное расписание", "Числитель", "Знаменатель")[variant]
+                text = heading + "\n\n" + (ScheduleFormatter.format_day_card(day, date_iso) if day else "На эту дату нет данных.")
+            except (ValueError, httpx.HTTPError):
+                await send_new_context_message(bot, chat_id, "schedule", "Не удалось загрузить вариант расписания. Попробуй позже.",
+                                               reply_markup=SCHEDULE_KEYBOARD)
+                return
+            await send_new_context_message(bot, chat_id, "schedule", text, reply_markup=university_schedule_keyboard(date_iso))
+            return
+
         snapshot_row = await get_saved_snapshot(user_id)
         if snapshot_row is None:
             await send_new_context_message(
@@ -2606,12 +2649,18 @@ def build_dispatcher(
         else:
             await send_schedule_menu(bot, chat_id)
             return
+        keyboard = SCHEDULE_KEYBOARD
+        if university_url:
+            offset = {"today": 0, "tomorrow": 1, "day_after": 2}[action]
+            date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat()
+            text = "Актуальное расписание\n\n" + text
+            keyboard = university_schedule_keyboard(date_iso)
         await send_new_context_message(
             bot,
             chat_id,
             "schedule",
             text,
-            reply_markup=SCHEDULE_KEYBOARD,
+            reply_markup=keyboard,
         )
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
@@ -3948,7 +3997,7 @@ def build_dispatcher(
                 total=total,
             )
 
-            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
             await active_catalog.ensure_loaded()
             normalized, problems = await validate_lesson_config(
                 payload,
@@ -4723,7 +4772,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4842,7 +4891,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4888,7 +4937,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)

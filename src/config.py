@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from src.schedule_sources import UNIVERSITY_SCHEDULE_URL
+
 load_dotenv()
 
 
@@ -59,6 +61,7 @@ class Settings:
     ocr_fuzzy_threshold: float
     ocr_warmup_on_start: bool
     ocr_ready_notice_hours: float
+    university_schedule_url: str = UNIVERSITY_SCHEDULE_URL
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -70,6 +73,7 @@ class Settings:
         limited_admin_telegram_ids = _parse_int_list(os.getenv("LIMITED_ADMIN_TELEGRAM_IDS", "").strip())
         return cls(
             schedule_url=schedule_url,
+            university_schedule_url=os.getenv("UNIVERSITY_SCHEDULE_URL", UNIVERSITY_SCHEDULE_URL).strip().rstrip("/"),
             database_path=database_path,
             app_timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
             schedule_request_delay_seconds=float(os.getenv("SCHEDULE_REQUEST_DELAY_SECONDS", "8").strip()),
