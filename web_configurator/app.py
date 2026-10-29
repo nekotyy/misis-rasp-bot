@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from src.config import Settings
 from src.course_stats import Audience, CourseStatsReport, GroupLine, collect_course_stats
 from src.db import Database
+from src.delivery_outbox import DeliveryOutbox
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
@@ -25,8 +26,8 @@ from src.lesson_counters import (
     build_teacher_schedule_snapshot,
     sync_lesson_counters_for_date,
 )
-from src.message_broker import OutboundMessage, RabbitMQBroker
-from src.notifier import CAMPAIGN_ADMIN_BROADCAST
+from src.message_broker import OutboundMessage
+from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser, compute_snapshot_hash
 from web_configurator.lesson_editor import (
     LessonConfigReadError,
@@ -882,41 +883,33 @@ async def get_db() -> Database:
 
 
 async def enqueue_broadcast(message: str) -> int:
-    fresh_settings = Settings.from_env()
-    if not fresh_settings.rabbitmq_url:
-        raise RuntimeError("RabbitMQ не настроен.")
     db = await get_db()
-    broker = RabbitMQBroker(
-        url=fresh_settings.rabbitmq_url,
-        queue_name=fresh_settings.rabbitmq_queue,
-        prefetch_count=fresh_settings.rabbitmq_prefetch_count,
-    )
+    sender = Broadcaster(db, outbox=DeliveryOutbox(db))
     telegram_users = await db.get_users_for_notifications("telegram")
     vk_users = await db.get_users_for_notifications("vk")
     sent = 0
-    try:
-        for user in telegram_users:
-            await broker.publish(
-                OutboundMessage(
-                    platform="telegram",
-                    user_id=user.user_id,
-                    text=message,
-                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
-                )
+    prepared = []
+    for user in telegram_users:
+        prepared.extend(await sender._prepare_notification(
+            OutboundMessage(
+                platform="telegram",
+                user_id=user.user_id,
+                text=message,
+                campaign_type=CAMPAIGN_ADMIN_BROADCAST,
             )
-            sent += 1
-        for user in vk_users:
-            await broker.publish(
-                OutboundMessage(
-                    platform="vk",
-                    user_id=user.user_id,
-                    text=message,
-                    campaign_type=CAMPAIGN_ADMIN_BROADCAST,
-                )
+        ))
+        sent += 1
+    for user in vk_users:
+        prepared.extend(await sender._prepare_notification(
+            OutboundMessage(
+                platform="vk",
+                user_id=user.user_id,
+                text=message,
+                campaign_type=CAMPAIGN_ADMIN_BROADCAST,
             )
-            sent += 1
-    finally:
-        await broker.close()
+        ))
+        sent += 1
+    await sender.outbox.enqueue_many(prepared)
     return sent
 
 

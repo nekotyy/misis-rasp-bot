@@ -9,6 +9,7 @@ from typing import Any
 import aiosqlite
 
 from src.models import ScheduleSnapshot, UserRecord
+from src.outbox_store import OUTBOX_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ class Database:
 
     async def initialize(self) -> None:
         async with self._connect() as db:
+            await db.executescript(OUTBOX_SCHEMA)
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;

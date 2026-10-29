@@ -779,6 +779,33 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first_task.cancelled(), "Первая отложенная задача должна быть отменена вторым попаданием")
         jobs._sync_teacher_source_safely.assert_awaited_once_with(teacher_source)
 
+    async def test_active_teacher_sync_finishes_before_queued_rerun(self) -> None:
+        jobs = self._make_jobs()
+        source = {"source_type": "teacher", "source_key": "teacher:5", "source_title": "Иванов И.И."}
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def sync(item):
+            calls.append(item)
+            started.set()
+            await release.wait()
+
+        jobs._sync_teacher_source_safely = sync
+        with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.001):
+            jobs._schedule_teacher_sync(source)
+            await asyncio.wait_for(started.wait(), timeout=1)
+            active = jobs._teacher_notify_tasks()["teacher:5"]
+            try:
+                jobs._schedule_teacher_sync(source)
+                self.assertIs(jobs._teacher_notify_tasks()["teacher:5"], active)
+                self.assertFalse(active.cancelling())
+            finally:
+                release.set()
+            await wait_for_teacher_syncs(jobs)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(active.cancelled())
+
     async def test_teacher_in_two_groups_synced_in_one_pass_reaches_correct_final_state(self) -> None:
         jobs = self._make_jobs()
 

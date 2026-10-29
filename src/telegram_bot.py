@@ -69,6 +69,7 @@ from src.ocr_schedule import (
     OcrEngineError,
     compress_image_for_ocr,
 )
+from src.outbox_context import delivery_context
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog, SearchTarget
 from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
@@ -112,6 +113,15 @@ def format_broadcast_progress_status(
     progress: BroadcastProgress,
     html: bool = True,
 ) -> str:
+    if progress.queued_count:
+        title = "Рассылка принята в доставку" if progress.is_finished else "Рассылка ставится в очередь"
+        lines = [
+            title, "", f"Получателей обработано: {progress.processed_count} / {progress.total_users}.",
+            f"Принято в надёжную очередь: {progress.queued_count}.",
+            f"Ошибок постановки в очередь: {progress.failed_count}.", "",
+            "Сообщения будут отправлены после восстановления связи. Факт доставки учитывается в мониторинге.", "", text,
+        ]
+        return "\n".join(escape(line) for line in lines) if html else "\n".join(lines)
     platform_map = {
         "all": "Глобально (везде)",
         "telegram": "Telegram",
@@ -1019,6 +1029,13 @@ def build_dispatcher(
     error_reporter: AdminErrorReporter | None = None,
 ) -> Dispatcher:
     dispatcher = Dispatcher()
+
+    async def outgoing_context_middleware(handler, event, data):
+        bot = data.get("bot")
+        with delivery_context(f"telegram:{getattr(bot, 'id', '')}:{event.update_id}"):
+            return await handler(event, data)
+
+    dispatcher.update.outer_middleware(outgoing_context_middleware)
     # id нажатий, на которые уже ответили: safe_callback_answer и авто-ответ ниже не дублируют друг друга.
     answered_callback_ids: set[str] = set()
 

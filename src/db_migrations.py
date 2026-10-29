@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from alembic import command
@@ -17,7 +18,7 @@ def _build_sqlite_url(db_path: Path) -> str:
 def _table_exists(db_path: Path, table_name: str) -> bool:
     if not db_path.exists():
         return False
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         row = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
             (table_name,),
@@ -28,7 +29,7 @@ def _table_exists(db_path: Path, table_name: str) -> bool:
 def _has_user_tables(db_path: Path) -> bool:
     if not db_path.exists():
         return False
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection:
         row = connection.execute(
             """
             SELECT 1
@@ -61,7 +62,7 @@ def apply_migrations(database_path: Path) -> None:
     has_user_tables = _has_user_tables(db_path)
     has_alembic_version = _table_exists(db_path, "alembic_version")
     if has_user_tables and not has_alembic_version:
-        logger.info("Existing database without alembic history detected. Stamping head.")
-        command.stamp(config, "head")
+        logger.info("Existing database without alembic history detected. Stamping initial revision.")
+        command.stamp(config, "20260418_0001")
 
     command.upgrade(config, "head")

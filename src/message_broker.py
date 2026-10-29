@@ -198,6 +198,83 @@ class RabbitMQBroker(_QueueJobBroker):
         await super().start_consumer(sender)
 
 
+class OutboxBroker:
+    """Отдельные очереди Telegram/VK: содержат ID уже сохранённой SQLite-записи.
+
+    Повторы и их сроки живут в SQLite. ACK после callback означает, что результат
+    или следующая попытка уже записаны; авария до ACK безопасно повторит тот же ID.
+    """
+
+    def __init__(self, url: str, queue_name: str, prefetch_count: int = 20) -> None:
+        self.url = url
+        self.queue_name = queue_name
+        self.prefetch_count = max(1, prefetch_count)
+        self._connection = None
+        self._channel = None
+        self._queues: dict = {}
+        self._tags: dict = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url.strip())
+
+    async def connect(self) -> None:
+        async with self._lock:
+            if (self._connection is not None and not self._connection.is_closed
+                    and self._channel is not None and not self._channel.is_closed and len(self._queues) == 2):
+                return
+            await self.close()
+            try:
+                self._connection = await aio_pika.connect_robust(self.url, timeout=10)
+                self._channel = await self._connection.channel(publisher_confirms=True, on_return_raises=True)
+                await self._channel.set_qos(prefetch_count=self.prefetch_count)
+                for platform in ("telegram", "vk"):
+                    self._queues[platform] = await self._channel.declare_queue(
+                        f"{self.queue_name}.outbox.{platform}", durable=True, arguments={"x-max-priority": 10},
+                    )
+            except BaseException:
+                await self.close()
+                raise
+
+    async def start_consumer(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        await self.connect()
+
+        async def consume(message: IncomingMessage) -> None:
+            try:
+                payload = json.loads(message.body)
+                valid = isinstance(payload, dict) and isinstance(payload.get("delivery_id"), str)
+            except (ValueError, UnicodeError):
+                valid = False
+            if not valid:
+                await message.reject(requeue=False)
+                return
+            # При ошибке SQLite не подтверждаем доставку: process() вернёт её в очередь.
+            async with message.process(requeue=True):
+                await callback(payload["delivery_id"])
+
+        for platform, queue in self._queues.items():
+            if platform not in self._tags:
+                self._tags[platform] = await queue.consume(consume)
+
+    async def publish(self, platform: str, delivery_id: str, *, priority: int = 0) -> None:
+        await self.connect()
+        await self._channel.default_exchange.publish(
+            Message(
+                body=json.dumps({"delivery_id": delivery_id}).encode(),
+                delivery_mode=DeliveryMode.PERSISTENT, content_type="application/json",
+                message_id=delivery_id, priority=priority,
+            ), routing_key=f"{self.queue_name}.outbox.{platform}", mandatory=True,
+        )
+
+    async def close(self) -> None:
+        if self._connection is not None and not self._connection.is_closed:
+            await self._connection.close()
+        self._connection = self._channel = None
+        self._queues.clear()
+        self._tags.clear()
+
+
 class DatabaseCleanupJobBroker(_QueueJobBroker):
     payload_type = DatabaseCleanupJob
     id_field = "job_id"

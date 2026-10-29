@@ -35,8 +35,16 @@ class TrackingAiohttpSession(AiohttpSession):
         self.last_updates_ok_at: float | None = None
         self.consecutive_failures = 0
         self._failure_started_at: float | None = None
+        self.outbox = None
+
+    async def direct_request(self, bot, method):
+        """Одна попытка воркера; повтор и срок актуальности хранятся в SQLite."""
+        timeout = ClientTimeout(total=self.timeout, connect=15, sock_connect=15, sock_read=self.timeout)
+        return await super().make_request(bot, method, timeout=timeout)
 
     async def make_request(self, bot, method, timeout=None):
+        if self.outbox is not None and not method.__api_method__.startswith("get"):
+            return await self.outbox.execute_telegram(bot, method)
         polling = isinstance(method, GetUpdates)
         total = (
             (method.timeout or 0) + TELEGRAM_POLLING_TIMEOUT_MARGIN

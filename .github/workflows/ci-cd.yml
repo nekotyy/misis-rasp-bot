@@ -25,6 +25,17 @@ jobs:
     permissions:
       contents: read
 
+    services:
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,6 +59,8 @@ jobs:
         run: uv pip check
 
       - name: Run unit tests
+        env:
+          OUTBOX_TEST_RABBITMQ_URL: amqp://guest:guest@127.0.0.1:5672/
         run: uv run --frozen python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Prepare CI env file

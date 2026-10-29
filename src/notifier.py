@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
@@ -15,12 +17,14 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
+from aiogram.methods import SendMessage, SendSticker
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from vkbottle import Keyboard, Text
 from vkbottle.bot import Bot as VkBot
 
 from src.db import Database
 from src.message_broker import OutboundMessage, RabbitMQBroker
+from src.outbox_context import delivery_id
 from src.telegram_runtime import telegram_retry_attempts
 from src.vk_runtime import is_permanent_vk_delivery_error, split_vk_text, vk_send_message
 
@@ -38,6 +42,7 @@ class BroadcastProgress:
     failed_count: int
     is_finished: bool = False
     finished_at: str | None = None
+    queued_count: int = 0
 
 
 CAMPAIGN_NOTIFICATION = "notification"
@@ -96,6 +101,7 @@ class Broadcaster:
         admin_telegram_id: int | None = None,
         admin_vk_id: int | None = None,
         broker: RabbitMQBroker | None = None,
+        outbox=None,
     ) -> None:
         self.db = db
         self.telegram_bot = telegram_bot
@@ -103,8 +109,11 @@ class Broadcaster:
         self.admin_telegram_id = admin_telegram_id
         self.admin_vk_id = admin_vk_id
         self.broker = broker
+        self.outbox = outbox
 
     async def start(self) -> None:
+        if self.outbox is not None:
+            await self.outbox.start()
         try:
             disabled_count = await self.db.auto_disable_undeliverable_telegram_users()
             if disabled_count:
@@ -116,6 +125,8 @@ class Broadcaster:
         await self.broker.start_consumer(self.deliver)
 
     async def stop(self) -> None:
+        if self.outbox is not None:
+            await self.outbox.stop()
         if self.broker is None or not self.broker.enabled:
             return
         await self.broker.close()
@@ -159,6 +170,7 @@ class Broadcaster:
         processed = 0
         success = 0
         failed = 0
+        queued = 0
 
         progress = BroadcastProgress(
             target_platform=target_platform,
@@ -170,6 +182,27 @@ class Broadcaster:
             failed_count=failed,
             is_finished=False,
         )
+
+        if self.outbox is not None:
+            prepared = []
+            for platform, users, body in (
+                ("telegram", tg_users, telegram_message or message), ("vk", vk_users, vk_message or message),
+            ):
+                for user in users:
+                    prepared.extend(await self._prepare_notification(OutboundMessage(
+                        platform=platform, user_id=user.user_id, text=body, campaign_type=campaign_type,
+                    )))
+            # Вся рассылка фиксируется до первого ожидания доставки прогресса админу.
+            await self.outbox.enqueue_many(prepared)
+            progress.processed_count = progress.queued_count = total_users
+            progress.is_finished = True
+            progress.finished_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            if progress_callback:
+                try:
+                    await progress_callback(progress)
+                except Exception as exc:
+                    logger.warning("Outbox broadcast progress callback failed: %s", exc)
+            return progress
 
         last_report = 0.0
 
@@ -208,11 +241,15 @@ class Broadcaster:
                 else:
                     failed += 1
             else:
-                success += 1
+                if self.outbox is not None:
+                    queued += 1
+                else:
+                    success += 1
             processed += 1
             progress.processed_count = processed
             progress.success_count = success
             progress.failed_count = failed
+            progress.queued_count = queued
             await maybe_report_progress()
 
         for user in vk_users:
@@ -235,11 +272,15 @@ class Broadcaster:
                 else:
                     failed += 1
             else:
-                success += 1
+                if self.outbox is not None:
+                    queued += 1
+                else:
+                    success += 1
             processed += 1
             progress.processed_count = processed
             progress.success_count = success
             progress.failed_count = failed
+            progress.queued_count = queued
             await maybe_report_progress()
 
         progress.is_finished = True
@@ -295,6 +336,9 @@ class Broadcaster:
                 )
 
     async def deliver(self, payload: OutboundMessage) -> None:
+        if self.outbox is not None:
+            await self._enqueue_notification(payload)
+            return
         if payload.platform == "telegram":
             await self._send_telegram(
                 payload.user_id,
@@ -386,6 +430,9 @@ class Broadcaster:
                 )
 
     async def _enqueue_or_send(self, payload: OutboundMessage) -> bool:
+        if self.outbox is not None:
+            await self._enqueue_notification(payload)
+            return True
         if self.broker is None or not self.broker.enabled:
             return False
         try:
@@ -393,6 +440,54 @@ class Broadcaster:
         except Exception as exc:
             logger.warning("RabbitMQ publish failed for %s/%s: %s", payload.platform, payload.user_id, exc)
             return False
+
+    async def _enqueue_notification(self, payload: OutboundMessage) -> None:
+        await self.outbox.enqueue_many(await self._prepare_notification(payload))
+
+    async def _prepare_notification(self, payload: OutboundMessage) -> list[dict]:
+        """Вся рассылка сохраняется, даже если первый получатель временно недоступен."""
+        if payload.message_id is None:
+            payload.message_id = delivery_id(payload.platform, "notification", {
+                "user_id": payload.user_id, "text": payload.text, "campaign_type": payload.campaign_type,
+            })
+        prefix = f"notification:{payload.message_id}"
+        metadata = {"campaign_type": payload.campaign_type}
+        keyboard = SCHEDULE_NOTIFICATION_KEYBOARD if payload.campaign_type == CAMPAIGN_NOTIFICATION else None
+        user = await self.db.get_user(payload.platform, payload.user_id)
+        sticker = user.custom_sticker_file_id if user and payload.campaign_type == CAMPAIGN_NOTIFICATION else None
+        prepared = []
+        if payload.platform == "telegram":
+            if sticker:
+                prepared.append(await self.outbox.prepare_telegram(
+                    self.telegram_bot, SendSticker(chat_id=payload.user_id, sticker=sticker),
+                    request_id=f"{prefix}:sticker", metadata=metadata,
+                ))
+            chunks = split_vk_text(payload.text, TELEGRAM_MESSAGE_LIMIT)
+            for index, chunk in enumerate(chunks):
+                prepared.append(await self.outbox.prepare_telegram(
+                    self.telegram_bot,
+                    SendMessage(chat_id=payload.user_id, text=chunk, parse_mode="HTML", reply_markup=keyboard if index == len(chunks) - 1 else None),
+                    request_id=f"{prefix}:text:{index}", metadata=metadata,
+                ))
+        elif payload.platform == "vk":
+            vk_keyboard = VK_NOTIFICATION_KEYBOARD if payload.campaign_type == CAMPAIGN_NOTIFICATION else None
+
+            def random_id(part: str) -> int:
+                return (int(hashlib.sha256(f"{prefix}:{part}".encode()).hexdigest()[:8], 16) & 0x7FFFFFFF) or 1
+
+            if sticker:
+                with suppress(ValueError):
+                    prepared.append(await self.outbox.prepare_vk(
+                        "messages.send", {"peer_id": payload.user_id, "sticker_id": int(sticker), "random_id": random_id("sticker")},
+                        request_id=f"{prefix}:sticker", metadata=metadata,
+                    ))
+            chunks = split_vk_text(payload.text)
+            for index, chunk in enumerate(chunks):
+                params = {"peer_id": payload.user_id, "message": chunk, "random_id": random_id(str(index))}
+                if vk_keyboard and index == len(chunks) - 1:
+                    params["keyboard"] = vk_keyboard
+                prepared.append(await self.outbox.prepare_vk("messages.send", params, request_id=f"{prefix}:text:{index}", metadata=metadata))
+        return prepared
 
     async def _record_delivery_event(self, **kwargs) -> None:
         try:
