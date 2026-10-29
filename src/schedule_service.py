@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 
-from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
+from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot, UserRecord
+from src.parser import ScheduleParser
+from src.schedule_sources import university_kind
+from src.university_subgroups import filter_content, filter_day, filter_snapshot
 
 # Насколько долго валидный непустой кэш защищает источник от перезаписи пустым
 # результатом с сайта: после падения сайт иногда отвечает 200 с пустой таблицей
@@ -51,6 +54,46 @@ MONTHS_RU = {
     11: "ноября",
     12: "декабря",
 }
+
+
+def university_week_name(variant: int | None) -> str:
+    return {1: "Числитель", 2: "Знаменатель"}.get(variant, "неделя не определена")
+
+
+def university_current_week(content: dict, *, today: date | None = None) -> int | None:
+    """Неделя с сайта с календарным сдвигом от даты сохранённого снимка."""
+    variant = next((day.get("current_week_variant") for day in content.get("days", [])
+                    if day.get("current_week_variant") in (1, 2)), None)
+    if variant is None:
+        return None
+    try:
+        fetched = datetime.fromisoformat(content["fetched_at"]).date()
+    except (KeyError, TypeError, ValueError):
+        return None
+    current = today or datetime.now().date()
+    delta = ((current - timedelta(days=current.weekday())) - (fetched - timedelta(days=fetched.weekday()))).days // 7
+    return 3 - variant if delta % 2 else variant
+
+
+def day_from_content(raw: dict, *, fetched_at: str | None = None) -> DaySchedule:
+    return DaySchedule(
+        date_label=raw["date_label"], date_iso=raw["date_iso"],
+        lessons=[Lesson(number=item["number"], subject=item["subject"], teacher=item["teacher"], classroom=item["classroom"])
+                 for item in raw.get("lessons", [])],
+        week_variant=raw.get("week_variant"),
+        current_week_variant=university_current_week({"days": [raw], "fetched_at": fetched_at}),
+    )
+
+
+def university_week_header(day: DaySchedule, *, html: bool = False, subgroup: int | None = None) -> str:
+    if day.week_variant not in (1, 2):
+        return ""
+    selected = university_week_name(day.week_variant)
+    current = university_week_name(day.current_week_variant)
+    personal = (f"\nПодгруппа: <b>{subgroup}</b>" if html else f"\nПодгруппа: {subgroup}") if subgroup is not None else ""
+    if html:
+        return f"<b>{selected}</b>\nУчимся по: <b>{current}</b>\nВыбрано: <b>{selected}</b>{personal}\n\n"
+    return f"{selected}\nУчимся по: {current}\nВыбрано: {selected}{personal}\n\n"
 
 
 def format_human_date(date_val: str | None, default_year: int | None = None) -> str:
@@ -102,10 +145,11 @@ class ScheduleFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def format_day_card(day: DaySchedule, title: str) -> str:
+    def format_day_card(day: DaySchedule, title: str, *, subgroup: int | None = None) -> str:
+        day = filter_day(day, subgroup)
         human_label = escape(format_human_date(day.date_label or day.date_iso))
         if not day.lessons:
-            return f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day, html=True, subgroup=subgroup) + f"Расписание на {human_label}\n\nПар нет."
 
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
@@ -113,17 +157,18 @@ class ScheduleFormatter:
                 f"<b>{lesson.number}.</b> в <b>{escape(lesson.classroom)}</b> "
                 f"по <b>{escape(lesson.subject)}</b> у <b>{escape(lesson.teacher)}</b>"
             )
-        return "\n".join(lines)
+        return university_week_header(day, html=True, subgroup=subgroup) + "\n".join(lines)
 
     @staticmethod
-    def format_day_plain(day: DaySchedule) -> str:
+    def format_day_plain(day: DaySchedule, *, subgroup: int | None = None) -> str:
+        day = filter_day(day, subgroup)
         human_label = format_human_date(day.date_label or day.date_iso)
         if not day.lessons:
-            return f"Расписание на {human_label}\n\nПар нет."
+            return university_week_header(day, subgroup=subgroup) + f"Расписание на {human_label}\n\nПар нет."
         lines = [f"Расписание на {human_label}", ""]
         for lesson in sorted(day.lessons, key=lambda item: item.number):
             lines.append(f"{lesson.number}. в {lesson.classroom} по {lesson.subject} у {lesson.teacher}")
-        return "\n".join(lines)
+        return university_week_header(day, subgroup=subgroup) + "\n".join(lines)
 
     @staticmethod
     def format_range(days: list[DaySchedule], title: str | None = None) -> str:
@@ -160,6 +205,11 @@ class ScheduleFormatter:
             if not lessons:
                 continue
             added_any = True
+            if day.get("week_variant") in (1, 2):
+                parsed = day_from_content(day, fetched_at=content.get("fetched_at"))
+                lines.append(ScheduleFormatter.format_day_card(parsed, "") if html else ScheduleFormatter.format_day_plain(parsed))
+                lines.append("")
+                continue
             raw_date = day.get("date_label") or day.get("date_iso") or ""
             human_date = format_human_date(raw_date)
             lines.append(escape(human_date) if html else human_date)
@@ -184,9 +234,13 @@ class ScheduleFormatter:
 
 class ScheduleComparator:
     @staticmethod
-    def compare(previous: dict | None, current: ScheduleSnapshot) -> ChangeSummary | None:
+    def compare(previous: dict | None, current: ScheduleSnapshot, *, subgroup: int | None = None,
+                notify_cancellations: bool = False) -> ChangeSummary | None:
         if previous is None:
             return None
+        if subgroup is not None:
+            previous = dict(previous, content=filter_content(previous["content"], subgroup))
+            current = filter_snapshot(current, subgroup)
 
         prev_days = {day["date_iso"]: day for day in previous["content"]["days"]}
         current_days = {day.date_iso: day for day in current.days}
@@ -204,12 +258,12 @@ class ScheduleComparator:
         for date_iso, day in current_days.items():
             if date_iso not in allowed_dates:
                 continue
-            if not day.lessons:
-                continue
             prev_day = prev_days.get(date_iso)
-            if ScheduleComparator._day_changed(prev_day, day):
+            if not day.lessons and (not notify_cancellations or not prev_day or not prev_day.get("lessons")):
+                continue
+            if (notify_cancellations and not day.lessons) or ScheduleComparator._day_changed(prev_day, day):
                 changed_dates.append(day.date_label)
-                payload[day.date_label] = ScheduleFormatter.format_day_plain(day)
+                payload[day.date_label] = ScheduleFormatter.format_day_plain(day, subgroup=subgroup)
                 changed_days.append(day)
 
         if not changed_dates:
@@ -219,7 +273,7 @@ class ScheduleComparator:
         telegram_blocks = ["<b>Обнаружены изменения в расписании!</b>"]
         for day in changed_days:
             plain_blocks.extend(["", payload[day.date_label]])
-            telegram_blocks.extend(["", ScheduleFormatter.format_day_card(day, day.date_label)])
+            telegram_blocks.extend(["", ScheduleFormatter.format_day_card(day, day.date_label, subgroup=subgroup)])
 
         return ChangeSummary(
             changed_dates=changed_dates,
@@ -283,17 +337,24 @@ def get_day_by_offset_from_content(content: dict, offset: int) -> DaySchedule | 
     for day in content.get("days", []):
         if day.get("date_iso", "") != target_date:
             continue
-        return DaySchedule(
-            date_label=day["date_label"],
-            date_iso=day["date_iso"],
-            lessons=[
-                Lesson(
-                    number=lesson["number"],
-                    subject=lesson["subject"],
-                    teacher=lesson["teacher"],
-                    classroom=lesson["classroom"],
-                )
-                for lesson in day.get("lessons", [])
-            ],
-        )
+        return day_from_content(day, fetched_at=content.get("fetched_at"))
     return None
+
+
+def university_subscription_url(user: UserRecord | None, parser: ScheduleParser) -> str:
+    if user is None:
+        return ""
+    if user.schedule_id is not None and user.schedule_id < 0:
+        return parser.build_schedule_url(user.schedule_id)
+    url = user.subscription_url or ""
+    return url if university_kind(url) else ""
+
+
+async def university_day_variant(parser: ScheduleParser, url: str, date_iso: str, variant: int) -> DaySchedule | None:
+    # Дата зашита в кнопку: после полуночи она всё ещё открывает тот же день.
+    datetime.strptime(date_iso, "%Y-%m-%d")
+    if variant == 0:
+        snapshot, _ = await parser.parse_from_url(url)
+    else:
+        snapshot = await parser.parse_university_variant(url, variant, date_iso)
+    return next((day for day in snapshot.days if day.date_iso == date_iso), None)

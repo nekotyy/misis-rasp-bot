@@ -117,8 +117,22 @@ class GeminiFailureClassificationTests(unittest.TestCase):
         self.assertEqual(classify_gemini_failure("connection refused").code, "network")
         self.assertEqual(classify_gemini_failure("Gemini не завершил распознавание за 60 с.").code, "timeout")
 
+    def test_direct_connection_failure_is_retryable_network_error(self) -> None:
+        result = classify_gemini_failure("Не удалось проверить сетевой маршрут Gemini: curl: (7) Could not connect to server")
+        self.assertEqual(result.code, "network")
+        self.assertTrue(result.retryable)
+
 
 class GeminiRouteProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_failure_does_not_report_disabled_doh_as_cause(self) -> None:
+        session = MagicMock(get=AsyncMock(side_effect=OSError("curl: (7) Could not connect to server")), close=AsyncMock())
+        engine = GeminiOcrEngine(doh_url="")
+        with patch("src.ocr_schedule.CurlAsyncSession", return_value=session), self.assertRaises(OcrEngineError) as caught:
+            await engine._probe_route_once()
+        self.assertNotIn("DoH", str(caught.exception))
+        self.assertEqual(classify_gemini_failure(caught.exception).code, "network")
+        session.close.assert_awaited_once()
+
     async def test_probe_uses_doh_and_records_real_remote_ip(self) -> None:
         response = MagicMock(status_code=200, primary_ip="87.228.47.202")
         session = MagicMock(get=AsyncMock(return_value=response), close=AsyncMock())

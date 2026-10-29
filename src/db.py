@@ -209,6 +209,7 @@ class Database:
             await self._ensure_column(db, "users", "homework_notifications_enabled", "INTEGER NOT NULL DEFAULT 1")
             await self._ensure_column(db, "users", "delivery_disabled_auto", "INTEGER NOT NULL DEFAULT 0")
             await self._ensure_column(db, "users", "custom_sticker_file_id", "TEXT")
+            await self._ensure_column(db, "users", "university_subgroup", "INTEGER")
             await self._ensure_column(db, "schedule_snapshots", "source_type", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_key", "TEXT")
             await self._ensure_column(db, "schedule_snapshots", "source_title", "TEXT")
@@ -416,6 +417,10 @@ class Database:
                     subscription_key = COALESCE(excluded.subscription_key, users.subscription_key),
                     subscription_title = COALESCE(excluded.subscription_title, users.subscription_title),
                     subscription_url = COALESCE(excluded.subscription_url, users.subscription_url),
+                    university_subgroup = CASE
+                        WHEN excluded.subscription_key IS NOT NULL AND excluded.subscription_key IS NOT users.subscription_key THEN NULL
+                        ELSE users.university_subgroup
+                    END,
                     audience_subscription_key = COALESCE(excluded.audience_subscription_key, users.audience_subscription_key),
                     audience_subscription_title = COALESCE(excluded.audience_subscription_title, users.audience_subscription_title),
                     audience_subscription_url = COALESCE(excluded.audience_subscription_url, users.audience_subscription_url),
@@ -484,7 +489,8 @@ class Database:
                 delivery_disabled_auto,
                 created_at,
                 last_seen_at,
-                custom_sticker_file_id
+                custom_sticker_file_id,
+                university_subgroup
             FROM users
         """
         clauses: list[str] = []
@@ -535,6 +541,7 @@ class Database:
             created_at=row[17],
             last_seen_at=row[18],
             custom_sticker_file_id=row[19] if len(row) > 19 else None,
+            university_subgroup=row[20] if len(row) > 20 else None,
         )
 
     async def get_users_for_platform(
@@ -575,7 +582,8 @@ class Database:
                     delivery_disabled_auto,
                     created_at,
                     last_seen_at,
-                    custom_sticker_file_id
+                    custom_sticker_file_id,
+                    university_subgroup
                 FROM users
                 WHERE platform = ? AND user_id = ?
                 LIMIT 1
@@ -620,7 +628,8 @@ class Database:
                     subscription_title = ?,
                     subscription_url = ?,
                     group_name = ?,
-                    schedule_id = ?
+                    schedule_id = ?,
+                    university_subgroup = CASE WHEN subscription_key IS ? THEN university_subgroup ELSE NULL END
                 WHERE platform = ? AND user_id = ?
                 """,
                 (
@@ -630,6 +639,7 @@ class Database:
                     subscription_url,
                     group_name,
                     schedule_id,
+                    subscription_key,
                     platform,
                     user_id,
                 ),
@@ -638,6 +648,27 @@ class Database:
 
     async def clear_user_group(self, platform: str, user_id: int) -> None:
         await self.clear_user_subscription(platform, user_id)
+
+    async def set_university_subgroup(self, platform: str, user_id: int, schedule_id: int, subgroup: int | None) -> bool:
+        if subgroup is not None and (type(subgroup) is not int or not 1 <= subgroup <= 99):
+            raise ValueError("Недопустимая подгруппа")
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """UPDATE users SET university_subgroup = ? WHERE platform = ? AND user_id = ?
+                   AND subscription_type = 'group' AND schedule_id = ? AND schedule_id < 0""",
+                (subgroup, platform, user_id, schedule_id),
+            )
+            await db.commit()
+        return bool(cursor.rowcount)
+
+    async def get_university_notification_subgroups(self, subscription_key: str) -> list[int | None]:
+        async with self._connect() as db:
+            rows = await (await db.execute(
+                """SELECT DISTINCT university_subgroup FROM users WHERE subscription_key = ?
+                   AND subscription_type = 'group' AND schedule_id < 0 AND homework_notifications_enabled = 1
+                   ORDER BY university_subgroup""", (subscription_key,),
+            )).fetchall()
+        return [row[0] for row in rows]
 
     async def set_user_audience_subscription(
         self,
@@ -696,7 +727,8 @@ class Database:
                     audience_subscription_title = NULL,
                     audience_subscription_url = NULL,
                     group_name = NULL,
-                    schedule_id = NULL
+                    schedule_id = NULL,
+                    university_subgroup = NULL
                 WHERE platform = ? AND user_id = ?
                 """,
                 (platform, user_id),
@@ -1641,26 +1673,7 @@ class Database:
         return len(ids_to_delete)
 
     def _snapshot_to_dict(self, snapshot: ScheduleSnapshot) -> dict:
-        return {
-            "group_name": snapshot.group_name,
-            "fetched_at": snapshot.fetched_at.isoformat(timespec="seconds"),
-            "days": [
-                {
-                    "date_label": day.date_label,
-                    "date_iso": day.date_iso,
-                    "lessons": [
-                        {
-                            "number": lesson.number,
-                            "subject": lesson.subject,
-                            "teacher": lesson.teacher,
-                    "classroom": lesson.classroom,
-                        }
-                        for lesson in day.lessons
-                    ],
-                }
-                for day in snapshot.days
-            ],
-        }
+        return snapshot.to_dict()
 
     async def record_star_donation(
         self,

@@ -43,11 +43,11 @@ from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
-    build_teacher_schedule_snapshot,
     format_counter_sync_report,
     normalize_lesson_text,
     resolve_audience_preview_content,
     resolve_group_preview_content,
+    resolve_teacher_snapshot,
     snapshot_to_search_content,
     subject_matches,
     sync_lesson_counters_for_date,
@@ -71,8 +71,16 @@ from src.ocr_schedule import (
 )
 from src.outbox_context import delivery_context
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
-from src.schedule_search import ScheduleSearchCatalog, SearchTarget
-from src.schedule_service import ScheduleFormatter, get_day_by_offset_from_content
+from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choice_label
+from src.schedule_service import (
+    ScheduleFormatter,
+    get_day_by_offset_from_content,
+    university_current_week,
+    university_day_variant,
+    university_subscription_url,
+    university_week_name,
+)
+from src.schedule_sources import UNIVERSITY_BELLS_HTML
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
@@ -89,6 +97,7 @@ from src.system_status import (
     get_memory_usage_mb,
 )
 from src.telegram_runtime import telegram_retry_attempts
+from src.university_subgroups import available_subgroups, is_university_group, personal_subgroup
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -284,6 +293,15 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
+
+
+def university_schedule_keyboard(date_iso: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"schedule:week:{date_iso}:{variant}")
+         for label, variant in (("Числитель", 1), ("Знаменатель", 2))],
+        [InlineKeyboardButton(text="Актуальное", callback_data=f"schedule:week:{date_iso}:0")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows + SCHEDULE_KEYBOARD.inline_keyboard)
 
 WEEKDAY_BELLS_TEXT = "\n".join(
     [
@@ -1289,27 +1307,32 @@ def build_dispatcher(
         if user is None or not user.subscription_key or not user.subscription_title:
             return None
         snapshot = await db.get_latest_snapshot("current", schedule_id=user.schedule_id, source_key=user.subscription_key)
-        if snapshot is not None:
+        cached_day = get_day_by_offset_from_content(snapshot["content"], 0) if snapshot else None
+        if snapshot is not None and (
+            not university_subscription_url(user, parser) or (cached_day is not None and cached_day.week_variant in (1, 2))
+        ):
             return snapshot
         try:
-            if user.subscription_type == "teacher" and user.subscription_title:
-                snapshot_obj = await build_teacher_schedule_snapshot(db, user.subscription_title)
-                snapshot_hash = compute_snapshot_hash(snapshot_obj)
-            elif user.subscription_type == "audience" and user.subscription_url:
-                # Как в VK: без этой ветки подписка на кабинет без кэша давала «не удалось получить».
-                snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
-            elif user.schedule_id is not None:
-                snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
-            else:
-                return None
-        except httpx.HTTPError as exc:
-            logger.warning(
+            async with asyncio.timeout(3.0 if cached_day is not None else None):
+                if user.subscription_type == "teacher" and user.subscription_title:
+                    snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
+                    snapshot_hash = compute_snapshot_hash(snapshot_obj)
+                elif user.subscription_type == "audience" and user.subscription_url:
+                    # Как в VK: без этой ветки подписка на кабинет без кэша давала «не удалось получить».
+                    snapshot_obj, snapshot_hash = await parser.parse_from_url(user.subscription_url)
+                elif user.schedule_id is not None:
+                    snapshot_obj, snapshot_hash = await parser.parse(user.schedule_id)
+                else:
+                    return None
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+            logger.log(
+                logging.DEBUG if cached_day is not None else logging.WARNING,
                 "Failed to fetch Telegram subscription snapshot for user %s (%s): %s",
                 user_id,
                 user.subscription_key,
                 exc,
             )
-            return None
+            return snapshot if cached_day is not None else None
         return {
             "source_type": user.subscription_type,
             "source_key": user.subscription_key,
@@ -1318,26 +1341,7 @@ def build_dispatcher(
             "group_name": user.group_name or snapshot_obj.group_name,
             "schedule_id": user.schedule_id,
             "snapshot_hash": snapshot_hash,
-            "content": {
-                "group_name": snapshot_obj.group_name,
-                "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
-                "days": [
-                    {
-                        "date_label": day.date_label,
-                        "date_iso": day.date_iso,
-                        "lessons": [
-                            {
-                                "number": lesson.number,
-                                "subject": lesson.subject,
-                                "teacher": lesson.teacher,
-                                "classroom": lesson.classroom,
-                            }
-                            for lesson in day.lessons
-                        ],
-                    }
-                    for day in snapshot_obj.days
-                ],
-            },
+            "content": snapshot_obj.to_dict(),
             "fetched_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
             "created_at": snapshot_obj.fetched_at.isoformat(timespec="seconds"),
         }
@@ -1346,7 +1350,7 @@ def build_dispatcher(
         lines = [
             "<b>Укажи свою группу</b>",
             "",
-            "Напиши ее в формате, как на сайте колледжа.",
+            "Напиши её как на сайте: например, ИСП-25-1 или ТЭ/ПТ-26д.",
             "Например: <b>ИСП-25-1</b>",
             "",
             "Регистр не важен.",
@@ -1381,6 +1385,11 @@ def build_dispatcher(
             [InlineKeyboardButton(text="Узнать расписание", callback_data="start:rasp")],
             [InlineKeyboardButton(text="Дополнительно", callback_data="menu:settings")],
         ]
+        if is_university_group(user):
+            selected = personal_subgroup(user)
+            rows.insert(1, [InlineKeyboardButton(
+                text=f"Подгруппа: {selected}" if selected is not None else "Выбрать подгруппу", callback_data="menu:subgroup",
+            )])
         if user and user.subscription_type == "teacher":
             rows.insert(
                 1,
@@ -1393,12 +1402,12 @@ def build_dispatcher(
             )
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
+    async def format_welcome(group_name: str | None, is_editor: bool = False) -> str:
         class _WelcomeUser:
             subscription_type = "group" if group_name else None
             subscription_title = group_name
 
-        return build_welcome_text(_WelcomeUser if group_name else None, is_editor=is_editor)
+        return await build_welcome_text(_WelcomeUser if group_name else None, is_editor=is_editor)
 
     async def format_settings_text(user_id: int) -> str:
         return await format_subscription_settings_text(user_id)
@@ -1595,7 +1604,7 @@ def build_dispatcher(
 
     async def sync_lesson_counters_from_file() -> None:
         try:
-            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
             await active_catalog.ensure_loaded()
             counters = await lesson_counter_service.load_config_file(settings.lesson_counters_path, active_catalog)
             await lesson_counter_service.sync_config(counters)
@@ -1932,7 +1941,7 @@ def build_dispatcher(
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
                 elif source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 else:
                     snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -1967,7 +1976,7 @@ def build_dispatcher(
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
                 elif source["source_type"] == "teacher":
-                    snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                    snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
                 else:
                     snapshot, snapshot_hash = await parser.parse(source["schedule_id"])
@@ -2285,7 +2294,7 @@ def build_dispatcher(
         token, _, targets = teacher_choices[(chat_id, user_id)]
         start = page * 8
         rows = [
-            [InlineKeyboardButton(text=target.title, callback_data=f"teacher:pick:{token}:{index}")]
+            [InlineKeyboardButton(text=search_choice_label(target, targets), callback_data=f"teacher:pick:{token}:{index}")]
             for index, target in enumerate(targets[start:start + 8], start=start)
         ]
         navigation = []
@@ -2296,8 +2305,11 @@ def build_dispatcher(
         if navigation:
             rows.append(navigation)
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
+        prompt = ("Нашлось несколько аудиторий. Выбери нужную кнопку или уточни запрос."
+                  if targets[0].kind == "audience"
+                  else "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.")
         await send_new_context_message(
-            bot, chat_id, "schedule", "Нашлось несколько преподавателей. Какой именно нужен?\nВыбери преподавателя кнопкой или уточни запрос.",
+            bot, chat_id, "schedule", prompt,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         )
 
@@ -2359,7 +2371,7 @@ def build_dispatcher(
             return False
         try:
             if target.kind == "teacher":
-                content = snapshot_to_search_content(await build_teacher_schedule_snapshot(db, target.title))
+                content = snapshot_to_search_content(await resolve_teacher_snapshot(db, parser, target.title, target.url))
             elif target.kind == "group":
                 content = await resolve_group_preview_content(db, parser, target.url)
             else:
@@ -2391,8 +2403,8 @@ def build_dispatcher(
     async def handle_group_input(bot: Bot, chat_id: int, user_id: int, raw_text: str) -> bool:
         return await handle_subscription_input(bot, chat_id, user_id, raw_text)
 
-    def build_welcome_text(user, is_editor: bool = False) -> str:
-        lines = ["<b>Привет! Я бот расписания колледжа</b>"]
+    async def build_welcome_text(user, is_editor: bool = False) -> str:
+        lines = ["<b>Привет! Я бот расписания колледжа и университета</b>"]
         subscription_line = subscription_caption(
             user.subscription_type if user else None,
             user.subscription_title if user else None,
@@ -2406,6 +2418,12 @@ def build_dispatcher(
                 lines.extend(escape(part) for part in value_lines[1:])
             else:
                 lines.extend(["", f"{escape(label)}: <b>-</b>"])
+        if isinstance(getattr(user, "user_id", None), int) and university_subscription_url(user, parser):
+            saved = await get_saved_snapshot(user.user_id)
+            current = university_current_week(saved["content"]) if saved else None
+            lines.append(f"Учимся по: <b>{university_week_name(current)}</b>")
+            if is_university_group(user):
+                lines.append(f"Подгруппа: <b>{personal_subgroup(user) or 'все'}</b>")
         if user and user.subscription_type == "teacher" and not user.audience_subscription_key:
             lines.extend(["", "Ниже можно быстро привязать кабинет, чтобы следить за обновлениями аудитории отдельно."])
         lines.extend(["", "/rasp — посмотреть расписание", "/settings — дополнительно"])
@@ -2527,7 +2545,7 @@ def build_dispatcher(
             bot,
             chat_id,
             "menu",
-            build_welcome_text(user, is_editor=editor),
+            await build_welcome_text(user, is_editor=editor),
             reply_markup=await build_start_keyboard(user_id),
         )
         return True
@@ -2554,6 +2572,11 @@ def build_dispatcher(
     async def send_bells_schedule(bot: Bot, chat_id: int) -> None:
         await clear_context_messages(bot, chat_id, "schedule")
         message_ids: list[int] = []
+
+        user = await get_user_record(chat_id)
+        if university_subscription_url(user, parser):
+            await send_new_context_message(bot, chat_id, "schedule", UNIVERSITY_BELLS_HTML, reply_markup=SCHEDULE_KEYBOARD)
+            return
 
         weekday_message = await safe_send_message(bot, chat_id, WEEKDAY_BELLS_TEXT)
         if weekday_message is not None:
@@ -2583,6 +2606,23 @@ def build_dispatcher(
             await send_bells_schedule(bot, chat_id)
             return
 
+        user = await get_user_record(user_id)
+        university_url = university_subscription_url(user, parser)
+        if action.startswith("week:"):
+            try:
+                _, date_iso, raw_variant = action.split(":")
+                variant = int(raw_variant)
+                if not university_url or variant not in (0, 1, 2):
+                    raise ValueError("Недоступный вариант расписания")
+                day = await university_day_variant(parser, university_url, date_iso, variant)
+                text = ScheduleFormatter.format_day_card(day, date_iso, subgroup=personal_subgroup(user)) if day else "На эту дату нет данных."
+            except (ValueError, httpx.HTTPError):
+                await send_new_context_message(bot, chat_id, "schedule", "Не удалось загрузить вариант расписания. Попробуй позже.",
+                                               reply_markup=SCHEDULE_KEYBOARD)
+                return
+            await send_new_context_message(bot, chat_id, "schedule", text, reply_markup=university_schedule_keyboard(date_iso))
+            return
+
         snapshot_row = await get_saved_snapshot(user_id)
         if snapshot_row is None:
             await send_new_context_message(
@@ -2596,22 +2636,27 @@ def build_dispatcher(
 
         if action == "today":
             day = get_day_by_offset_from_content(snapshot_row["content"], 0)
-            text = ScheduleFormatter.format_day_card(day, "сегодня") if day else empty_day_text("сегодня")
+            text = ScheduleFormatter.format_day_card(day, "сегодня", subgroup=personal_subgroup(user)) if day else empty_day_text("сегодня")
         elif action == "tomorrow":
             day = get_day_by_offset_from_content(snapshot_row["content"], 1)
-            text = ScheduleFormatter.format_day_card(day, "завтра") if day else empty_day_text("завтра")
+            text = ScheduleFormatter.format_day_card(day, "завтра", subgroup=personal_subgroup(user)) if day else empty_day_text("завтра")
         elif action == "day_after":
             day = get_day_by_offset_from_content(snapshot_row["content"], 2)
-            text = ScheduleFormatter.format_day_card(day, "2 дня") if day else empty_day_text("2 дня")
+            text = ScheduleFormatter.format_day_card(day, "2 дня", subgroup=personal_subgroup(user)) if day else empty_day_text("2 дня")
         else:
             await send_schedule_menu(bot, chat_id)
             return
+        keyboard = SCHEDULE_KEYBOARD
+        if university_url:
+            offset = {"today": 0, "tomorrow": 1, "day_after": 2}[action]
+            date_iso = (datetime.now().date() + timedelta(days=offset)).isoformat()
+            keyboard = university_schedule_keyboard(date_iso)
         await send_new_context_message(
             bot,
             chat_id,
             "schedule",
             text,
-            reply_markup=SCHEDULE_KEYBOARD,
+            reply_markup=keyboard,
         )
     @dispatcher.message(CommandStart())
     async def handle_start(message: Message) -> None:
@@ -2638,7 +2683,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            build_welcome_text(user, is_editor=editor),
+            await build_welcome_text(user, is_editor=editor),
             reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
@@ -2886,7 +2931,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            build_welcome_text(
+            await build_welcome_text(
                 await get_user_record(message.from_user.id if message.from_user else None),
                 is_editor=await user_is_editor(message.from_user.id if message.from_user else None),
             ),
@@ -3018,9 +3063,49 @@ def build_dispatcher(
                 callback.bot,
                 callback.message.chat.id,
                 "menu",
-                build_welcome_text(user, is_editor=editor),
+                await build_welcome_text(user, is_editor=editor),
                 reply_markup=await build_start_keyboard(callback.from_user.id),
             )
+        await safe_callback_answer(callback)
+
+    @dispatcher.callback_query((F.data == "menu:subgroup") | F.data.startswith("subgroup:"))
+    async def handle_university_subgroup(callback: CallbackQuery) -> None:
+        if callback.message is None or callback.message.chat.id != callback.from_user.id:
+            await safe_callback_answer(callback, "Выбери подгруппу в личном чате с ботом.", show_alert=True)
+            return
+        await register_callback_user(callback)
+        user = await get_user_record(callback.from_user.id)
+        if not is_university_group(user):
+            await safe_callback_answer(callback, "Сначала выбери свою группу университета.", show_alert=True)
+            return
+        saved = await get_saved_snapshot(user.user_id)
+        options = available_subgroups(saved["content"]) if saved else []
+        if callback.data == "menu:subgroup":
+            rows = [[InlineKeyboardButton(text=f"{number} подгруппа", callback_data=f"subgroup:{user.schedule_id}:{number}")]
+                    for number in options]
+            rows.extend([[InlineKeyboardButton(text="Все подгруппы", callback_data=f"subgroup:{user.schedule_id}:all")],
+                         [InlineKeyboardButton(text="Назад", callback_data="menu:start")]])
+            prompt = ("<b>Твоя подгруппа</b>\n\nОбщие пары показываются всегда. Выбери свою подгруппу; "
+                      "полное расписание всех подгрупп доступно через поиск.")
+            if not options:
+                prompt += "\n\nВ сохранённом расписании пока нет данных о подгруппах."
+            await send_new_context_message(callback.bot, callback.message.chat.id, "menu", prompt,
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        else:
+            try:
+                _, raw_group, raw_subgroup = callback.data.split(":")
+                group = int(raw_group)
+                selected = None if raw_subgroup == "all" else int(raw_subgroup)
+                if group != user.schedule_id or (selected is not None and selected not in options):
+                    raise ValueError("Устаревшая кнопка")
+                if not await db.set_university_subgroup("telegram", user.user_id, group, selected):
+                    raise ValueError("Подписка изменилась")
+            except (ValueError, TypeError):
+                await safe_callback_answer(callback, "Выбор устарел. Открой подгруппы заново.", show_alert=True)
+                return
+            updated = await get_user_record(user.user_id)
+            await send_new_context_message(callback.bot, callback.message.chat.id, "menu", await build_welcome_text(updated),
+                                           reply_markup=await build_start_keyboard(user.user_id))
         await safe_callback_answer(callback)
 
     @dispatcher.callback_query(F.data == "menu:settings")
@@ -3948,7 +4033,7 @@ def build_dispatcher(
                 total=total,
             )
 
-            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+            active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
             await active_catalog.ensure_loaded()
             normalized, problems = await validate_lesson_config(
                 payload,
@@ -4059,7 +4144,7 @@ def build_dispatcher(
             admin_lesson_drafts.pop(callback.from_user.id, None)
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_broadcast")
             await clear_context_messages(callback.bot, callback.message.chat.id, "admin_lesson")
-            await safe_edit_message_text(callback.message, build_welcome_text(admin_user, is_editor=editor))
+            await safe_edit_message_text(callback.message, await build_welcome_text(admin_user, is_editor=editor))
             context_messages[callback.message.chat.id]["menu"] = [callback.message.message_id]
             await safe_callback_answer(callback)
             return
@@ -4681,7 +4766,7 @@ def build_dispatcher(
                 message.bot,
                 message.chat.id,
                 "menu",
-                build_welcome_text(await get_user_record(message.from_user.id), is_editor=await user_is_editor(message.from_user.id)),
+                await build_welcome_text(await get_user_record(message.from_user.id), is_editor=await user_is_editor(message.from_user.id)),
                 reply_markup=await build_start_keyboard(message.from_user.id),
             )
             return
@@ -4723,7 +4808,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4842,7 +4927,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -4888,7 +4973,7 @@ def build_dispatcher(
             step = str(draft.get("step") or "group")
             text = message.text.strip()
             if step == "group":
-                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, db=db)
+                active_catalog = group_catalog or GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
                 await active_catalog.ensure_loaded()
                 if text.isdigit():
                     schedule_id = int(text)
@@ -5129,7 +5214,7 @@ def build_dispatcher(
             message.bot,
             message.chat.id,
             "menu",
-            build_welcome_text(user, is_editor=await user_is_editor(message.from_user.id)),
+            await build_welcome_text(user, is_editor=await user_is_editor(message.from_user.id)),
             reply_markup=await build_start_keyboard(message.from_user.id),
         )
 

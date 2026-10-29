@@ -20,6 +20,7 @@ from src.message_broker import OutboxBroker
 from src.outbox_codec import OutboxFiles, json_value, telegram_method, telegram_result
 from src.outbox_context import current_peer_key, delivery_id
 from src.outbox_store import TERMINAL_STATUSES, OutboxStore, complete_on_cancel, retention_cutoff
+from src.telegram_runtime import is_permanent_telegram_delivery_error
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +382,7 @@ class DeliveryOutbox:
                 error_text=f"{type(error).__name__}: {error}" if error else None,
             )
         if error is not None:
-            permanent = isinstance(error, telegram_errors.TelegramForbiddenError)
+            permanent = row["platform"] == "telegram" and is_permanent_telegram_delivery_error(error)
             if isinstance(error, VKAPIError):
                 from src.vk_runtime import is_permanent_vk_delivery_error
                 permanent = is_permanent_vk_delivery_error(error)

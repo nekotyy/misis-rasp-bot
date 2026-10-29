@@ -76,7 +76,9 @@ class TestDbMigrationHelpers(unittest.TestCase):
                     restore_logging()
                 self.assertTrue(_table_exists(path, "delivery_outbox"))
                 with closing(sqlite3.connect(path)) as connection:
-                    self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261029_0002")
+                    self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261029_0003")
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
+                    self.assertIn("university_subgroup", columns)
                     if legacy:
                         self.assertEqual(connection.execute("SELECT full_name FROM users WHERE user_id = 42").fetchone()[0], "Сохранить")
 

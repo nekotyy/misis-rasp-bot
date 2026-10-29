@@ -116,8 +116,8 @@ async def run(payload: dict, *, notify: bool, dry_run: bool) -> int:
     db = Database(settings.database_path)
     await db.initialize()
 
-    group_catalog = GroupCatalog(settings.schedule_url, db=db)
-    parser = ScheduleParser(settings.schedule_url)
+    group_catalog = GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
+    parser = ScheduleParser(settings.schedule_url, university_url=settings.university_schedule_url)
     broadcaster = Broadcaster(
         db=db,
         telegram_bot=None,

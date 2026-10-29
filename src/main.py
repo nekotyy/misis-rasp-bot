@@ -355,10 +355,10 @@ async def main() -> None:
     db = Database(settings.database_path)
     await db.initialize()
 
-    group_catalog = GroupCatalog(settings.schedule_url, db=db)
+    group_catalog = GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
     await group_catalog.ensure_loaded()
-    search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog, db=db)
-    parser = ScheduleParser(settings.schedule_url)
+    search_catalog = ScheduleSearchCatalog(settings.schedule_url, group_catalog, db=db, university_url=settings.university_schedule_url)
+    parser = ScheduleParser(settings.schedule_url, university_url=settings.university_schedule_url)
     lesson_counter_service = LessonCounterService(db)
     if settings.lesson_counters_enabled:
         lesson_counter_config = await lesson_counter_service.load_config_file(settings.lesson_counters_path, group_catalog)

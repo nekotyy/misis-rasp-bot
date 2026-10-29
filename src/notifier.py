@@ -11,8 +11,6 @@ from time import monotonic
 
 from aiogram import Bot
 from aiogram.exceptions import (
-    TelegramBadRequest,
-    TelegramForbiddenError,
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramServerError,
@@ -25,7 +23,7 @@ from vkbottle.bot import Bot as VkBot
 from src.db import Database
 from src.message_broker import OutboundMessage, RabbitMQBroker
 from src.outbox_context import delivery_id
-from src.telegram_runtime import telegram_retry_attempts
+from src.telegram_runtime import is_permanent_telegram_delivery_error, telegram_retry_attempts
 from src.vk_runtime import is_permanent_vk_delivery_error, split_vk_text, vk_send_message
 
 logger = logging.getLogger(__name__)
@@ -142,6 +140,7 @@ class Broadcaster:
         target_platform: str = "all",
         target_audience: str = "all",
         progress_callback: Callable[[BroadcastProgress], Awaitable[None]] | None = None,
+        subgroup_filter: tuple[int | None, ...] | None = None,
     ) -> BroadcastProgress:
         started_at = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         tg_users = []
@@ -166,6 +165,9 @@ class Broadcaster:
                 target_audience=target_audience,
             )
 
+        if subgroup_filter is not None:
+            tg_users = [user for user in tg_users if user.university_subgroup in subgroup_filter]
+            vk_users = [user for user in vk_users if user.university_subgroup in subgroup_filter]
         total_users = len(tg_users) + len(vk_users)
         processed = 0
         success = 0
@@ -653,20 +655,4 @@ class Broadcaster:
                 delay *= 2
 
     def _is_permanent_telegram_failure(self, exc: Exception) -> bool:
-        error_text = str(exc).lower()
-        markers = (
-            "forbidden: bot was blocked by the user",
-            "bot was blocked by the user",
-            "chat not found",
-            "user is deactivated",
-            "have no rights to send a message",
-            "chat_id is empty",
-            "group chat was upgraded to a supergroup chat",
-        )
-        if any(marker in error_text for marker in markers):
-            return True
-        if isinstance(exc, TelegramForbiddenError):
-            return True
-        if isinstance(exc, TelegramBadRequest):
-            return any(marker in error_text for marker in markers)
-        return False
+        return is_permanent_telegram_delivery_error(exc)

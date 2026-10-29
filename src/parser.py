@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
+from src.schedule_sources import UNIVERSITY_SCHEDULE_URL, university_kind
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ def compute_snapshot_hash(snapshot: ScheduleSnapshot) -> str:
     normalized_parts: list[str] = [snapshot.group_name]
     for day in snapshot.days:
         normalized_parts.append(day.date_iso)
+        if day.week_variant in (1, 2):
+            normalized_parts.append(f"week_variant:{day.week_variant}")
         # Сортировка по полному кортежу, а не только по номеру: у личного расписания
         # препода несколько групп могут иметь пару с одинаковым номером в один день,
         # и без этого порядок (а значит и хеш) при одинаковом содержимом зависел бы
@@ -72,6 +76,7 @@ class ScheduleParser:
         timeout: float = 20.0,
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
+        university_url: str = UNIVERSITY_SCHEDULE_URL,
     ) -> None:
         self.schedule_base_url = schedule_url.rstrip("/")
         if self.schedule_base_url.rsplit("/", 1)[-1].isdigit():
@@ -79,10 +84,15 @@ class ScheduleParser:
         self.timeout = timeout
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
+        self.university_url = university_url.rstrip("/")
 
     def build_schedule_url(self, schedule_id: int | None) -> str:
         if schedule_id is None:
             raise ValueError("schedule_id is required to build a schedule URL")
+        if schedule_id < 0:
+            if not self.university_url:
+                raise ValueError("Источник расписания университета отключён")
+            return f"{self.university_url}/group/{-schedule_id}"
         return f"{self.schedule_base_url}/{schedule_id}"
 
     @property
@@ -128,17 +138,41 @@ class ScheduleParser:
         raise last_exc
 
     async def parse(self, schedule_id: int | None) -> tuple[ScheduleSnapshot, str]:
+        if schedule_id is not None and schedule_id < 0:
+            return await self.parse_from_url(self.build_schedule_url(schedule_id))
         html = await self.fetch_html(schedule_id)
         snapshot = self.parse_html(html)
         return snapshot, self.compute_hash(snapshot)
 
     async def parse_from_url(self, url: str) -> tuple[ScheduleSnapshot, str]:
         html = await self.fetch_html_from_url(url)
+        soup = BeautifulSoup(html, "html.parser")
+        if university_kind(url) and soup.select_one("#schedule-table") is None:
+            raise ValueError("Страница университета не содержит таблицу расписания")
+        if soup.select_one("#schedule-table") is not None:
+            reference = datetime.now()
+            snapshot = self._parse_university_html(soup, reference)
+            active = soup.select_one("#schedule-title .search-button-active[onclick]")
+            match = re.search(r"/([12])['\"]", active.get("onclick", "")) if active else None
+            if match is None:
+                raise ValueError("Не удалось определить числитель/знаменатель расписания университета")
+            other = 3 - int(match[1])
+            other_url = re.sub(r"/[12]$", "", url.rstrip("/")) + f"/{other}"
+            other_html = await self.fetch_html_from_url(other_url)
+            other_soup = BeautifulSoup(other_html, "html.parser")
+            next_week = self._parse_university_html(other_soup, reference)
+            if {day.date_iso for day in snapshot.days} & {day.date_iso for day in next_week.days}:
+                raise ValueError("Сайт вернул одинаковую неделю для числителя и знаменателя")
+            snapshot.days.extend(next_week.days)
+            snapshot.days.sort(key=lambda day: day.date_iso)
+            return snapshot, self.compute_hash(snapshot)
         snapshot = self.parse_html(html)
         return snapshot, self.compute_hash(snapshot)
 
     def parse_html(self, html: str) -> ScheduleSnapshot:
         soup = BeautifulSoup(html, "html.parser")
+        if soup.select_one("#schedule-table") is not None:
+            return self._parse_university_html(soup, datetime.now())
         title = soup.find("div", id="titleF")
         group_name = title.get_text(strip=True) if title else "Неизвестная группа"
 
@@ -178,6 +212,79 @@ class ScheduleParser:
             )
 
         return ScheduleSnapshot(group_name=group_name, fetched_at=datetime.now(), days=days)
+
+    async def parse_university_variant(self, url: str, variant: int, target_date: str) -> ScheduleSnapshot:
+        if variant not in (1, 2):
+            raise ValueError("Вариант недели должен быть 1 или 2")
+        reference = datetime.fromisoformat(target_date)
+        url = re.sub(r"/[12]$", "", url.rstrip("/")) + f"/{variant}"
+        html = await self.fetch_html_from_url(url)
+        soup = BeautifulSoup(html, "html.parser")
+        active = soup.select_one("#schedule-title .search-button-active[onclick]")
+        if active is None or not re.search(rf"/{variant}['\"]", active.get("onclick", "")):
+            raise ValueError("Сайт не вернул выбранный вариант недели")
+        return self._parse_university_html(soup, reference, align_current_week=True)
+
+    def _parse_university_html(
+        self, soup: BeautifulSoup, reference: datetime, *, align_current_week: bool = False,
+    ) -> ScheduleSnapshot:
+        table = soup.select_one("#schedule-table")
+        title = soup.select_one("#title-value")
+        info = soup.select_one("#schedule-title .misc-schedule > span")
+        if table is None or title is None or info is None:
+            raise ValueError("Неполная страница расписания университета")
+        text = " ".join(info.get_text(" ", strip=True).split())
+        parity = re.search(r"На этой неделе учимся по (числителю|знаменателю).*показано по (числителю|знаменателю)", text)
+        if parity is None:
+            raise ValueError("Неизвестная неделя расписания университета")
+        monday = reference.date() - timedelta(days=reference.weekday())
+        if not align_current_week and parity[1] != parity[2]:
+            monday += timedelta(days=7)
+        weekdays = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+        numbers = [int(node.get_text(strip=True)) for node in table.select(".table-lesson-num")]
+        if not numbers or len(set(numbers)) != len(numbers) or any(number <= 0 for number in numbers):
+            raise ValueError("Не удалось прочитать номера пар университета")
+        days: list[DaySchedule] = []
+        for row in table.select("tr"):
+            weekday = row.select_one(".table-weekdays")
+            if weekday is None:
+                continue
+            name = weekday.get_text(" ", strip=True).casefold()
+            if name not in weekdays:
+                raise ValueError(f"Неизвестный день недели: {name}")
+            cells = row.find_all("td", recursive=False)
+            if len(cells) != len(numbers):
+                raise ValueError("Изменилась структура таблицы расписания университета")
+            lessons: list[Lesson] = []
+            for number, cell in zip(numbers, cells, strict=True):
+                for block in cell.select(".table-subgroup-item") or [cell]:
+                    def value(selector: str, block=block) -> str:
+                        node = block.select_one(selector)
+                        return " ".join(node.get_text(" ", strip=True).split()) if node else ""
+
+                    subject = value(".table-subject")
+                    if not subject:
+                        if "table-empty" not in cell.get("class", []) and block.select_one(".schedule-subgroup-empty") is None:
+                            raise ValueError("Не удалось прочитать занятие университета")
+                        continue
+                    details = [value(".table-lessontype"), value(".table-sg-name")]
+                    suffix = ", ".join(item for item in details if item)
+                    lessons.append(
+                        Lesson(
+                            number=number,
+                            subject=f"{subject} ({suffix})" if suffix else subject,
+                            teacher=value(".table-teacher"),
+                            classroom=value(".table-room"),
+                        )
+                    )
+            day = monday + timedelta(days=weekdays.index(name))
+            variants = {"числителю": 1, "знаменателю": 2}
+            days.append(DaySchedule(day.isoformat(), day.isoformat(), lessons,
+                                    week_variant=variants[parity[2]], current_week_variant=variants[parity[1]]))
+        if len(days) != 7 or len({day.date_iso for day in days}) != 7:
+            raise ValueError("Неполная неделя расписания университета")
+        group_name = title.get_text(" ", strip=True).removeprefix("Расписание для ")
+        return ScheduleSnapshot(group_name, reference, days)
 
     def compute_hash(self, snapshot: ScheduleSnapshot) -> str:
         return compute_snapshot_hash(snapshot)

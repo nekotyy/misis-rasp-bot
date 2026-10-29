@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 from src.db import Database
 from src.http_retry import get_with_retry
+from src.schedule_sources import parse_university_directory
 from src.text_normalize import LATIN_TO_CYRILLIC, normalize_dashes, strip_non_word_chars
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class GroupCatalog:
         request_retries: int = 3,
         retry_backoff_seconds: float = 1.0,
         db: Database | None = None,
+        university_url: str = "",
     ) -> None:
         parts = urlsplit(schedule_url)
         self.base_origin = f"{parts.scheme}://{parts.netloc}"
@@ -41,6 +43,8 @@ class GroupCatalog:
         self.request_retries = max(1, request_retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self.db = db
+        self.university_url = university_url.rstrip("/")
+        self._failed_origins = False
         self._lock = asyncio.Lock()
         self._loaded = False
         self.last_error: Exception | None = None
@@ -106,6 +110,45 @@ class GroupCatalog:
             await self._save_to_db()
 
     async def _fetch_from_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo], set[int]]:
+        if not self.university_url:
+            return await self._fetch_college_site()
+        groups: dict[int, GroupInfo] = {}
+        failed_departments: set[int] = set()
+        errors: list[Exception] = []
+        cached = list(self._groups_by_schedule_id.values())
+        if self.db is not None:
+            cached.extend(GroupInfo(**row) for row in await self.db.get_all_groups())
+        try:
+            _, college, failed_departments = await self._fetch_college_site()
+            groups.update(college)
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning("Каталог колледжа недоступен: %s", exc)
+            groups.update((group.schedule_id, group) for group in cached if group.schedule_id is not None and group.schedule_id > 0)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                response = await self._get_with_retry(client, f"{self.university_url}/json/groups")
+                rows = parse_university_directory(response.content.decode("utf-8"), "groups")
+            for row in rows:
+                group = GroupInfo(
+                    department_id=-int(row.get("faculty_id", 0)),
+                    department_code="Университет",
+                    department_name=row.get("faculty_name", ""),
+                    group_name=row["content"].strip(),
+                    schedule_id=-row["value"],
+                    url=f"{self.university_url}/group/{row['value']}",
+                )
+                groups[group.schedule_id] = group
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning("Каталог университета недоступен: %s", exc)
+            groups.update((group.schedule_id, group) for group in cached if group.schedule_id is not None and group.schedule_id < 0)
+        self._failed_origins = bool(errors)
+        if len(errors) == 2 and not groups:
+            raise errors[0]
+        return {self.normalize(group.group_name): group for group in groups.values()}, groups, failed_departments
+
+    async def _fetch_college_site(self) -> tuple[dict[str, GroupInfo], dict[int, GroupInfo], set[int]]:
         """Загружает список групп с сайта. Бросает исключение, если недоступна даже стартовая страница.
 
         Отдельные отделения, которые не удалось загрузить (сеть шатается у этого сайта
@@ -177,6 +220,9 @@ class GroupCatalog:
         весь набор нового курса) были бы не видны поиску вплоть до следующего планового
         обновления. Здесь же тянутся только реально недостающие страницы, а не весь каталог.
         """
+        if self._failed_origins:
+            await self.refresh(force=True)
+            return not self._failed_origins
         async with self._lock:
             if not self._failed_department_ids:
                 return False
@@ -253,7 +299,8 @@ class GroupCatalog:
                 department_name="",
                 group_name=str(source["group_name"]),
                 schedule_id=int(source["schedule_id"]),
-                url=f"{self.base_origin}/rasp/{source['schedule_id']}",
+                url=(f"{self.university_url}/group/{-int(source['schedule_id'])}"
+                     if int(source["schedule_id"]) < 0 else f"{self.base_origin}/rasp/{source['schedule_id']}"),
             )
             for source in sources
             if source.get("source_type") == "group" and source.get("schedule_id") and source.get("group_name")

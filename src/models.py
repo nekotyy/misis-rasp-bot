@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 
@@ -17,6 +17,15 @@ class DaySchedule:
     date_label: str
     date_iso: str
     lessons: list[Lesson]
+    week_variant: int | None = None
+    current_week_variant: int | None = None
+
+    def to_dict(self) -> dict:
+        result = asdict(self)
+        for name in ("week_variant", "current_week_variant"):
+            if result[name] is None:
+                result.pop(name)
+        return result
 
 
 @dataclass(slots=True)
@@ -24,6 +33,13 @@ class ScheduleSnapshot:
     group_name: str
     fetched_at: datetime
     days: list[DaySchedule]
+
+    def to_dict(self) -> dict:
+        return {
+            "group_name": self.group_name,
+            "fetched_at": self.fetched_at.isoformat(timespec="seconds"),
+            "days": [day.to_dict() for day in self.days],
+        }
 
 
 @dataclass(slots=True)
@@ -48,6 +64,7 @@ class UserRecord:
     created_at: str
     last_seen_at: str
     custom_sticker_file_id: str | None = None
+    university_subgroup: int | None = None
 
 
 @dataclass(slots=True)

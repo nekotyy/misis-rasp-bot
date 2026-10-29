@@ -23,7 +23,7 @@ from src.group_catalog import GroupCatalog
 from src.lesson_counters import (
     LessonCounterService,
     LessonCounterSyncResult,
-    build_teacher_schedule_snapshot,
+    resolve_teacher_snapshot,
     sync_lesson_counters_for_date,
 )
 from src.message_broker import OutboundMessage
@@ -427,9 +427,9 @@ async def save_lessons_json(
         raw_payload = parse_json_payload(payload)
         fresh_settings = Settings.from_env()
         db = Database(fresh_settings.database_path)
-        group_catalog = GroupCatalog(fresh_settings.schedule_url, db=db)
+        group_catalog = GroupCatalog(fresh_settings.schedule_url, university_url=fresh_settings.university_schedule_url, db=db)
         await group_catalog.ensure_loaded()
-        parser = ScheduleParser(Settings.from_env().schedule_url)
+        parser = ScheduleParser(Settings.from_env().schedule_url, university_url=Settings.from_env().university_schedule_url)
         normalized, problems = await validate_lesson_config(raw_payload, group_catalog=group_catalog, parser=parser, db=db)
         saved = False
         forced = mode == "save_force"
@@ -462,7 +462,7 @@ async def add_lesson_group(
 ) -> RedirectResponse:
     fresh_settings = Settings.from_env()
     payload = load_lesson_config(fresh_settings.lesson_counters_path)
-    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=Database(fresh_settings.database_path))
+    group_catalog = GroupCatalog(fresh_settings.schedule_url, university_url=fresh_settings.university_schedule_url, db=Database(fresh_settings.database_path))
     await group_catalog.ensure_loaded()
     resolved_id, resolved_name = await resolve_group_input(group_catalog, group_name, schedule_id)
     if resolved_id is None:
@@ -869,9 +869,9 @@ def safe_int(value: object, default: int = -1) -> int:
 async def validate_payload_for_save(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     fresh_settings = Settings.from_env()
     db = Database(fresh_settings.database_path)
-    group_catalog = GroupCatalog(fresh_settings.schedule_url, db=db)
+    group_catalog = GroupCatalog(fresh_settings.schedule_url, university_url=fresh_settings.university_schedule_url, db=db)
     await group_catalog.ensure_loaded()
-    parser = ScheduleParser(fresh_settings.schedule_url)
+    parser = ScheduleParser(fresh_settings.schedule_url, university_url=fresh_settings.university_schedule_url)
     return await validate_lesson_config(payload, group_catalog=group_catalog, parser=parser, db=db)
 
 
@@ -922,13 +922,15 @@ async def _run_snapshot_action_for_all_active_sources(
     sources = await db.get_active_sources()
     if not sources:
         return []
-    parser = ScheduleParser(Settings.from_env().schedule_url)
+    parser = ScheduleParser(Settings.from_env().schedule_url, university_url=Settings.from_env().university_schedule_url)
     rows: list[tuple[str, str, str]] = []
     for source in sources:
         try:
             if source["source_type"] == "teacher":
-                snapshot = await build_teacher_schedule_snapshot(db, str(source.get("source_title") or ""))
+                snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                 snapshot_hash = compute_snapshot_hash(snapshot)
+            elif source["source_type"] == "audience":
+                snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
                 snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
             await db.save_snapshot(
@@ -956,7 +958,7 @@ async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
 async def sync_lesson_counters_now() -> LessonCounterSyncResult:
     fresh_settings = Settings.from_env()
     db = await get_db()
-    parser = ScheduleParser(fresh_settings.schedule_url)
+    parser = ScheduleParser(fresh_settings.schedule_url, university_url=fresh_settings.university_schedule_url)
     service = LessonCounterService(db, lesson_counters_path=fresh_settings.lesson_counters_path)
     target_date_iso = datetime.now().date().isoformat()
     return await sync_lesson_counters_for_date(db, parser, service, target_date_iso)
