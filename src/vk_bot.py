@@ -5,6 +5,7 @@ import logging
 import re
 from collections import defaultdict
 from collections.abc import Awaitable
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -16,7 +17,6 @@ import httpx
 from vkbottle import Keyboard, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
-from vkbottle.tools import DocMessagesUploader
 
 from src.config import Settings
 from src.course_stats import collect_course_stats, format_course_stats_report
@@ -81,6 +81,7 @@ from src.telegram_bot import format_broadcast_progress_status, format_user_profi
 from src.university_subgroups import available_subgroups, is_university_group, personal_subgroup
 from src.vk_runtime import (
     ResilientBotPolling,
+    ResilientDocMessagesUploader,
     build_vk_api,
     vk_call_with_retry,
     vk_edit_message,
@@ -1395,12 +1396,16 @@ def build_vk_bot(
                 "peer_id": peer_id, "message": title, "document": FSInputFile(path, filename=path.name),
                 "keyboard": admin_keyboard(), "random_id": randbelow(2**31 - 1) + 1,
             })
+            # Сохраняем порядок уведомления и файла, не задерживая обычные ответы админки.
+            notice["peer_key"] = document["peer_key"] = f"{peer_id}:documents"
             rows = await bot.api.outbox.enqueue_many([notice, document])
             await bot.api.outbox.wait(rows[-1]["delivery_id"])
             return
         await show_screen(peer_id, f"Загружаю {title}...")
-        uploader = DocMessagesUploader(bot.api)
-        doc = await uploader.upload(path, peer_id=peer_id, title=title)
+        uploader = ResilientDocMessagesUploader(bot.api)
+        snapshot = db.snapshot() if path.resolve() == db.path.resolve() else nullcontext(path)
+        async with snapshot as upload_path:
+            doc = await uploader.upload(str(upload_path), peer_id=peer_id, title=title)
         await send_vk_message(peer_id, title, attachment=doc, keyboard=admin_keyboard())
 
     async def sync_lesson_counters_from_file() -> None:
@@ -3326,10 +3331,14 @@ def build_vk_bot(
                 await show_screen(peer_id, admin_broadcast_prompt_text(), keyboard=make_keyboard([["Отменить"]]))
                 return
             if text == "Скачать БД":
-                await send_admin_document(peer_id, settings.database_path, "bot.db")
+                if not spawn_admin_job(peer_id, "выгрузка БД", send_admin_document(peer_id, settings.database_path, "bot.db")):
+                    await show_screen(peer_id, "Выгрузка БД уже идёт. Дождись отправки файла.", keyboard=admin_keyboard())
                 return
             if text == "Скачать пары":
-                await send_admin_document(peer_id, settings.lesson_counters_path, "lesson_counters.json")
+                if not spawn_admin_job(
+                    peer_id, "выгрузка пар", send_admin_document(peer_id, settings.lesson_counters_path, "lesson_counters.json"),
+                ):
+                    await show_screen(peer_id, "Выгрузка пар уже идёт. Дождись отправки файла.", keyboard=admin_keyboard())
                 return
             if text == "Расписание с фото":
                 available, availability_message = ocr_service.availability()

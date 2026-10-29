@@ -5,6 +5,7 @@ import logging
 import tempfile
 import zipfile
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -1585,22 +1586,28 @@ def build_dispatcher(
     ) -> bool:
         if not file_path.exists():
             return False
-        size = file_path.stat().st_size
-        if size <= ADMIN_FILE_MAX_BYTES:
-            await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
-            return True
-
-        with tempfile.TemporaryDirectory(prefix="tg-admin-") as tmp_dir:
-            zip_path = Path(tmp_dir) / f"{caption}.zip"
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.write(file_path, arcname=caption)
-            if zip_path.stat().st_size > ADMIN_FILE_MAX_BYTES:
-                return False
-            try:
-                await bot.send_document(chat_id, document=FSInputFile(zip_path), caption=zip_path.name)
+        snapshot = db.snapshot() if file_path.resolve() == db.path.resolve() else nullcontext(file_path)
+        async with snapshot as source_path:
+            size = source_path.stat().st_size
+            if size <= ADMIN_FILE_MAX_BYTES:
+                await bot.send_document(chat_id, document=FSInputFile(source_path), caption=caption)
                 return True
-            except TelegramEntityTooLarge:
-                return False
+
+            with tempfile.TemporaryDirectory(prefix="tg-admin-") as tmp_dir:
+                zip_path = Path(tmp_dir) / f"{caption}.zip"
+
+                def compress() -> None:
+                    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.write(source_path, arcname=caption)
+
+                await asyncio.to_thread(compress)
+                if zip_path.stat().st_size > ADMIN_FILE_MAX_BYTES:
+                    return False
+                try:
+                    await bot.send_document(chat_id, document=FSInputFile(zip_path), caption=zip_path.name)
+                    return True
+                except TelegramEntityTooLarge:
+                    return False
 
     async def sync_lesson_counters_from_file() -> None:
         try:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -98,6 +100,45 @@ class TelegramResilienceTests(unittest.IsolatedAsyncioTestCase):
         await middleware(fast_handler, callback, {})
         await asyncio.sleep(0.02)
         callback.answer.assert_not_awaited()
+
+    async def _download_database(self, *, compress: bool) -> None:
+        handler = next(
+            item.callback for item in self.dispatcher.callback_query.handlers if item.callback.__name__ == "handle_admin_callback"
+        )
+        message = self._message(FULL_ADMIN_ID, "")
+        callback = SimpleNamespace(
+            data="admin:download_db", message=message, from_user=message.from_user, bot=message.bot, answer=AsyncMock(),
+        )
+        received = self.db_path.parent / "received.db"
+
+        async def send_document(chat_id, *, document, caption):
+            self.assertEqual(chat_id, FULL_ADMIN_ID)
+            if compress:
+                self.assertEqual(caption, "bot.db.zip")
+                with zipfile.ZipFile(document.path) as archive:
+                    received.write_bytes(archive.read("bot.db"))
+            else:
+                self.assertEqual(caption, "bot.db")
+                shutil.copyfile(document.path, received)
+
+        message.bot.send_document.side_effect = send_document
+        async with self.db._connect() as keeper:
+            await (await keeper.execute("SELECT COUNT(*) FROM users")).fetchone()
+            await self.db.upsert_user("telegram", 333, None, "Последняя запись в WAL")
+            self.assertGreater(Path(str(self.db_path) + "-wal").stat().st_size, 0)
+            max_bytes = self.db_path.stat().st_size - 1 if compress else 10**9
+            with patch("src.telegram_bot.ADMIN_FILE_MAX_BYTES", max_bytes):
+                await handler(callback)
+        message.bot.send_document.assert_awaited_once()
+        self.assertEqual((await Database(received).get_user("telegram", 333)).full_name, "Последняя запись в WAL")
+        self.assertEqual((await self.db.get_user("telegram", 333)).full_name, "Последняя запись в WAL")
+        self.assertEqual(callback.answer.await_args.args[0], "База отправлена")
+
+    async def test_database_download_includes_wal(self) -> None:
+        await self._download_database(compress=False)
+
+    async def test_compressed_database_download_includes_wal(self) -> None:
+        await self._download_database(compress=True)
 
 
 class TelegramPollingProbeTests(unittest.IsolatedAsyncioTestCase):

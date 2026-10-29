@@ -21,6 +21,27 @@ class TestDatabaseOperations(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self._tmp.cleanup()
 
+    async def test_snapshot_includes_wal_and_stays_unchanged_after_live_updates(self) -> None:
+        async with self.db._connect() as keeper:
+            await (await keeper.execute("SELECT COUNT(*) FROM users")).fetchone()
+            await self.db.upsert_user("vk", 123, None, "Сохранён в WAL")
+            self.assertGreater(Path(str(self.db_path) + "-wal").stat().st_size, 0)
+            async with self.db.snapshot() as path:
+                snapshot = Database(path)
+                self.assertEqual((await snapshot.get_user("vk", 123)).full_name, "Сохранён в WAL")
+                await self.db.upsert_user("vk", 123, None, "Обновлён после бэкапа")
+                self.assertEqual((await snapshot.get_user("vk", 123)).full_name, "Сохранён в WAL")
+                async with snapshot._connect() as connection:
+                    self.assertEqual((await (await connection.execute("PRAGMA quick_check")).fetchone())[0], "ok")
+            self.assertFalse(path.exists())
+        self.assertEqual((await self.db.get_user("vk", 123)).full_name, "Обновлён после бэкапа")
+
+    async def test_snapshot_is_removed_after_delivery_failure(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "delivery failed"):
+            async with self.db.snapshot() as path:
+                raise RuntimeError("delivery failed")
+        self.assertFalse(path.exists())
+
     async def test_upsert_and_list_users(self) -> None:
         await self.db.upsert_user("telegram", 100, "alice", "Alice A", subscription_type="group", subscription_key="600", subscription_title="КИБ-24-1")
         await self.db.upsert_user("vk", 200, "bob", "Bob B", subscription_type="teacher", subscription_key="prep_1", subscription_title="Иванов И.И.")

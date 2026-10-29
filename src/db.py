@@ -1,6 +1,9 @@
 import json
 import logging
 import re
+import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -26,6 +29,18 @@ class Database:
 
     def _connect(self) -> aiosqlite.Connection:
         return aiosqlite.connect(self.path, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
+
+    @asynccontextmanager
+    async def snapshot(self) -> AsyncIterator[Path]:
+        """Временная согласованная копия SQLite, включая подтверждённые записи WAL."""
+        with tempfile.TemporaryDirectory(prefix="bot-backup-") as directory:
+            path = Path(directory) / self.path.name
+            async with (
+                aiosqlite.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_SECONDS) as source,
+                aiosqlite.connect(path) as target,
+            ):
+                await source.backup(target)
+            yield path
 
     async def initialize(self) -> None:
         async with self._connect() as db:

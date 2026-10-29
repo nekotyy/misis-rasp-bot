@@ -1,16 +1,55 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
 
 from src.db import Database
 from src.models import ChangeSummary, DaySchedule, Lesson, ScheduleSnapshot
+
+
+class TestAdminBackup(unittest.IsolatedAsyncioTestCase):
+    async def test_backup_without_outbox_includes_wal_and_counters(self) -> None:
+        from src.scheduler import ScheduleJobs
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "bot.db")
+            await db.initialize()
+            counters = root / "lesson_counters.json"
+            counters.write_bytes(b'{"groups":[]}')
+            jobs = ScheduleJobs.__new__(ScheduleJobs)
+            jobs.db = db
+            jobs.database_path = db.path
+            jobs.lesson_counters_path = counters
+            jobs.admin_telegram_id = 111
+            bot = SimpleNamespace(send_message=AsyncMock(), send_document=AsyncMock())
+            jobs.broadcaster = SimpleNamespace(outbox=None, telegram_bot=bot)
+            received = []
+
+            async def send_document(*, chat_id, document, caption):
+                self.assertEqual(chat_id, 111)
+                if caption == "bot.db":
+                    shutil.copyfile(document.path, root / "received.db")
+                else:
+                    self.assertEqual(Path(document.path).read_bytes(), b'{"groups":[]}')
+                received.append(caption)
+
+            bot.send_document.side_effect = send_document
+            async with db._connect() as keeper:
+                await (await keeper.execute("SELECT COUNT(*) FROM users")).fetchone()
+                await db.upsert_user("telegram", 333, None, "Последняя запись в WAL")
+                self.assertGreater(Path(str(db.path) + "-wal").stat().st_size, 0)
+                await jobs.send_admin_backup()
+            self.assertEqual(received, ["lesson_counters.json", "bot.db"])
+            self.assertEqual((await Database(root / "received.db").get_user("telegram", 333)).full_name, "Последняя запись в WAL")
 
 
 async def wait_for_teacher_syncs(jobs, timeout: float = 15.0) -> None:

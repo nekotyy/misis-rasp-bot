@@ -228,6 +228,86 @@ class DeliveryOutboxTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(backup.execute("PRAGMA quick_check").fetchone()[0], "ok")
             self.assertEqual(backup.execute("SELECT full_name FROM users WHERE user_id = 42").fetchone()[0], "Сохранён в WAL")
 
+    async def test_vk_document_uses_real_uploader_and_survives_source_deletion(self):
+        service = self.make()
+        api = build_vk_api("FAKE-TOKEN")
+        service.bind_vk(api)
+        original = Path(self.tmp.name) / "lesson_counters.json"
+        original.write_bytes(b'{"groups":[]}')
+        row = await service.enqueue_vk("outbox.sendDocument", {
+            "peer_id": 1, "message": original.name, "document": FSInputFile(original),
+            "keyboard": "{}", "random_id": 123,
+        })
+        original.unlink()
+        uploaded = []
+
+        async def request(url, method="GET", data=None, **kwargs):
+            if url.endswith("docs.getMessagesUploadServer"):
+                return '{"response":{"upload_url":"https://upload.example.test/document"}}'
+            if url == "https://upload.example.test/document":
+                uploaded.append((data["file"].name, data["file"].getvalue()))
+                return '{"file":"uploaded"}'
+            if url.endswith("docs.save"):
+                return '{"response":{"type":"doc","doc":{"owner_id":1,"id":7,"access_key":"key"}}}'
+            if url.endswith("messages.send"):
+                self.assertEqual(data["attachment"], "doc1_7_key")
+                self.assertEqual(data["keyboard"], "{}")
+                self.assertEqual(data["random_id"], 123)
+                return '{"response":77}'
+            raise AssertionError(url)
+
+        with patch.object(api.http_client, "request_text", AsyncMock(side_effect=request)):
+            await service.process(row["delivery_id"])
+
+        self.assertEqual((await service.store.get(row["delivery_id"]))["status"], "sent")
+        self.assertEqual(uploaded, [("lesson_counters.json", b'{"groups":[]}')])
+        self.assertEqual(await service.store.counts(), {"sent": 1})
+
+    async def test_vk_document_retries_after_non_json_upload_response(self):
+        service = self.make()
+        api = build_vk_api("FAKE-TOKEN")
+        service.bind_vk(api)
+        original = Path(self.tmp.name) / "lesson_counters.json"
+        original.write_text('{"groups":[]}', encoding="utf-8")
+        row = await service.enqueue_vk("outbox.sendDocument", {
+            "peer_id": 1, "message": original.name, "document": FSInputFile(original), "random_id": 123,
+        })
+        responses = [
+            '{"response":{"upload_url":"https://upload.example.test/document"}}', '<html>502 Bad Gateway</html>',
+            '{"response":{"upload_url":"https://upload.example.test/document"}}', '{"file":"uploaded"}',
+            '{"response":{"type":"doc","doc":{"owner_id":1,"id":7}}}', '{"response":77}',
+        ]
+        with patch.object(api.http_client, "request_text", AsyncMock(side_effect=responses)) as request:
+            await service.process(row["delivery_id"])
+            failed_attempt = await service.store.get(row["delivery_id"])
+            self.assertEqual(failed_attempt["status"], "pending")
+            self.assertEqual(json.loads(failed_attempt["error_json"])["type"], "VkTransportError")
+            future = time() + 60
+            with patch("src.outbox_store.time", return_value=future), patch("src.delivery_outbox.time", return_value=future):
+                await service.process(row["delivery_id"])
+
+        self.assertEqual((await service.store.get(row["delivery_id"]))["status"], "sent")
+        self.assertEqual(request.await_args.kwargs["data"]["random_id"], 123)
+
+    async def test_document_upload_has_more_time_than_ordinary_api_request(self):
+        service = self.make()
+
+        async def slow_send(row):
+            await asyncio.sleep(0.05)
+            return {"response": 7}
+
+        service._senders["vk"] = slow_send
+        document = await service.enqueue_vk("outbox.sendDocument", {"peer_id": 1})
+        message = await service.enqueue_vk("messages.send", {"peer_id": 2, "message": "x"})
+        with patch("src.delivery_outbox.API_REQUEST_TIMEOUT", 0.001), patch("src.delivery_outbox.DOCUMENT_REQUEST_TIMEOUT", 2):
+            await service.process(document["delivery_id"])
+            await service.process(message["delivery_id"])
+
+        self.assertEqual((await service.store.get(document["delivery_id"]))["status"], "sent")
+        failed_attempt = await service.store.get(message["delivery_id"])
+        self.assertEqual(failed_attempt["status"], "pending")
+        self.assertEqual(json.loads(failed_attempt["error_json"])["type"], "TimeoutError")
+
     async def test_request_is_saved_before_any_network_attempt(self):
         service = self.make()
         bot = self.telegram(service)

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -502,11 +503,13 @@ class ScheduleJobs:
                 text=f"Автобекап за {timestamp}.",
             )
             for label, path in files:
-                await self.broadcaster.telegram_bot.send_document(
-                    chat_id=self.admin_telegram_id,
-                    document=FSInputFile(path),
-                    caption=label,
-                )
+                snapshot = self.db.snapshot() if path.resolve() == self.db.path.resolve() else nullcontext(path)
+                async with snapshot as source_path:
+                    await self.broadcaster.telegram_bot.send_document(
+                        chat_id=self.admin_telegram_id,
+                        document=FSInputFile(source_path),
+                        caption=label,
+                    )
         except Exception:
             logger.exception("Admin backup failed to deliver.")
 
