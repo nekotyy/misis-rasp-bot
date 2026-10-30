@@ -14,6 +14,10 @@ env/
 .env.*
 !.env.example
 
+# TLS certificates and ACME account credentials
+/deploy/certs/*
+!/deploy/certs/.gitkeep
+
 # Direnv
 .envrc
 .direnv/
