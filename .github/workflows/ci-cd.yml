@@ -53,7 +53,7 @@ jobs:
         run: uv run --frozen ruff check src web_configurator tests scripts --output-format=github
 
       - name: Validate Python syntax
-        run: uv run --frozen python -m compileall -q src web_configurator tests
+        run: uv run --frozen python -m compileall -q src web_configurator tests scripts
 
       - name: Validate installed dependencies
         run: uv pip check

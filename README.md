@@ -470,10 +470,14 @@ docker compose logs -f bot
 
 ## CI/CD
 
-В GitHub Actions уже настроены два базовых workflow:
+В GitHub Actions настроены workflow:
 
 - `CI/CD` — `compileall`, `pip check`, unit tests и smoke-проверка через `docker compose config`;
 - `Docker Publish` — сборка и публикация образа в `ghcr.io/<owner>/<repo>` на `push` в `main` и `development`.
+- `Deploy production` — после успешного push-прогона `CI/CD` в `main` автоматически выкладывает
+  проверенный SHA на VPS через отдельный ограниченный SSH-ключ. Перед переключением сохраняет
+  SQLite и runtime, затем проверяет запуск и локальный вход в админку. Подробности и условия
+  отката — в [инструкции VPS](docs/vps-deployment.md#автоматический-деплой-из-main).
 
 Публикуемые теги:
 

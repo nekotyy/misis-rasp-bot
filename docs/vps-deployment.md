@@ -1,6 +1,7 @@
 # Деплой на выделенном VPS
 
-Рабочий каталог на сервере — `/opt/misis-rasp-bot`, ветка production — `main`.
+Рабочий каталог на сервере — `/opt/misis-rasp-bot`. Production использует коммиты
+из `main`; checkout фиксируется на точном SHA, прошедшем CI.
 Для GitHub используется отдельный read-only deploy key: приватная часть остаётся
 на сервере, публичная добавляется в Deploy keys репозитория. Ключ для входа
 администратора по SSH должен быть отдельным.
@@ -20,7 +21,7 @@ RABBITMQ_BIND_IP=127.0.0.1
 WEB_COOKIE_SECURE=true
 WEB_ENFORCE_SECURITY=1
 COMPOSE_PROFILES=
-COMPOSE_FILE=docker-compose.yml:/etc/misis-rasp-bot/compose.override.yml
+COMPOSE_FILE=docker-compose.yml:/etc/misis-rasp-bot/compose.override.yml:/etc/misis-rasp-bot/release.override.yml
 ```
 
 Файл `/etc/misis-rasp-bot/compose.override.yml` содержит серверные настройки,
@@ -28,6 +29,9 @@ COMPOSE_FILE=docker-compose.yml:/etc/misis-rasp-bot/compose.override.yml
 настроек нет, его содержимое — `services: {}`. При использовании `COMPOSE_FILE`
 файл должен существовать до запуска Compose. Выполняй команды Compose из
 `/opt/misis-rasp-bot`.
+
+Файл `release.override.yml` управляется командой деплоя и выбирает образы `bot`
+и `web` для текущего релиза. Его содержимое и данные приложения не хранятся в Git.
 
 Доступ к `.env` и приватным ключам — `0600`, к каталогу с резервными архивами —
 `0700`. Секреты, архивы и runtime не добавляются в Git. Firewall разрешает вход
@@ -88,22 +92,81 @@ docker compose logs --tail 100 bot web
 systemctl stop misis-rasp-bot.service
 ```
 
-Для обновления после необходимых проверок и резервного копирования:
+## Автоматический деплой из main
+
+После push в `main` запускается существующий `CI/CD`. Workflow
+`Deploy production` реагирует на его успешное завершение, проверяет, что это push
+в `main` из того же репозитория, и передаёт на сервер точный SHA этого прогона.
+PR, fork, `development` и неуспешный CI production не обновляют. Деплои выполняются
+последовательно, выполняющийся деплой не отменяется следующим push.
+
+В GitHub environment `production` разрешена только ветка `main`, без обязательного
+ручного подтверждения. Используются:
+
+| Тип | Имя | Назначение |
+| --- | --- | --- |
+| Secret | `DEPLOY_SSH_KEY` | Отдельный приватный SSH-ключ CI |
+| Variable | `DEPLOY_HOST` | Адрес VPS |
+| Variable | `DEPLOY_USER` | Ограниченный пользователь `misis-deploy` |
+| Variable | `DEPLOY_KNOWN_HOSTS` | Проверенный публичный host key VPS |
+
+Приватный ключ администратора и секреты бота в GitHub не передаются. Публичный
+CI-ключ в `authorized_keys` ограничен через `restrict` и forced command
+`/usr/local/libexec/misis-deploy-ssh`: принимается только `deploy <полный SHA>`.
+Пользователь CI не входит в Docker/sudo группы; sudoers разрешает ему единственный
+root entrypoint `/usr/local/sbin/misis-deploy-request`, который повторно проверяет
+аргумент и запускает фиксированную команду через systemd. Обрыв SSH не прерывает
+сервис деплоя. Произвольные команды, shell и SSH forwarding этим ключом запрещены.
+
+Проверенные копии устанавливаются администратором, принадлежат root и не
+перезаписываются приложением или очередным checkout:
+
+| Файл репозитория | Файл на сервере |
+| --- | --- |
+| `scripts/deploy_ssh.py` | `/usr/local/libexec/misis-deploy-ssh` |
+| `scripts/deploy_request.py` | `/usr/local/sbin/misis-deploy-request` |
+| `scripts/deploy_production.py` | `/usr/local/sbin/misis-deploy` |
+
+Изменение этих entrypoint-файлов требует отдельной установки администратором.
+Обычные изменения приложения после push в `main` применяются автоматически.
+
+Сервер сверяет SHA с актуальным `origin/main`, проверяет чистоту checkout и свободное
+место, затем собирает образ из отдельного временного Git worktree. Пока идёт сборка,
+старые контейнеры продолжают работать. Устаревший CI-прогон пропускается, если за время
+сборки появился следующий коммит в `main`.
+
+Перед переключением останавливаются только `bot` и `web`. SQLite сохраняется через
+backup API с учётом WAL и `quick_check`; вместе с конфигурацией, VK cursor, файлами
+outbox и остальным runtime создаётся архив в
+`/var/backups/misis-rasp-bot/<дата>-<SHA>/`. Старые `runtime/backups/` не вкладываются
+в новые архивы. Исходные данные, старые образы и резервные копии автоматически не
+удаляются; при свободном месте менее 4 GiB новый деплой отклоняется до остановки бота.
+
+После старта проверяются контейнеры, RabbitMQ, запуск polling и реальный вход в
+админку на localhost. Ошибка сборки не затрагивает работающие сервисы. При ошибке
+старта возвращаются предыдущие образы и код, если схема SQLite не изменилась.
+Текущая БД, `.env` и runtime при откате кода сохраняются: уже отправленные сообщения
+не воспроизводятся из старого снимка. Если схема изменилась, автоматическое
+восстановление старой БД/кода не выполняется; CI сообщает об ошибке, новые данные
+и резервная копия сохраняются для диагностики. Известная недоступность OCR из-за
+cookies Gemini не считается отказом всего приложения.
+
+RabbitMQ при деплое приложения не пересоздаётся. Изменения его конфигурации
+отклоняются автоматическим деплоем и требуют отдельного обновления инфраструктуры.
+
+Диагностика на сервере:
 
 ```bash
-cd /opt/misis-rasp-bot
-git status --short
-git pull --ff-only origin main
-docker compose config --quiet
-docker compose build bot web
-docker compose up --detach --no-build bot web rabbitmq
-docker compose ps
+journalctl -u 'misis-deploy-*' --since today
+tail -n 100 /var/lib/misis-deploy/deploy.log
+cat /var/lib/misis-deploy/current-sha
+cd /opt/misis-rasp-bot && docker compose ps
 ```
 
-Перед обновлением рабочее дерево должно быть чистым. При ошибке Git или сборки
-остановись и устрани её до пересоздания контейнеров. Изменения `.env` применяются
-через `docker compose up`, поскольку обычный `docker restart` не обновляет
-окружение контейнера. Автоматический запуск сервиса не делает `git pull`.
+Подробный лог и backup содержат конфигурацию и доступны только root. В публичный
+Actions log не выводятся resolved Compose config, токены и содержимое сообщений.
+Для повторной попытки можно перезапустить успешный push-прогон `CI/CD` в GitHub.
+Сервис автозапуска при перезагрузке использует сохранённый релиз и не делает `git pull`.
 
 ## Перенос с другого сервера
 
