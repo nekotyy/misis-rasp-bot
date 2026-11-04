@@ -57,7 +57,7 @@ from PIL import UnidentifiedImageError as PilUnidentifiedImageError
 from src.lesson_counters import normalize_lesson_text
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.parser import compute_snapshot_hash
-from src.schedule_service import format_human_date
+from src.schedule_service import format_human_date, university_current_week
 
 logger = logging.getLogger(__name__)
 
@@ -1649,6 +1649,11 @@ def merge_ocr_days(base_content: dict | None, ocr_snapshot: ScheduleSnapshot) ->
                 )
                 for lesson in raw_day.get("lessons", []) or []
             ],
+            week_variant=raw_day.get("week_variant"),
+            current_week_variant=university_current_week(
+                {"days": [raw_day], "fetched_at": base_content.get("fetched_at")},
+                today=ocr_snapshot.fetched_at.date(),
+            ),
         )
 
     for date_iso, day in ocr_days.items():
