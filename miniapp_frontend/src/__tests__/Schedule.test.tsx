@@ -102,4 +102,13 @@ describe('SchedulePage', () => {
     fireEvent.click(screen.getByText('БПИ22-2'))
     expect(onSelect).toHaveBeenCalledWith(2)
   })
+
+  it('отображает невыбранную группу в модалке с темным цветом текста text-gray-900', async () => {
+    renderSchedule()
+    const groupBtn = await screen.findByText('БПИ22-1')
+    fireEvent.click(groupBtn)
+
+    const unselectedGroupSpan = screen.getByText('БПИ22-2')
+    expect(unselectedGroupSpan.className).toContain('text-gray-900')
+  })
 })

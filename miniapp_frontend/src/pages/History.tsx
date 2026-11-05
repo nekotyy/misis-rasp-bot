@@ -201,14 +201,14 @@ export function HistoryPage({
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <span className="font-heading text-sm font-bold text-foreground flex items-center gap-2">
+              <span className="font-heading text-sm font-bold text-gray-900 [data-theme=dark]:text-gray-900 dark:text-gray-900 flex items-center gap-2">
                 <Layers className="w-4 h-4 text-primary" />
                 Выберите группу для архива
               </span>
               <button
                 type="button"
                 onClick={() => setShowGroupPicker(false)}
-                className="text-xs text-neutral hover:text-foreground cursor-pointer font-bold"
+                className="text-xs text-neutral hover:text-gray-900 [data-theme=dark]:hover:text-gray-900 dark:hover:text-gray-900 cursor-pointer font-bold"
               >
                 Закрыть
               </button>
@@ -229,10 +229,17 @@ export function HistoryPage({
                       'w-full flex items-center justify-between p-3 rounded-xl border text-left transition-all cursor-pointer',
                       isSelected
                         ? 'bg-primary text-white border-primary shadow-sm font-bold'
-                        : 'bg-card border-border text-foreground hover:bg-neutral-surface',
+                        : 'bg-card border-border text-gray-900 [data-theme=dark]:text-gray-900 dark:text-gray-900 hover:bg-neutral-surface',
                     )}
                   >
-                    <span className="font-heading text-base font-bold">
+                    <span
+                      className={cn(
+                        'font-heading text-base font-bold',
+                        isSelected
+                          ? 'text-white'
+                          : 'text-gray-900 [data-theme=dark]:text-gray-900 dark:text-gray-900',
+                      )}
+                    >
                       {sub.group_name || sub.subscription_title || 'Группа'}
                     </span>
                     {sub.is_primary && (

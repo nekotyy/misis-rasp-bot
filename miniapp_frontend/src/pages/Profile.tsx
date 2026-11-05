@@ -32,7 +32,6 @@ import {
 import { addSubscription, deleteSubscription, updateSubscription } from '../api/subscriptions'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
-import { TelegramIcon, VkIcon } from '../components/PlatformIcons'
 import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE, SCALE_STEP } from '../hooks/useScale'
 import type { Theme } from '../hooks/useTheme'
 import { cn } from '../lib/utils'
@@ -249,9 +248,6 @@ export function ProfilePage({
                               }}
                             />
                           )}
-                          <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-card border border-border flex items-center justify-center shadow-xs z-10">
-                            {isTg ? <TelegramIcon className="w-2.5 h-2.5 text-primary" /> : <VkIcon className="w-2.5 h-2.5 text-primary" />}
-                          </div>
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
