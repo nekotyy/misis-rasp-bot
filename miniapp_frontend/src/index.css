@@ -1,96 +1,332 @@
 @import "tailwindcss";
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
-  }
+/* === ШРИФТЫ MISIS: NEKST (ЗАГОЛОВКИ) И RALEWAY (ОСНОВНОЙ ТЕКСТ) === */
 
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
-  }
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Thin.woff2') format('woff2'),
+       url('/fonts/Nekst-Thin.ttf') format('truetype');
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
 }
 
-@theme {
-  --color-background: hsl(var(--background));
-  --color-foreground: hsl(var(--foreground));
-  --color-card: hsl(var(--card));
-  --color-card-foreground: hsl(var(--card-foreground));
-  --color-primary: hsl(var(--primary));
-  --color-primary-foreground: hsl(var(--primary-foreground));
-  --color-secondary: hsl(var(--secondary));
-  --color-secondary-foreground: hsl(var(--secondary-foreground));
-  --color-muted: hsl(var(--muted));
-  --color-muted-foreground: hsl(var(--muted-foreground));
-  --color-accent: hsl(var(--accent));
-  --color-accent-foreground: hsl(var(--accent-foreground));
-  --color-destructive: hsl(var(--destructive));
-  --color-destructive-foreground: hsl(var(--destructive-foreground));
-  --color-border: hsl(var(--border));
-  --color-input: hsl(var(--input));
-  --color-ring: hsl(var(--ring));
-  --radius-xl: calc(var(--radius) + 4px);
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Light.woff2') format('woff2'),
+       url('/fonts/Nekst-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Regular.woff2') format('woff2'),
+       url('/fonts/Nekst-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Medium.woff2') format('woff2'),
+       url('/fonts/Nekst-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-SemiBold.woff2') format('woff2'),
+       url('/fonts/Nekst-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Bold.woff2') format('woff2'),
+       url('/fonts/Nekst-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst';
+  src: url('/fonts/Nekst-Black.woff2') format('woff2'),
+       url('/fonts/Nekst-Black.ttf') format('truetype');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: url('/fonts/Raleway-VariableFont_wght.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* === ДИЗАЙН-ТОКЕНЫ И ПАЛИТРА МИСИС + ЖИДКОЕ СТЕКЛО (LIQUID GLASS) === */
+
+@layer base {
+  /* Тёмная тема (по умолчанию для экосистемы) */
+  :root,
+  .dark,
+  [data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg-base: #060b18;
+    --bg-mesh-1: #0e1e42;
+    --bg-mesh-2: #16284a;
+
+    --text-primary: #ffffff;
+    --text-secondary: #c0c9dc;
+    --text-muted: #8491aa;
+
+    --brand-primary: #4f85eb;
+    --brand-primary-hover: #6998f2;
+    --brand-electric: #0541f0;
+    --brand-glow: rgba(79, 133, 235, 0.4);
+
+    --glass-bg: rgba(18, 25, 42, 0.65);
+    --glass-bg-hover: rgba(26, 37, 62, 0.78);
+    --glass-border: rgba(255, 255, 255, 0.11);
+    --glass-border-strong: rgba(79, 133, 235, 0.35);
+    --glass-shine: rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+
+    --dock-bg: rgba(10, 16, 28, 0.82);
+    --dock-border: rgba(255, 255, 255, 0.12);
+
+    --chip-bg: rgba(255, 255, 255, 0.06);
+    --chip-border: rgba(255, 255, 255, 0.08);
+
+    --status-added-bg: rgba(1, 158, 87, 0.16);
+    --status-added-border: rgba(1, 158, 87, 0.35);
+    --status-added-text: #34d399;
+
+    --status-changed-bg: rgba(245, 158, 11, 0.16);
+    --status-changed-border: rgba(245, 158, 11, 0.35);
+    --status-changed-text: #fbbf24;
+
+    --status-cancelled-bg: rgba(239, 68, 68, 0.14);
+    --status-cancelled-border: rgba(239, 68, 68, 0.3);
+    --status-cancelled-text: #f87171;
+
+    --background: 224 71% 4%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+    --primary: 217 80% 61%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 20%;
+    --ring: 217 80% 61%;
+  }
+
+  /* Светлая тема */
+  .light,
+  [data-theme="light"] {
+    color-scheme: light;
+
+    --bg-base: #f4f7ff;
+    --bg-mesh-1: #e1e9fd;
+    --bg-mesh-2: #d6e2ff;
+
+    --text-primary: #0a1e63;
+    --text-secondary: #24356e;
+    --text-muted: #5e6c8b;
+
+    --brand-primary: #0541f0;
+    --brand-primary-hover: #0c47b7;
+    --brand-electric: #0541f0;
+    --brand-glow: rgba(5, 65, 240, 0.25);
+
+    --glass-bg: rgba(255, 255, 255, 0.78);
+    --glass-bg-hover: rgba(255, 255, 255, 0.92);
+    --glass-border: rgba(10, 30, 99, 0.12);
+    --glass-border-strong: rgba(5, 65, 240, 0.35);
+    --glass-shine: rgba(255, 255, 255, 0.95);
+    --glass-shadow: 0 16px 36px -8px rgba(10, 30, 99, 0.12);
+
+    --dock-bg: rgba(255, 255, 255, 0.88);
+    --dock-border: rgba(10, 30, 99, 0.12);
+
+    --chip-bg: rgba(10, 30, 99, 0.04);
+    --chip-border: rgba(10, 30, 99, 0.08);
+
+    --status-added-bg: rgba(1, 158, 87, 0.12);
+    --status-added-border: rgba(1, 158, 87, 0.3);
+    --status-added-text: #059669;
+
+    --status-changed-bg: rgba(245, 158, 11, 0.12);
+    --status-changed-border: rgba(245, 158, 11, 0.3);
+    --status-changed-text: #d97706;
+
+    --status-cancelled-bg: rgba(239, 68, 68, 0.1);
+    --status-cancelled-border: rgba(239, 68, 68, 0.25);
+    --status-cancelled-text: #dc2626;
+
+    --background: 228 100% 98%;
+    --foreground: 227 82% 21%;
+    --card: 0 0% 100%;
+    --card-foreground: 227 82% 21%;
+    --primary: 225 96% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 227 82% 21%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 222 19% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 227 82% 21%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 224 45% 88%;
+    --ring: 225 96% 48%;
+  }
 }
 
 @layer base {
   * {
-    @apply border-border;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
-    @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+    font-family: 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
+    user-select: none;
   }
 
-  /* Поддержка safe area для устройств с вырезом */
-  :root {
-    --sat: env(safe-area-inset-top);
-    --sab: env(safe-area-inset-bottom);
-    --sal: env(safe-area-inset-left);
-    --sar: env(safe-area-inset-right);
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    letter-spacing: -0.02em;
   }
 }
 
-/* Уменьшение анимаций при prefers-reduced-motion */
+/* === УТИЛИТЫ ЖИДКОГО СТЕКЛА (LIQUID GLASS) === */
+
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-shine);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  background: var(--glass-bg-hover);
+  border-color: var(--glass-border-strong);
+}
+
+.glass-dock {
+  background: var(--dock-bg);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid var(--dock-border);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4), inset 0 1px 0 var(--glass-shine);
+}
+
+.glass-pill {
+  background: var(--chip-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--chip-border);
+  transition: all 0.2s ease;
+}
+
+.glass-pill-active {
+  background: var(--brand-primary);
+  color: #ffffff;
+  border-color: var(--brand-primary);
+  box-shadow: 0 4px 16px var(--brand-glow);
+}
+
+/* Эффект свечения фонового жидкого градиента */
+.ambient-glow {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.ambient-orb-1 {
+  position: absolute;
+  top: -15%;
+  left: -20%;
+  width: 75vw;
+  height: 75vw;
+  max-width: 500px;
+  max-height: 500px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--brand-glow) 0%, transparent 70%);
+  filter: blur(60px);
+  opacity: 0.65;
+  animation: float-orb-1 18s ease-in-out infinite alternate;
+}
+
+.ambient-orb-2 {
+  position: absolute;
+  bottom: 10%;
+  right: -25%;
+  width: 80vw;
+  height: 80vw;
+  max-width: 550px;
+  max-height: 550px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(5, 65, 240, 0.3) 0%, transparent 70%);
+  filter: blur(75px);
+  opacity: 0.5;
+  animation: float-orb-2 22s ease-in-out infinite alternate;
+}
+
+@keyframes float-orb-1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(15%, 20%) scale(1.15); }
+}
+
+@keyframes float-orb-2 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(-20%, -15%) scale(1.2); }
+}
+
+/* Кастомный тонкий скроллбар */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--chip-border);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-primary);
+}
+
+/* Доступность: уменьшение анимаций */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -99,24 +335,8 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-}
-
-/* Анимация появления */
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
+  .ambient-orb-1,
+  .ambient-orb-2 {
+    animation: none !important;
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.animate-in {
-  animation: fade-in 150ms ease-out;
-}
-
-.fade-in-0 {
-  animation-name: fade-in;
 }

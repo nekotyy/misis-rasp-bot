@@ -1,4 +1,4 @@
-import { BookX, Calendar } from 'lucide-react'
+import { AlertTriangle, CalendarX, FileQuestion, Sparkles } from 'lucide-react'
 import type { DayScheduleDto } from '../api/schedule'
 import { LessonCard } from './LessonCard'
 import { LoadingSkeleton } from './LoadingSkeleton'
@@ -16,48 +16,54 @@ export function DayView({ day, loading = false, reducedMotion = false }: DayView
 
   if (!day) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
-        <Calendar className="w-10 h-10 opacity-30" />
-        <p className="text-sm">Нет данных</p>
+      <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3">
+        <div className="w-12 h-12 rounded-2xl bg-muted/40 border border-border/50 flex items-center justify-center text-muted-foreground">
+          <CalendarX className="w-6 h-6 stroke-[1.8]" />
+        </div>
+        <p className="font-heading font-semibold text-base text-foreground">Нет данных</p>
+        <p className="text-xs text-muted-foreground max-w-xs">
+          Расписание для выбранного дня не найдено
+        </p>
       </div>
     )
   }
 
   if (day.status === 'unpublished') {
     return (
-      <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
-        <Calendar className="w-10 h-10 opacity-30" />
-        <p className="text-sm font-medium">Расписание не опубликовано</p>
-        <p className="text-xs text-center px-6">Расписание на этот день ещё не опубликовано</p>
+      <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3">
+        <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+          <FileQuestion className="w-6 h-6 stroke-[1.8]" />
+        </div>
+        <p className="font-heading font-semibold text-base text-foreground">
+          Расписание не опубликовано
+        </p>
+        <p className="text-xs text-muted-foreground max-w-xs">
+          Учебная часть ещё не разместила расписание на этот день
+        </p>
       </div>
     )
   }
 
-  if (day.status === 'confirmed_empty') {
+  if (day.status === 'confirmed_empty' || day.lessons.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
-        <BookX className="w-10 h-10 opacity-30" />
-        <p className="text-sm font-medium">Занятий нет</p>
-        <p className="text-xs text-center px-6">В этот день занятий не запланировано</p>
-      </div>
-    )
-  }
-
-  if (day.lessons.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
-        <BookX className="w-10 h-10 opacity-30" />
-        <p className="text-sm font-medium">Занятий нет</p>
+      <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3">
+        <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <Sparkles className="w-6 h-6 stroke-[1.8]" />
+        </div>
+        <p className="font-heading font-semibold text-base text-foreground">Занятий нет</p>
+        <p className="text-xs text-muted-foreground max-w-xs">
+          В этот день пар не запланировано. Отличный повод отдохнуть!
+        </p>
       </div>
     )
   }
 
   return (
-    <div className="space-y-2 pb-2">
+    <div className="space-y-3 pb-2">
       {day.stale && (
-        <div className="bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg p-2 text-xs text-yellow-800 dark:text-yellow-200 flex items-center gap-2">
-          <span>⚠️</span>
-          <span>Расписание может быть устаревшим</span>
+        <div className="glass-pill rounded-xl p-3 border-amber-500/30 bg-amber-500/10 text-amber-300 flex items-center gap-2.5 text-xs">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-400" />
+          <span>Расписание может быть устаревшим (показана сохранённая копия).</span>
         </div>
       )}
       {day.lessons.map((lesson) => (

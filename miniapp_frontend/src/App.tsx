@@ -1,6 +1,6 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { Calendar, Loader2 } from 'lucide-react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
 import { fetchProfile } from './api/profile'
 import { BottomNav } from './components/BottomNav'
 import { ErrorState } from './components/ErrorState'
@@ -43,12 +43,19 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
 
   if (authState === 'loading' || authState === 'idle') {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-center space-y-3">
-          <div className="w-12 h-12 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-            <span className="text-2xl">📅</span>
+      <div className="flex h-screen items-center justify-center relative overflow-hidden bg-[var(--bg-base)]">
+        <div className="ambient-glow" aria-hidden>
+          <div className="ambient-orb-1" />
+          <div className="ambient-orb-2" />
+        </div>
+        <div className="glass-card rounded-3xl p-8 text-center space-y-4 max-w-xs mx-4 z-10 shadow-2xl">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-primary/15 border border-primary/25 flex items-center justify-center text-primary shadow-lg shadow-primary/20">
+            <Loader2 className="w-7 h-7 animate-spin stroke-[2]" />
           </div>
-          <p className="text-sm text-muted-foreground">Загрузка...</p>
+          <div>
+            <h2 className="font-heading font-bold text-base text-foreground">Загрузка данных</h2>
+            <p className="text-xs text-muted-foreground mt-1">Подключаемся к сервису расписания...</p>
+          </div>
         </div>
       </div>
     )
@@ -56,24 +63,72 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
 
   if (authState === 'error') {
     return (
-      <div className="flex h-screen items-center justify-center px-6">
-        <ErrorState type="auth" message={error ?? undefined} onRetry={onRetry} />
+      <div className="flex h-screen items-center justify-center px-6 relative bg-[var(--bg-base)]">
+        <div className="ambient-glow" aria-hidden>
+          <div className="ambient-orb-1" />
+          <div className="ambient-orb-2" />
+        </div>
+        <div className="z-10 w-full max-w-sm">
+          <ErrorState type="auth" message={error ?? undefined} onRetry={onRetry} />
+        </div>
       </div>
     )
   }
 
   return (
     <div
-      className="flex flex-col h-screen bg-background text-foreground"
+      className="flex flex-col h-screen relative overflow-hidden bg-[var(--bg-base)] text-foreground"
       style={{
         paddingTop: `max(${safeAreaInsets.top}px, env(safe-area-inset-top, 0px))`,
       }}
     >
-      {/* Контент — занимает всё место кроме нижней навигации */}
+      {/* Декоративное жидкое свечение заднего плана */}
+      <div className="ambient-glow" aria-hidden>
+        <div className="ambient-orb-1" />
+        <div className="ambient-orb-2" />
+      </div>
+
+      {/* Верхняя шапка */}
+      <header className="px-4 pt-3 pb-2 flex items-center justify-between z-10 flex-shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl glass-pill flex items-center justify-center p-1.5 shadow-sm border border-border/40">
+            <img
+              src={theme === 'light' ? '/logos/misis-main-color.svg' : '/logos/misis-main-inv.svg'}
+              alt="МИСИС"
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'
+              }}
+            />
+          </div>
+          <div>
+            <span className="font-heading font-extrabold text-sm tracking-tight text-foreground block leading-tight">
+              МИСИС
+            </span>
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-muted-foreground block leading-tight">
+              Расписание
+            </span>
+          </div>
+        </div>
+
+        {primarySubscription ? (
+          <div className="glass-pill rounded-full px-3 py-1 flex items-center gap-1.5 text-xs font-semibold text-primary">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>{primarySubscription.group_name}</span>
+          </div>
+        ) : (
+          <div className="glass-pill rounded-full px-3 py-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Calendar className="w-3.5 h-3.5" />
+            <span>Колледж</span>
+          </div>
+        )}
+      </header>
+
+      {/* Контент страниц */}
       <div
-        className="flex-1 flex flex-col min-h-0 overflow-hidden"
+        className="flex-1 flex flex-col min-h-0 overflow-hidden z-10"
         style={{
-          paddingBottom: `calc(60px + max(${safeAreaInsets.bottom}px, env(safe-area-inset-bottom, 0px)))`,
+          paddingBottom: `calc(68px + max(${safeAreaBottom(safeAreaInsets.bottom)}px, env(safe-area-inset-bottom, 0px)))`,
         }}
       >
         <Routes>
@@ -115,6 +170,10 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
       <BottomNav safeAreaBottom={safeAreaInsets.bottom} />
     </div>
   )
+}
+
+function safeAreaBottom(bottom: number): number {
+  return bottom > 0 ? bottom : 12
 }
 
 interface AppProps {

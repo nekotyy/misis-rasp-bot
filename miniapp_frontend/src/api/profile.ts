@@ -62,3 +62,22 @@ export async function updatePreferences(update: PreferencesUpdateRequest): Promi
     body: JSON.stringify(payload),
   })
 }
+
+export async function createLinkRequest(): Promise<{ token: string; expires_at: string }> {
+  return apiFetch<{ token: string; expires_at: string }>('/account-links', {
+    method: 'POST',
+  })
+}
+
+export async function confirmLinkRequest(token: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>('/account-links/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ token, primary_choice: 'caller' }),
+  })
+}
+
+export async function unlinkIdentity(platform: string): Promise<{ success: boolean; new_account_id?: string }> {
+  return apiFetch<{ success: boolean; new_account_id?: string }>(`/me/identities/${encodeURIComponent(platform)}`, {
+    method: 'DELETE',
+  })
+}

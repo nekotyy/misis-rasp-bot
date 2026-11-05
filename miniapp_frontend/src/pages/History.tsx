@@ -1,11 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 import { fetchHistory } from '../api/history'
 import type { DayScheduleDto } from '../api/schedule'
 import { DayView } from '../components/DayView'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
+import { usePlatform } from '../hooks/usePlatform'
 import { cn } from '../lib/utils'
 
 interface HistoryPageProps {
@@ -17,7 +18,7 @@ function formatWeekRange(weekStart: string): string {
   const start = new Date(weekStart + 'T00:00:00')
   const end = new Date(start.getTime() + 6 * 86400000)
   const fmt = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' })
-  return `${fmt.format(start)} — ${fmt.format(end)}`
+  return `${fmt.format(start)} – ${fmt.format(end)}`
 }
 
 function formatDayHeader(dateStr: string, dayName: string): string {
@@ -32,19 +33,24 @@ function formatDayHeader(dateStr: string, dayName: string): string {
 
 function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMotion: boolean }) {
   const [open, setOpen] = useState(false)
+  const platform = usePlatform()
 
-  const hasData =
-    day.status === 'available' && day.lessons.length > 0
+  const hasData = day.status === 'available' && day.lessons.length > 0
 
   return (
-    <div className="border border-border rounded-xl overflow-hidden">
+    <div className="glass-card rounded-2xl overflow-hidden transition-all duration-200">
       <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between p-3 text-left hover:bg-muted/50 transition-colors"
+        onClick={() => {
+          platform.hapticFeedback('light')
+          setOpen(!open)
+        }}
+        className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/5 transition-colors"
       >
-        <div>
-          <p className="font-medium text-sm capitalize">{formatDayHeader(day.date, day.day_name)}</p>
-          <p className="text-xs text-muted-foreground">
+        <div className="min-w-0 pr-2">
+          <p className="font-heading font-bold text-sm text-foreground capitalize tracking-tight truncate">
+            {formatDayHeader(day.date, day.day_name)}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
             {day.status === 'unpublished'
               ? 'Не опубликовано'
               : day.status === 'not_archived'
@@ -54,23 +60,23 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
                   : `${day.lessons.length} ${plural(day.lessons.length, 'пара', 'пары', 'пар')}`}
           </p>
         </div>
-        <ChevronRight
-          className={cn(
-            'w-4 h-4 text-muted-foreground flex-shrink-0',
-            reducedMotion ? '' : 'transition-transform',
-            open ? 'rotate-90' : '',
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {hasData && (
+            <span className="glass-pill rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary">
+              {day.lessons.length}
+            </span>
           )}
-        />
-      </button>
-      {open && hasData && (
-        <div className="px-3 pb-3 border-t border-border">
-          <div className="pt-2">
-            <DayView day={day} reducedMotion={reducedMotion} />
-          </div>
+          <ChevronRight
+            className={cn(
+              'w-4 h-4 text-muted-foreground transition-transform duration-200',
+              open ? 'rotate-90 text-primary' : '',
+              reducedMotion && 'transition-none',
+            )}
+          />
         </div>
-      )}
-      {open && !hasData && (
-        <div className="px-3 pb-3 border-t border-border">
+      </button>
+      {open && (
+        <div className="px-3.5 pb-3.5 pt-1 border-t border-border/40">
           <DayView day={day} reducedMotion={reducedMotion} />
         </div>
       )}
@@ -88,6 +94,7 @@ function plural(n: number, one: string, few: string, many: string): string {
 
 export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPageProps) {
   const [weekStart, setWeekStart] = useState<string | undefined>(undefined)
+  const platform = usePlatform()
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['history', subscriptionId, weekStart],
@@ -98,7 +105,7 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
 
   if (!subscriptionId) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col justify-center">
         <ErrorState type="no_subscription" />
       </div>
     )
@@ -106,7 +113,7 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
 
   if (error) {
     return (
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col justify-center">
         <ErrorState
           type="server"
           message={(error as Error).message}
@@ -123,8 +130,13 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Заголовок */}
-      <div className="px-4 pt-3 pb-2">
-        <h1 className="text-lg font-bold">История</h1>
+      <div className="px-4 pt-1 pb-2">
+        <h1 className="font-heading font-extrabold text-xl text-foreground tracking-tight">
+          Архив расписания
+        </h1>
+        <p className="text-xs text-muted-foreground mt-0.5 font-medium">
+          История проведённых пар за последние 3 месяца
+        </p>
       </div>
 
       {/* Навигация по неделям */}
@@ -132,50 +144,59 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
         <button
           onClick={() => {
             if (data?.has_previous_week) {
+              platform.hapticFeedback('light')
               const start = new Date(data.week_start + 'T00:00:00')
               start.setDate(start.getDate() - 7)
               setWeekStart(start.toISOString().slice(0, 10))
             }
           }}
           disabled={!data?.has_previous_week}
-          className="p-2 rounded-lg border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground active:scale-95"
           aria-label="Предыдущая неделя"
         >
-          <ChevronLeft className="w-4 h-4" />
+          <ChevronLeft className="w-4 h-4 stroke-[2]" />
         </button>
 
-        <span className="text-sm font-medium flex-1 text-center">
+        <div className="glass-pill rounded-xl px-4 py-2 flex-1 text-center font-heading font-semibold text-xs tracking-tight text-foreground shadow-sm">
           {isLoading
-            ? 'Загрузка...'
+            ? 'Загрузка недели...'
             : data
               ? formatWeekRange(data.week_start)
               : 'Текущая неделя'}
-        </span>
+        </div>
 
         <button
           onClick={() => {
             if (data?.has_next_week) {
+              platform.hapticFeedback('light')
               const start = new Date(data.week_start + 'T00:00:00')
               start.setDate(start.getDate() + 7)
               setWeekStart(start.toISOString().slice(0, 10))
             }
           }}
           disabled={!data?.has_next_week}
-          className="p-2 rounded-lg border border-border disabled:opacity-30 hover:bg-muted transition-colors"
+          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground active:scale-95"
           aria-label="Следующая неделя"
         >
-          <ChevronRight className="w-4 h-4" />
+          <ChevronRight className="w-4 h-4 stroke-[2]" />
         </button>
       </div>
 
-      {/* Дни */}
-      <div className="flex-1 overflow-y-auto px-4 pb-2 space-y-2">
+      {/* Список дней недели */}
+      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2.5">
         {isLoading ? (
           <LoadingSkeleton count={5} />
         ) : days.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 gap-3 text-muted-foreground">
-            <span className="text-4xl opacity-30">📚</span>
-            <p className="text-sm font-medium">Нет данных за эту неделю</p>
+          <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-muted/40 border border-border/50 flex items-center justify-center text-muted-foreground">
+              <CalendarRange className="w-6 h-6 stroke-[1.8]" />
+            </div>
+            <p className="font-heading font-semibold text-base text-foreground">
+              Нет данных за эту неделю
+            </p>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              Записи архива для выбранной недели отсутствуют
+            </p>
           </div>
         ) : (
           days.map((day) => (
