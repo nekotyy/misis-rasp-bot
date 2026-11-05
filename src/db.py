@@ -13,6 +13,7 @@ import aiosqlite
 
 from src.models import ScheduleSnapshot, UserRecord
 from src.outbox_store import OUTBOX_SCHEMA
+from src.schedule_archive_schema import SCHEDULE_ARCHIVE_SCHEMA_V1
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class Database:
     async def initialize(self) -> None:
         async with self._connect() as db:
             await db.executescript(OUTBOX_SCHEMA)
+            await db.executescript(SCHEDULE_ARCHIVE_SCHEMA_V1)
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;

@@ -6,7 +6,7 @@
 
 Карта существующих путей и черновые контракты: [miniapp-integration-audit.md](miniapp-integration-audit.md).
 
-Ход работ: [фазы реализации](miniapp-phases.md); архитектурное решение: [ADR 0001](adr/0001-miniapp-architecture.md).
+Ход работ: [фазы реализации](miniapp-phases.md); архитектурные решения: [ADR 0001](adr/0001-miniapp-architecture.md), [ADR 0002](adr/0002-schedule-archive-schema.md).
 
 ## 1. Согласованное поведение
 
