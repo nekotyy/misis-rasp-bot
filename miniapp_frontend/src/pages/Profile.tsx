@@ -7,11 +7,14 @@ import {
   Laptop,
   Link2,
   Moon,
+  RotateCcw,
   ShieldCheck,
   Star,
   Sun,
   Trash2,
   Unlink,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { useState } from 'react'
 import {
@@ -25,12 +28,15 @@ import { deleteSubscription, updateSubscription } from '../api/subscriptions'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { TelegramIcon, VkIcon } from '../components/PlatformIcons'
+import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE, SCALE_STEP } from '../hooks/useScale'
 import type { Theme } from '../hooks/useTheme'
 import { cn } from '../lib/utils'
 
 interface ProfilePageProps {
   theme: Theme
   onThemeChange: (t: Theme) => void
+  scale?: number
+  onScaleChange?: (s: number) => void
   reducedMotion?: boolean
 }
 
@@ -40,7 +46,13 @@ const themeOptions: { value: Theme; label: string; icon: React.ComponentType<{ c
   { value: 'system', label: 'Системная', icon: Laptop },
 ]
 
-export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: ProfilePageProps) {
+export function ProfilePage({
+  theme,
+  onThemeChange,
+  scale = DEFAULT_SCALE,
+  onScaleChange,
+  reducedMotion = false,
+}: ProfilePageProps) {
   const queryClient = useQueryClient()
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -510,6 +522,96 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                   </button>
                 )
               })}
+            </div>
+          </section>
+
+          {/* Масштаб интерфейса (Ползунок для мобильных и десктопа) */}
+          <section className="glass-card rounded-2xl p-4 space-y-3.5">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="font-heading text-xs font-bold text-neutral uppercase tracking-wider block">
+                  Масштаб интерфейса
+                </span>
+                <p className="text-xs text-neutral">
+                  Настройка размера текста и элементов под ваш экран
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-heading text-xs font-bold text-primary px-2.5 py-1 rounded-full bg-primary-surface border border-primary/20 shadow-sm">
+                  {scale}%
+                </span>
+                {scale !== DEFAULT_SCALE && (
+                  <button
+                    type="button"
+                    onClick={() => onScaleChange?.(DEFAULT_SCALE)}
+                    className="p-1 rounded-lg text-neutral hover:text-primary transition-colors cursor-pointer"
+                    title="Сбросить на значение по умолчанию (110%)"
+                    aria-label="Сбросить масштаб"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3 pt-1">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => onScaleChange?.(Math.max(MIN_SCALE, scale - SCALE_STEP))}
+                  disabled={scale <= MIN_SCALE}
+                  className="p-1 rounded-lg text-neutral hover:text-foreground disabled:opacity-30 transition-colors cursor-pointer"
+                  aria-label="Уменьшить масштаб"
+                >
+                  <ZoomOut className="w-4.5 h-4.5" />
+                </button>
+                <input
+                  type="range"
+                  min={MIN_SCALE}
+                  max={MAX_SCALE}
+                  step={SCALE_STEP}
+                  value={scale}
+                  onChange={(e) => onScaleChange?.(Number(e.target.value))}
+                  className="scale-slider flex-1"
+                  aria-label="Ползунок масштаба интерфейса"
+                />
+                <button
+                  type="button"
+                  onClick={() => onScaleChange?.(Math.min(MAX_SCALE, scale + SCALE_STEP))}
+                  disabled={scale >= MAX_SCALE}
+                  className="p-1 rounded-lg text-neutral hover:text-foreground disabled:opacity-30 transition-colors cursor-pointer"
+                  aria-label="Увеличить масштаб"
+                >
+                  <ZoomIn className="w-4.5 h-4.5" />
+                </button>
+              </div>
+
+              {/* Быстрые пресеты для мобильного управления */}
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { value: 90, label: '90%' },
+                  { value: 100, label: '100%' },
+                  { value: 110, label: '110% (умолч.)' },
+                  { value: 125, label: '125%' },
+                ].map((preset) => {
+                  const isPresetActive = scale === preset.value
+                  return (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => onScaleChange?.(preset.value)}
+                      className={cn(
+                        'py-2 px-1 rounded-xl text-xs font-heading font-semibold border transition-all cursor-pointer text-center truncate',
+                        isPresetActive
+                          ? 'bg-primary text-white border-primary shadow-sm font-bold scale-[1.02]'
+                          : 'bg-card border-border text-neutral hover:text-foreground hover:bg-neutral-hover/10',
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </section>
         </div>

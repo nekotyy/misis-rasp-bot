@@ -5,6 +5,7 @@ import { fetchProfile } from './api/profile'
 import { BottomNav } from './components/BottomNav'
 import { ErrorState } from './components/ErrorState'
 import { usePlatform } from './hooks/usePlatform'
+import { useScale } from './hooks/useScale'
 import { useTheme } from './hooks/useTheme'
 import { HistoryPage } from './pages/History'
 import { ProfilePage } from './pages/Profile'
@@ -28,6 +29,7 @@ interface AppShellProps {
 function AppShell({ authState, error, onRetry }: AppShellProps) {
   const adapter = usePlatform()
   const { theme, setTheme, reducedMotion } = useTheme(adapter)
+  const { scale, setScale } = useScale()
   const safeAreaInsets = adapter.getSafeAreaInsets()
 
   const { data: profile } = useQuery({
@@ -123,6 +125,8 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
               <ProfilePage
                 theme={theme}
                 onThemeChange={setTheme}
+                scale={scale}
+                onScaleChange={setScale}
                 reducedMotion={reducedMotion}
               />
             }
