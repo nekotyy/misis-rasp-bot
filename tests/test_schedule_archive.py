@@ -48,3 +48,15 @@ class ScheduleDayArchiveTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.save(DaySchedule("x", "2026-02-30", []), self.now)
         self.assertIsNone(await self.archive.get_day("group:1", date(2026, 11, 5)))
+
+    async def test_history_interval_filters_source_dates_and_orders_days(self):
+        for day in (4, 5, 6, 7):
+            await self.save(DaySchedule(str(day), f"2026-11-{day:02}", []), self.now)
+        await self.archive.save_day(
+            "group:2", "group", self.day, observed_at=self.now, origin="site", completeness="unknown",
+        )
+        records = await self.archive.get_days("group:1", date(2026, 11, 5), date(2026, 11, 6))
+        self.assertEqual([item["date_iso"] for item in records], ["2026-11-06", "2026-11-05"])
+        self.assertEqual(await self.archive.get_days("group:missing", date(2026, 11, 5), date(2026, 11, 6)), [])
+        with self.assertRaises(ValueError):
+            await self.archive.get_days("group:1", date(2026, 11, 6), date(2026, 11, 5))

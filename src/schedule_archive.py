@@ -68,3 +68,23 @@ class ScheduleDayArchive:
         result = dict(row)
         result["content"] = json.loads(result.pop("content_json"))
         return result
+
+    async def get_days(self, source_key: str, start: date, end: date) -> list[dict]:
+        """Читает сохранённые дни источника за включительный интервал."""
+        if not source_key.strip() or start > end:
+            raise ValueError("Не указан источник или неверный интервал дат")
+        async with aiosqlite.connect(self.path, timeout=30) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM schedule_day_archive
+                   WHERE source_key = ? AND date_iso BETWEEN ? AND ?
+                   ORDER BY date_iso DESC, week_variant ASC""",
+                (source_key, start.isoformat(), end.isoformat()),
+            )
+            rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["content"] = json.loads(item.pop("content_json"))
+            result.append(item)
+        return result
