@@ -27,6 +27,25 @@ class DaySchedule:
                 result.pop(name)
         return result
 
+    @classmethod
+    def from_dict(cls, data: dict) -> DaySchedule:
+        lessons = [
+            Lesson(
+                number=item["number"],
+                subject=item["subject"],
+                teacher=item["teacher"],
+                classroom=item["classroom"],
+            )
+            for item in data.get("lessons", [])
+        ]
+        return cls(
+            date_label=data.get("date_label", ""),
+            date_iso=data.get("date_iso", ""),
+            lessons=lessons,
+            week_variant=data.get("week_variant"),
+            current_week_variant=data.get("current_week_variant"),
+        )
+
 
 @dataclass(slots=True)
 class ScheduleSnapshot:
