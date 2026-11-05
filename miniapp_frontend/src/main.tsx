@@ -1,6 +1,7 @@
-import { BrowserRouter } from 'react-router-dom'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import { MockAdapter } from './adapters/mock'
 import type { PlatformAdapter } from './adapters/platform'
 import { TelegramAdapter } from './adapters/telegram'
 import { VkAdapter } from './adapters/vk'
@@ -13,13 +14,12 @@ async function bootstrap() {
   let adapter: PlatformAdapter
 
   const isVk = new URLSearchParams(window.location.search).has('vk_app_id')
-  const hasTelegram = typeof window !== 'undefined' && Boolean((window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp?.initData)
+  const isDevExplicit =
+    Boolean(import.meta.env.DEV) &&
+    (import.meta.env.VITE_MOCK_PLATFORM === 'true' ||
+      new URLSearchParams(window.location.search).get('dev') === '1')
 
-  if (import.meta.env.VITE_MOCK_PLATFORM === 'true' || (!hasTelegram && !isVk && import.meta.env.DEV)) {
-    if (import.meta.env.PROD) {
-      throw new Error('MockAdapter недоступен в production. Уберите VITE_MOCK_PLATFORM=true')
-    }
-    const { MockAdapter } = await import('./adapters/mock')
+  if (isDevExplicit) {
     adapter = new MockAdapter()
   } else if (isVk) {
     adapter = new VkAdapter()

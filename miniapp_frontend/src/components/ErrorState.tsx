@@ -4,10 +4,11 @@ import {
   RefreshCcw,
   ServerOff,
   ShieldAlert,
+  Smartphone,
   WifiOff,
 } from 'lucide-react'
 
-type ErrorType = 'network' | 'server' | 'auth' | 'unknown' | 'no_subscription'
+type ErrorType = 'network' | 'server' | 'auth' | 'unknown' | 'no_subscription' | 'browser_not_supported'
 
 interface ErrorStateProps {
   type?: ErrorType
@@ -37,6 +38,11 @@ const errorConfig: Record<ErrorType, { icon: typeof WifiOff; title: string; desc
     icon: BookmarkX,
     title: 'Нет подписок',
     description: 'Добавьте группу в профиле, чтобы видеть расписание',
+  },
+  browser_not_supported: {
+    icon: Smartphone,
+    title: 'Вход через браузер запрещён',
+    description: 'Расписание доступно только внутри Mini App через Telegram или ВКонтакте',
   },
   unknown: {
     icon: AlertCircle,

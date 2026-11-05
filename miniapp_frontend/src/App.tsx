@@ -4,7 +4,9 @@ import { useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { fetchProfile } from './api/profile'
 import { BottomNav } from './components/BottomNav'
+import { BrowserBlockScreen } from './components/BrowserBlockScreen'
 import { ErrorState } from './components/ErrorState'
+import type { AuthState } from './hooks/useAuth'
 import { usePlatform } from './hooks/usePlatform'
 import { useScale } from './hooks/useScale'
 import { useTheme } from './hooks/useTheme'
@@ -22,7 +24,7 @@ const queryClient = new QueryClient({
 })
 
 interface AppShellProps {
-  authState: 'idle' | 'loading' | 'authenticated' | 'error'
+  authState: AuthState
   error?: string | null
   onRetry?: () => void
 }
@@ -68,6 +70,10 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
         </div>
       </div>
     )
+  }
+
+  if (authState === 'unsupported_browser') {
+    return <BrowserBlockScreen message={error ?? undefined} />
   }
 
   if (authState === 'error') {
@@ -157,8 +163,8 @@ function safeAreaBottom(bottom: number): number {
   return bottom > 0 ? bottom : 12
 }
 
-interface AppProps {
-  authState: 'idle' | 'loading' | 'authenticated' | 'error'
+export interface AppProps {
+  authState: AuthState
   error?: string | null
   onRetry?: () => void
 }
