@@ -12,13 +12,16 @@ import './index.css'
 async function bootstrap() {
   let adapter: PlatformAdapter
 
-  if (import.meta.env.VITE_MOCK_PLATFORM === 'true') {
+  const isVk = new URLSearchParams(window.location.search).has('vk_app_id')
+  const hasTelegram = typeof window !== 'undefined' && Boolean((window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp?.initData)
+
+  if (import.meta.env.VITE_MOCK_PLATFORM === 'true' || (!hasTelegram && !isVk && import.meta.env.DEV)) {
     if (import.meta.env.PROD) {
       throw new Error('MockAdapter недоступен в production. Уберите VITE_MOCK_PLATFORM=true')
     }
     const { MockAdapter } = await import('./adapters/mock')
     adapter = new MockAdapter()
-  } else if (new URLSearchParams(window.location.search).has('vk_app_id')) {
+  } else if (isVk) {
     adapter = new VkAdapter()
   } else {
     adapter = new TelegramAdapter()

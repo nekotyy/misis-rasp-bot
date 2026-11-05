@@ -22,9 +22,13 @@ export function useAuth(adapter: PlatformAdapter) {
       } else if (adapter.platform === 'vk') {
         result = await authVk(initData)
       } else {
-        // mock режим: фиктивная авторизация — токен уже установлен в моке или прокидывается
-        result = { token: 'mock_token', account_id: 'mock_user' }
-        setToken(result.token)
+        // Mock режим: сначала пробуем dev-авторизацию на сервере (если запущен), иначе offline mock
+        try {
+          result = await authTelegram(initData || 'dev:10001:dev_student')
+        } catch {
+          result = { token: 'mock_token', account_id: 'mock_user' }
+          setToken(result.token)
+        }
       }
       setAccountId(result.account_id)
       setAuthState('authenticated')

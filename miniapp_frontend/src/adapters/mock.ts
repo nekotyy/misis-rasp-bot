@@ -5,7 +5,7 @@ export class MockAdapter implements PlatformAdapter {
   readonly platform = 'mock' as const
 
   getInitData(): string {
-    return 'mock_init_data=test&user=%7B%22id%22%3A123456%2C%22first_name%22%3A%22Test%22%7D&auth_date=1234567890&hash=mock_hash'
+    return 'dev:10001:dev_student'
   }
 
   getTheme(): 'light' | 'dark' | 'system' {
