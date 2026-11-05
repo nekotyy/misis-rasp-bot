@@ -150,12 +150,12 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
       ) : data ? (
         <div className="px-4 pb-12 space-y-4">
           {/* Аккаунт и привязки */}
-          <section className="glass-card p-4 space-y-3">
+          <section className="glass-card rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-neutral uppercase tracking-wider">
+              <span className="font-heading text-[11px] font-bold text-neutral uppercase tracking-wider">
                 Подключённые аккаунты
               </span>
-              <span className="inline-flex items-center gap-1 text-[11px] text-primary font-medium">
+              <span className="font-heading inline-flex items-center gap-1 text-[11px] text-primary font-bold">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 Защищено
               </span>
@@ -188,9 +188,9 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <p className="text-sm font-semibold truncate text-foreground">{title}</p>
+                            <p className="font-heading text-sm font-bold truncate text-foreground">{title}</p>
                             {isCurrent && (
-                              <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-primary-surface text-primary border border-primary/25">
+                              <span className="font-heading text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-primary-surface text-primary border border-primary/25">
                                 Текущий
                               </span>
                             )}
@@ -227,7 +227,7 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                     )}
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-foreground">
+                    <p className="font-heading text-sm font-bold text-foreground">
                       {data.current_identity.full_name ||
                         data.current_identity.username ||
                         data.current_identity.display_name ||
@@ -246,21 +246,21 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
               {!showLinkSection ? (
                 <button
                   onClick={() => setShowLinkSection(true)}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-primary/30 bg-primary-surface text-primary text-xs font-semibold hover:bg-primary hover:text-white transition-all cursor-pointer"
+                  className="font-heading w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border border-primary/30 bg-primary-surface text-primary text-xs font-bold hover:bg-primary hover:text-white transition-all cursor-pointer"
                 >
                   <Link2 className="w-3.5 h-3.5" />
                   Связать с другим мессенджером
                 </button>
               ) : (
-                <div className="p-3.5 rounded-xl bg-card border border-border space-y-3">
+                <div className="p-3.5 rounded-2xl bg-card border border-border space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <span className="font-heading text-xs font-bold text-foreground flex items-center gap-1.5">
                       <Link2 className="w-3.5 h-3.5 text-primary" />
                       Связывание аккаунтов
                     </span>
                     <button
                       onClick={() => setShowLinkSection(false)}
-                      className="text-xs text-neutral hover:text-foreground cursor-pointer"
+                      className="font-heading text-xs text-neutral hover:text-foreground cursor-pointer font-semibold"
                     >
                       Скрыть
                     </button>
@@ -275,7 +275,7 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                       type="button"
                       onClick={() => createTokenMutation.mutate()}
                       disabled={createTokenMutation.isPending}
-                      className="w-full py-2.5 px-3 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-bold shadow-md shadow-primary/25 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
+                      className="font-heading w-full py-2.5 px-3 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-bold shadow-md shadow-primary/25 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                     >
                       {createTokenMutation.isPending ? 'Генерация кода...' : 'Получить код связывания'}
                     </button>
@@ -283,14 +283,14 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                     {createdToken && (
                       <div className="p-3 rounded-xl bg-neutral-surface border border-primary/40 space-y-2 shadow-sm">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-bold text-neutral uppercase tracking-wider">
+                          <span className="font-heading text-[10px] font-bold text-neutral uppercase tracking-wider">
                             Код связывания (5 мин)
                           </span>
                           <button
                             type="button"
                             onClick={handleCopyToken}
                             className={cn(
-                              'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex-shrink-0',
+                              'font-heading flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex-shrink-0',
                               copied
                                 ? 'bg-success-surface text-success border border-success/40'
                                 : 'bg-primary-surface text-primary border border-primary/30 hover:bg-primary hover:text-white active:scale-95',
@@ -320,7 +320,7 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
 
                   {/* Ввод кода от другого клиента */}
                   <div className="pt-2 border-t border-border space-y-2">
-                    <label className="text-[11px] font-semibold text-foreground block">
+                    <label className="font-heading text-[11px] font-bold text-foreground block">
                       Или введите код, полученный в другом клиенте:
                     </label>
                     <div className="flex gap-2">
@@ -337,7 +337,7 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                           if (inputToken) confirmLinkMutation.mutate(inputToken)
                         }}
                         disabled={!inputToken || confirmLinkMutation.isPending}
-                        className="px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-40 cursor-pointer flex-shrink-0 shadow-md shadow-primary/25"
+                        className="font-heading px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-40 cursor-pointer flex-shrink-0 shadow-md shadow-primary/25"
                       >
                         {confirmLinkMutation.isPending ? 'Проверка...' : 'Связать'}
                       </button>
@@ -345,10 +345,10 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                   </div>
 
                   {linkSuccess && (
-                    <p className="text-xs text-success font-medium">{linkSuccess}</p>
+                    <p className="font-heading text-xs text-success font-semibold">{linkSuccess}</p>
                   )}
                   {linkError && (
-                    <p className="text-xs text-destructive font-medium">{linkError}</p>
+                    <p className="font-heading text-xs text-destructive font-semibold">{linkError}</p>
                   )}
                 </div>
               )}
@@ -356,12 +356,12 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
           </section>
 
           {/* Подписки на группы */}
-          <section className="glass-card p-4 space-y-3">
+          <section className="glass-card rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-neutral uppercase tracking-wider">
+              <span className="font-heading text-[11px] font-bold text-neutral uppercase tracking-wider">
                 Мои группы
               </span>
-              <span className="text-xs text-neutral font-mono">
+              <span className="font-heading text-xs text-neutral font-bold">
                 {data.subscriptions.length} {data.subscriptions.length === 1 ? 'группа' : 'групп'}
               </span>
             </div>
@@ -399,11 +399,11 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                           </button>
                         )}
                         <div className="min-w-0">
-                          <p className="font-display font-bold text-sm tracking-tight truncate text-foreground">
+                          <p className="font-heading font-bold text-sm tracking-tight truncate text-foreground">
                             {sub.group_name || sub.subscription_title || 'Группа'}
                           </p>
                           {sub.is_primary && (
-                            <p className="text-[10px] font-semibold text-primary">
+                            <p className="font-heading text-[10px] font-bold text-primary">
                               Основная группа
                             </p>
                           )}
@@ -448,13 +448,13 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
           </section>
 
           {/* Настройки уведомлений */}
-          <section className="glass-card p-4 space-y-3">
-            <span className="text-[11px] font-semibold text-neutral uppercase tracking-wider block">
+          <section className="glass-card rounded-2xl p-4 space-y-3">
+            <span className="font-heading text-[11px] font-bold text-neutral uppercase tracking-wider block">
               Уведомления
             </span>
             <div className="flex items-center justify-between gap-3">
               <div className="space-y-0.5">
-                <p className="text-sm font-semibold text-foreground">
+                <p className="font-heading text-sm font-bold text-foreground">
                   Оповещения об изменениях
                 </p>
                 <p className="text-xs text-neutral">
@@ -485,8 +485,8 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
           </section>
 
           {/* Оформление (Тема) */}
-          <section className="glass-card p-4 space-y-3">
-            <span className="text-[11px] font-semibold text-neutral uppercase tracking-wider block">
+          <section className="glass-card rounded-2xl p-4 space-y-3">
+            <span className="font-heading text-[11px] font-bold text-neutral uppercase tracking-wider block">
               Тема оформления
             </span>
             <div className="grid grid-cols-3 gap-2">
@@ -506,7 +506,7 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                     )}
                   >
                     <Icon className={cn('w-4 h-4', isActive ? 'text-white' : 'text-neutral')} />
-                    <span className={isActive ? 'text-white font-bold' : ''}>{opt.label}</span>
+                    <span className={cn('font-heading', isActive ? 'text-white font-bold' : 'font-semibold')}>{opt.label}</span>
                   </button>
                 )
               })}

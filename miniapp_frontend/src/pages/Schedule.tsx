@@ -139,13 +139,13 @@ export function SchedulePage({
                         : 'glass-card border-border text-neutral hover:text-foreground hover:bg-neutral-hover/10',
                     )}
                   >
-                    <span className="text-[10px] font-semibold uppercase tracking-wider opacity-90 leading-none">
+                    <span className="font-heading text-[10px] font-bold uppercase tracking-wider opacity-90 leading-none">
                       {getDayLabel(day.date)}
                     </span>
-                    <span className="font-heading font-bold text-sm tracking-tight my-0.5">
+                    <span className="font-heading font-extrabold text-sm tracking-tight my-0.5">
                       {dayNum}
                     </span>
-                    <span className="text-[10px] font-medium capitalize opacity-80 leading-none">
+                    <span className="font-heading text-[10px] font-semibold capitalize opacity-80 leading-none">
                       {dayName}
                     </span>
                   </button>

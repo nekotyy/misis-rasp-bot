@@ -62,7 +62,7 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {hasData && (
-            <span className="glass-pill rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary bg-primary-surface border border-primary/20">
+            <span className="font-heading glass-pill rounded-full px-2 py-0.5 text-[10px] font-bold text-primary bg-primary-surface border border-primary/20">
               {day.lessons.length}
             </span>
           )}

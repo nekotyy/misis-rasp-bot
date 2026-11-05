@@ -94,7 +94,7 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
           {config.badge && (
             <span
               className={cn(
-                'inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-semibold tracking-tight shadow-sm',
+                'font-heading inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-bold tracking-tight shadow-sm',
                 config.badgeClass,
               )}
             >

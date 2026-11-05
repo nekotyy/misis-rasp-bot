@@ -41,16 +41,18 @@
 
   --color-ring: var(--primary);
 
-  --font-display: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-heading: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Nekst', 'Nekst Semi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-heading: 'Nekst', 'Nekst Semi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-sans: 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
-/* === ШРИФТЫ MISIS: NEKST (ЗАГОЛОВКИ) И RALEWAY (ОСНОВНОЙ ТЕКСТ) === */
+/* === ШРИФТЫ MISIS: NEKST (ЗАГОЛОВКИ 100-900) И RALEWAY (ОСНОВНОЙ ТЕКСТ 16/24) === */
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Thin.woff2') format('woff2'),
+  src: local('Nekst Thin'), local('Nekst-Thin'),
+       url('/fonts/Nekst-Thin.woff2') format('woff2'),
+       url('/fonts/Nekst-Thin.woff') format('woff'),
        url('/fonts/Nekst-Thin.ttf') format('truetype');
   font-weight: 100;
   font-style: normal;
@@ -59,7 +61,9 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Light.woff2') format('woff2'),
+  src: local('Nekst Light'), local('Nekst-Light'),
+       url('/fonts/Nekst-Light.woff2') format('woff2'),
+       url('/fonts/Nekst-Light.woff') format('woff'),
        url('/fonts/Nekst-Light.ttf') format('truetype');
   font-weight: 300;
   font-style: normal;
@@ -68,7 +72,9 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Regular.woff2') format('woff2'),
+  src: local('Nekst Regular'), local('Nekst-Regular'), local('Nekst'),
+       url('/fonts/Nekst-Regular.woff2') format('woff2'),
+       url('/fonts/Nekst-Regular.woff') format('woff'),
        url('/fonts/Nekst-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
@@ -77,7 +83,9 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Medium.woff2') format('woff2'),
+  src: local('Nekst Medium'), local('Nekst-Medium'),
+       url('/fonts/Nekst-Medium.woff2') format('woff2'),
+       url('/fonts/Nekst-Medium.woff') format('woff'),
        url('/fonts/Nekst-Medium.ttf') format('truetype');
   font-weight: 500;
   font-style: normal;
@@ -86,7 +94,20 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-SemiBold.woff2') format('woff2'),
+  src: local('Nekst Semi Bold'), local('Nekst-SemiBold'),
+       url('/fonts/Nekst-SemiBold.woff2') format('woff2'),
+       url('/fonts/Nekst-SemiBold.woff') format('woff'),
+       url('/fonts/Nekst-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nekst Semi';
+  src: local('Nekst Semi Bold'), local('Nekst-SemiBold'),
+       url('/fonts/Nekst-SemiBold.woff2') format('woff2'),
+       url('/fonts/Nekst-SemiBold.woff') format('woff'),
        url('/fonts/Nekst-SemiBold.ttf') format('truetype');
   font-weight: 600;
   font-style: normal;
@@ -95,7 +116,9 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Bold.woff2') format('woff2'),
+  src: local('Nekst Bold'), local('Nekst-Bold'),
+       url('/fonts/Nekst-Bold.woff2') format('woff2'),
+       url('/fonts/Nekst-Bold.woff') format('woff'),
        url('/fonts/Nekst-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
@@ -104,17 +127,93 @@
 
 @font-face {
   font-family: 'Nekst';
-  src: url('/fonts/Nekst-Black.woff2') format('woff2'),
+  src: local('Nekst Black'), local('Nekst-Black'),
+       url('/fonts/Nekst-Black.woff2') format('woff2'),
+       url('/fonts/Nekst-Black.woff') format('woff'),
        url('/fonts/Nekst-Black.ttf') format('truetype');
   font-weight: 900;
   font-style: normal;
   font-display: swap;
 }
 
+/* Статичные начертания Raleway (Google Fonts) для гарантированной отрисовки всех весов */
 @font-face {
   font-family: 'Raleway';
-  src: url('/fonts/Raleway-VariableFont_wght.ttf') format('truetype');
-  font-weight: 100 900;
+  src: local('Raleway Thin'), local('Raleway-Thin'),
+       url('/fonts/Raleway-Thin.ttf') format('truetype');
+  font-weight: 100;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway ExtraLight'), local('Raleway-ExtraLight'),
+       url('/fonts/Raleway-ExtraLight.ttf') format('truetype');
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway Light'), local('Raleway-Light'),
+       url('/fonts/Raleway-Light.ttf') format('truetype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway Regular'), local('Raleway-Regular'), local('Raleway'),
+       url('/fonts/Raleway-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway Medium'), local('Raleway-Medium'),
+       url('/fonts/Raleway-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway SemiBold'), local('Raleway-SemiBold'),
+       url('/fonts/Raleway-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway Bold'), local('Raleway-Bold'),
+       url('/fonts/Raleway-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway ExtraBold'), local('Raleway-ExtraBold'),
+       url('/fonts/Raleway-ExtraBold.ttf') format('truetype');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: local('Raleway Black'), local('Raleway-Black'),
+       url('/fonts/Raleway-Black.ttf') format('truetype');
+  font-weight: 900;
   font-style: normal;
   font-display: swap;
 }
@@ -298,6 +397,8 @@
 
   body {
     font-family: 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 24px;
     background: var(--bg-gradient, var(--bg-base));
     background-attachment: fixed;
     color: var(--text-primary);
@@ -308,7 +409,7 @@
   }
 
   h1, h2, h3, h4, h5, h6 {
-    font-family: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Nekst', 'Nekst Semi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     letter-spacing: -0.02em;
   }
 }
@@ -317,6 +418,7 @@
 
 .glass-card {
   background: var(--glass-bg);
+  border-radius: 20px;
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--glass-border);

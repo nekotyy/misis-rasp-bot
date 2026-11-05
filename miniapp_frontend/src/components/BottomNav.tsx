@@ -53,7 +53,7 @@ export function BottomNav({ safeAreaBottom = 0 }: BottomNavProps) {
                         isActive ? 'scale-110 stroke-[2.2]' : 'stroke-[1.8]',
                       )}
                     />
-                    <span className="text-[11px] font-medium leading-none tracking-tight">
+                    <span className="font-heading text-[11px] font-semibold leading-none tracking-tight">
                       {item.label}
                     </span>
                   </>
