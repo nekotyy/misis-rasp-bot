@@ -29,4 +29,11 @@ describe('BrowserBlockScreen', () => {
     render(<BrowserBlockScreen message="Прямой доступ закрыт!" />)
     expect(screen.getByText('Прямой доступ закрыт!')).toBeDefined()
   })
+
+  it('отображает информационные возможности и сноску безопасности', () => {
+    render(<BrowserBlockScreen />)
+    expect(screen.getByText('Расписание групп, преподавателей и аудиторий')).toBeDefined()
+    expect(screen.getByText('Мгновенные push-уведомления об отменах и заменах')).toBeDefined()
+    expect(screen.getByText('Доступ защищён сквозной HMAC-верификацией')).toBeDefined()
+  })
 })
