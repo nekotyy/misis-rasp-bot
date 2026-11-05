@@ -24,10 +24,10 @@ export function BottomNav({ safeAreaBottom = 0 }: BottomNavProps) {
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none px-4 pb-[env(safe-area-inset-bottom,8px)]"
+      className="fixed bottom-1.5 left-0 right-0 z-50 pointer-events-none px-3"
       style={{ paddingBottom: safeAreaBottom ? `${safeAreaBottom}px` : undefined }}
     >
-      <div className="pointer-events-auto max-w-md mx-auto glass-dock rounded-2xl p-1.5 shadow-2xl">
+      <div className="pointer-events-auto max-w-sm mx-auto glass-dock rounded-2xl p-1 shadow-2xl">
         <div className="flex items-center justify-around gap-1">
           {navItems.map((item) => {
             const Icon = item.icon
@@ -40,7 +40,7 @@ export function BottomNav({ safeAreaBottom = 0 }: BottomNavProps) {
                   cn(
                     'flex-1 flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-xl transition-all duration-200',
                     isActive
-                      ? 'bg-primary text-white font-semibold shadow-lg shadow-primary/30'
+                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold shadow-md shadow-blue-500/30'
                       : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5',
                   )
                 }

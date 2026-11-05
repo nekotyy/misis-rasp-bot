@@ -74,7 +74,7 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
       {/* Верхняя строка: номер пары, предмет и бейджи */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-primary/15 border border-primary/25 flex items-center justify-center font-heading font-bold text-sm text-primary shadow-sm">
+          <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-display font-black text-sm shadow-md shadow-blue-500/25">
             {lesson.number}
           </div>
           <div className="min-w-0 pt-0.5">
@@ -94,7 +94,7 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
           {config.badge && (
             <span
               className={cn(
-                'inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-medium tracking-tight',
+                'inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full font-semibold tracking-tight shadow-sm',
                 config.badgeClass,
               )}
             >
@@ -110,7 +110,7 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
           {lesson.status === 'changed' && lesson.change && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="p-1 rounded-lg hover:bg-white/10 dark:hover:bg-white/10 transition-colors"
+              className="p-1 rounded-lg hover:bg-white/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
               aria-label={expanded ? 'Скрыть детали' : 'Показать детали'}
             >
               <ChevronDown
@@ -128,22 +128,22 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
       {/* Мета-информация: преподаватель, аудитория, время */}
       <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
         {lesson.classroom && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-foreground font-medium">
-            <MapPin className="w-3.5 h-3.5 text-primary stroke-[2]" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-blue-300 dark:text-blue-200 bg-blue-500/10 border-blue-500/25 font-semibold">
+            <MapPin className="w-3.5 h-3.5 text-blue-400 stroke-[2.2]" />
             <span>{lesson.classroom}</span>
           </div>
         )}
 
         {lesson.time_start && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-muted-foreground">
-            <Clock className="w-3.5 h-3.5 text-muted-foreground stroke-[1.8]" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-indigo-300 dark:text-indigo-200 bg-indigo-500/10 border-indigo-500/25 font-medium">
+            <Clock className="w-3.5 h-3.5 text-indigo-400 stroke-[2]" />
             <span>{lesson.time_end ? `${lesson.time_start}–${lesson.time_end}` : lesson.time_start}</span>
           </div>
         )}
 
         {lesson.teacher && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-muted-foreground truncate max-w-[200px]">
-            <User className="w-3.5 h-3.5 text-muted-foreground stroke-[1.8] flex-shrink-0" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-sky-300 dark:text-sky-200 bg-sky-500/10 border-sky-500/25 truncate max-w-[200px] font-medium">
+            <User className="w-3.5 h-3.5 text-sky-400 stroke-[2] flex-shrink-0" />
             <span className="truncate">{lesson.teacher}</span>
           </div>
         )}

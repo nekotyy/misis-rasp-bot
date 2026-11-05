@@ -13,7 +13,7 @@ export class MockAdapter implements PlatformAdapter {
   }
 
   getSafeAreaInsets() {
-    return { top: 44, bottom: 34, left: 0, right: 0 }
+    return { top: 12, bottom: 0, left: 0, right: 0 }
   }
 
   enableBackButton(callback: () => void): void {

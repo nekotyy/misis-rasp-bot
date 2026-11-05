@@ -77,8 +77,9 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
 
   return (
     <div
-      className="flex flex-col h-screen relative overflow-hidden bg-[var(--bg-base)] text-foreground"
+      className="flex flex-col h-screen relative overflow-hidden text-foreground"
       style={{
+        background: 'var(--bg-gradient, var(--bg-base))',
         paddingTop: `max(${safeAreaInsets.top}px, env(safe-area-inset-top, 0px))`,
       }}
     >

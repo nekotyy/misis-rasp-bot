@@ -273,44 +273,57 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                   </p>
 
                   {/* Генерация кода */}
-                  <div className="space-y-1.5">
+                  <div className="space-y-2.5">
                     <button
+                      type="button"
                       onClick={() => createTokenMutation.mutate()}
                       disabled={createTokenMutation.isPending}
-                      className="w-full py-2 px-3 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:brightness-110 active:scale-[0.99] transition-all disabled:opacity-50"
+                      className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-blue-500/25 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                     >
-                      {createTokenMutation.isPending ? 'Генерация...' : 'Получить код связывания'}
+                      {createTokenMutation.isPending ? 'Генерация кода...' : 'Получить код связывания'}
                     </button>
 
                     {createdToken && (
-                      <div className="flex items-center justify-between p-2.5 rounded-lg bg-card border border-primary/30">
-                        <div>
-                          <p className="text-[10px] text-muted-foreground uppercase">Ваш код связывания (5 мин):</p>
-                          <p className="font-mono font-bold text-sm text-primary tracking-widest">{createdToken}</p>
+                      <div className="p-3 rounded-xl bg-card/90 border border-primary/40 space-y-2 shadow-lg shadow-black/20">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
+                            Код связывания (5 мин)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleCopyToken}
+                            className={cn(
+                              'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex-shrink-0',
+                              copied
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-primary/20 text-primary border border-primary/30 hover:bg-primary/30 active:scale-95',
+                            )}
+                          >
+                            {copied ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>Скопировано</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Копировать</span>
+                              </>
+                            )}
+                          </button>
                         </div>
-                        <button
-                          onClick={handleCopyToken}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors"
-                        >
-                          {copied ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-500" />
-                              <span>Скопировано</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3.5 h-3.5" />
-                              <span>Копировать</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="p-2.5 rounded-lg bg-black/40 border border-white/10 select-all overflow-hidden">
+                          <p className="font-mono font-bold text-xs text-blue-300 tracking-wider break-all leading-relaxed">
+                            {createdToken}
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>
 
                   {/* Ввод кода от другого клиента */}
                   <div className="pt-2 border-t border-border/50 space-y-2">
-                    <label className="text-[11px] font-medium text-foreground block">
+                    <label className="text-[11px] font-semibold text-foreground block">
                       Или введите код, полученный в другом клиенте:
                     </label>
                     <div className="flex gap-2">
@@ -318,15 +331,16 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                         type="text"
                         value={inputToken}
                         onChange={(e) => setInputToken(e.target.value.trim().toUpperCase())}
-                        placeholder="XXXX-XXXX"
-                        className="flex-1 px-3 py-1.5 rounded-lg bg-card border border-border text-xs font-mono uppercase tracking-wider text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary"
+                        placeholder="Вставьте код..."
+                        className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-black/30 border border-border/80 text-xs font-mono uppercase tracking-wider text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                       />
                       <button
+                        type="button"
                         onClick={() => {
                           if (inputToken) confirmLinkMutation.mutate(inputToken)
                         }}
                         disabled={!inputToken || confirmLinkMutation.isPending}
-                        className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-semibold hover:brightness-110 transition-colors disabled:opacity-50"
+                        className="px-4 py-2 rounded-xl bg-primary text-white text-xs font-bold hover:brightness-110 active:scale-95 transition-all disabled:opacity-40 cursor-pointer flex-shrink-0 shadow-md shadow-primary/25"
                       >
                         {confirmLinkMutation.isPending ? 'Проверка...' : 'Связать'}
                       </button>

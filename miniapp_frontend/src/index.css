@@ -105,60 +105,61 @@
   [data-theme="dark"] {
     color-scheme: dark;
 
-    --bg-base: #060b18;
-    --bg-mesh-1: #0e1e42;
-    --bg-mesh-2: #16284a;
+    --bg-base: #070e22;
+    --bg-gradient: radial-gradient(130% 120% at 50% 0%, #152754 0%, #0c1735 50%, #060c1d 100%);
+    --bg-mesh-1: #152b63;
+    --bg-mesh-2: #1e3a8a;
 
     --text-primary: #ffffff;
-    --text-secondary: #c0c9dc;
-    --text-muted: #8491aa;
+    --text-secondary: #cdd7ee;
+    --text-muted: #8b9bb4;
 
-    --brand-primary: #4f85eb;
-    --brand-primary-hover: #6998f2;
+    --brand-primary: #3b82f6;
+    --brand-primary-hover: #60a5fa;
     --brand-electric: #0541f0;
-    --brand-glow: rgba(79, 133, 235, 0.4);
+    --brand-glow: rgba(59, 130, 246, 0.45);
 
-    --glass-bg: rgba(18, 25, 42, 0.65);
-    --glass-bg-hover: rgba(26, 37, 62, 0.78);
-    --glass-border: rgba(255, 255, 255, 0.11);
-    --glass-border-strong: rgba(79, 133, 235, 0.35);
-    --glass-shine: rgba(255, 255, 255, 0.12);
-    --glass-shadow: 0 16px 40px -8px rgba(0, 0, 0, 0.6);
+    --glass-bg: rgba(18, 30, 60, 0.72);
+    --glass-bg-hover: rgba(26, 42, 82, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.13);
+    --glass-border-strong: rgba(79, 133, 235, 0.5);
+    --glass-shine: rgba(255, 255, 255, 0.18);
+    --glass-shadow: 0 16px 40px -8px rgba(2, 6, 20, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
 
-    --dock-bg: rgba(10, 16, 28, 0.82);
-    --dock-border: rgba(255, 255, 255, 0.12);
+    --dock-bg: rgba(10, 18, 38, 0.9);
+    --dock-border: rgba(255, 255, 255, 0.15);
 
-    --chip-bg: rgba(255, 255, 255, 0.06);
-    --chip-border: rgba(255, 255, 255, 0.08);
+    --chip-bg: rgba(255, 255, 255, 0.08);
+    --chip-border: rgba(255, 255, 255, 0.12);
 
-    --status-added-bg: rgba(1, 158, 87, 0.16);
-    --status-added-border: rgba(1, 158, 87, 0.35);
+    --status-added-bg: rgba(16, 185, 129, 0.18);
+    --status-added-border: rgba(16, 185, 129, 0.4);
     --status-added-text: #34d399;
 
-    --status-changed-bg: rgba(245, 158, 11, 0.16);
-    --status-changed-border: rgba(245, 158, 11, 0.35);
+    --status-changed-bg: rgba(245, 158, 11, 0.18);
+    --status-changed-border: rgba(245, 158, 11, 0.45);
     --status-changed-text: #fbbf24;
 
-    --status-cancelled-bg: rgba(239, 68, 68, 0.14);
-    --status-cancelled-border: rgba(239, 68, 68, 0.3);
-    --status-cancelled-text: #f87171;
+    --status-cancelled-bg: rgba(244, 63, 94, 0.16);
+    --status-cancelled-border: rgba(244, 63, 94, 0.4);
+    --status-cancelled-text: #fb7185;
 
-    --background: #060b18;
+    --background: #070e22;
     --foreground: #ffffff;
-    --card: rgba(18, 25, 42, 0.7);
+    --card: rgba(18, 30, 60, 0.72);
     --card-foreground: #ffffff;
-    --primary: #4f85eb;
+    --primary: #3b82f6;
     --primary-foreground: #ffffff;
     --secondary: rgba(255, 255, 255, 0.08);
     --secondary-foreground: #ffffff;
     --muted: rgba(255, 255, 255, 0.08);
-    --muted-foreground: #8491aa;
-    --accent: rgba(79, 133, 235, 0.15);
-    --accent-foreground: #4f85eb;
-    --destructive: #ef4444;
+    --muted-foreground: #8b9bb4;
+    --accent: rgba(59, 130, 246, 0.18);
+    --accent-foreground: #60a5fa;
+    --destructive: #f43f5e;
     --destructive-foreground: #ffffff;
     --border: rgba(255, 255, 255, 0.12);
-    --ring: #4f85eb;
+    --ring: #3b82f6;
   }
 
   /* Светлая тема */
@@ -167,6 +168,7 @@
     color-scheme: light;
 
     --bg-base: #f4f7ff;
+    --bg-gradient: radial-gradient(130% 120% at 50% 0%, #e3ecfc 0%, #f1f5fd 50%, #ffffff 100%);
     --bg-mesh-1: #e1e9fd;
     --bg-mesh-2: #d6e2ff;
 
@@ -231,7 +233,8 @@
 
   body {
     font-family: 'Raleway', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background-color: var(--bg-base);
+    background: var(--bg-gradient, var(--bg-base));
+    background-attachment: fixed;
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -278,10 +281,10 @@
 }
 
 .glass-pill-active {
-  background: var(--brand-primary);
+  background: linear-gradient(135deg, #0541f0 0%, #3b82f6 100%);
   color: #ffffff;
-  border-color: var(--brand-primary);
-  box-shadow: 0 4px 16px var(--brand-glow);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 4px 18px rgba(5, 65, 240, 0.45);
 }
 
 /* Эффект свечения фонового жидкого градиента */
