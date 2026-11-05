@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { Calendar, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { fetchProfile } from './api/profile'
 import { BottomNav } from './components/BottomNav'
@@ -87,42 +87,6 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
         <div className="ambient-orb-1" />
         <div className="ambient-orb-2" />
       </div>
-
-      {/* Верхняя шапка */}
-      <header className="px-4 pt-3 pb-2 flex items-center justify-between z-10 flex-shrink-0">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl glass-pill flex items-center justify-center p-1.5 shadow-sm border border-border/40">
-            <img
-              src={theme === 'light' ? '/logos/misis-main-color.svg' : '/logos/misis-main-inv.svg'}
-              alt="МИСИС"
-              className="w-full h-full object-contain"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none'
-              }}
-            />
-          </div>
-          <div>
-            <span className="font-heading font-extrabold text-sm tracking-tight text-foreground block leading-tight">
-              МИСИС
-            </span>
-            <span className="text-[10px] uppercase font-semibold tracking-wider text-muted-foreground block leading-tight">
-              Расписание
-            </span>
-          </div>
-        </div>
-
-        {primarySubscription ? (
-          <div className="glass-pill rounded-full px-3 py-1 flex items-center gap-1.5 text-xs font-semibold text-primary">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>{primarySubscription.group_name}</span>
-          </div>
-        ) : (
-          <div className="glass-pill rounded-full px-3 py-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Calendar className="w-3.5 h-3.5" />
-            <span>Колледж</span>
-          </div>
-        )}
-      </header>
 
       {/* Контент страниц */}
       <div

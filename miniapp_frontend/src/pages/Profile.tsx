@@ -499,13 +499,6 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
               })}
             </div>
           </section>
-
-          {/* Версия и статус */}
-          <div className="text-center pt-2 pb-1 space-y-1">
-            <p className="text-[11px] font-medium text-muted-foreground/70">
-              Колледж НИТУ МИСИС &bull; Расписание v1.0
-            </p>
-          </div>
         </div>
       ) : null}
     </div>
