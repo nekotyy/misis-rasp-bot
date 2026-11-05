@@ -29,6 +29,7 @@ from src.lesson_counters import (
 from src.message_broker import OutboundMessage
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster
 from src.parser import ScheduleParser, compute_snapshot_hash
+from src.snapshot_acceptance import save_admin_snapshot
 from web_configurator.lesson_editor import (
     LessonConfigReadError,
     load_lesson_config,
@@ -933,17 +934,9 @@ async def _run_snapshot_action_for_all_active_sources(
                 snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
             else:
                 snapshot, snapshot_hash = await parser.parse(int(source["schedule_id"]))
-            await db.save_snapshot(
-                snapshot_type,
-                snapshot_hash,
-                snapshot,
-                source["schedule_id"],
-                source["group_name"],
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
+            if not await save_admin_snapshot(db, source, snapshot, snapshot_hash, snapshot_type=snapshot_type):
+                rows.append((str(source["source_title"]), "-", "пустой ответ сайта пропущен"))
+                continue
             rows.append((str(source["source_title"]), snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), success_label))
         except Exception:
             logger.exception("%s для %s", error_label, source.get("source_title", "?"))

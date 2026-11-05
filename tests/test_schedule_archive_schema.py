@@ -46,7 +46,7 @@ class ScheduleArchiveMigrationTests(unittest.IsolatedAsyncioTestCase):
                             ("group:1", "group", "2026-01-01", 0, '{"lessons":[]}', "unknown", "unknown", "2026-01-01", "2026-01-01", 1),
                         )
                         connection.commit()
-                    with self.assertRaisesRegex(RuntimeError, "откат архива запрещён"):
+                    with self.assertRaisesRegex(RuntimeError, "откат.*архива запрещён"):
                         command.downgrade(config, "20261029_0003")
             finally:
                 from src.main import restore_logging
@@ -57,7 +57,7 @@ class ScheduleArchiveMigrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(connection.execute("SELECT content_json FROM schedule_snapshots").fetchone()[0], '{"days":[]}')
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM schedule_day_archive").fetchone()[0], 1)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM schedule_day_references").fetchone()[0], 0)
-                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261105_0005")
+                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261105_0006")
                 self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
 
     async def test_archive_keys_variants_and_references_survive_snapshot_cleanup(self):

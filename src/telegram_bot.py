@@ -82,6 +82,7 @@ from src.schedule_service import (
     university_week_name,
 )
 from src.schedule_sources import UNIVERSITY_BELLS_HTML
+from src.snapshot_acceptance import save_admin_snapshot
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
@@ -1956,17 +1957,9 @@ def build_dispatcher(
                 logger.warning("Admin refresh failed for source %s: %s", source["source_title"], exc)
                 rows.append((source["source_title"], "-", f"ошибка: {exc}"))
                 continue
-            await db.save_snapshot(
-                "current",
-                snapshot_hash,
-                snapshot,
-                source["schedule_id"],
-                source["group_name"],
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
+            if not await save_admin_snapshot(db, source, snapshot, snapshot_hash, snapshot_type="current"):
+                rows.append((source["source_title"], "-", "пустой ответ сайта пропущен"))
+                continue
             rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
         return rows
 

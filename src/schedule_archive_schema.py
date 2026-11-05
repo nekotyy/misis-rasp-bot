@@ -46,3 +46,9 @@ CREATE TABLE IF NOT EXISTS schedule_archive_backfill (
     skipped INTEGER NOT NULL DEFAULT 0
 );
 """
+
+SCHEDULE_ARCHIVE_MARKERS_SCHEMA_V1 = """
+CREATE TABLE IF NOT EXISTS schedule_archive_projected_snapshots (
+    snapshot_id INTEGER PRIMARY KEY
+);
+"""

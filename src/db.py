@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import tempfile
 from collections.abc import AsyncIterator
@@ -13,7 +14,12 @@ import aiosqlite
 
 from src.models import ScheduleSnapshot, UserRecord
 from src.outbox_store import OUTBOX_SCHEMA
-from src.schedule_archive_schema import SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1, SCHEDULE_ARCHIVE_SCHEMA_V1
+from src.schedule_archive import archive_accepted_snapshot
+from src.schedule_archive_schema import (
+    SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1,
+    SCHEDULE_ARCHIVE_MARKERS_SCHEMA_V1,
+    SCHEDULE_ARCHIVE_SCHEMA_V1,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +54,7 @@ class Database:
             await db.executescript(OUTBOX_SCHEMA)
             await db.executescript(SCHEDULE_ARCHIVE_SCHEMA_V1)
             await db.executescript(SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1)
+            await db.executescript(SCHEDULE_ARCHIVE_MARKERS_SCHEMA_V1)
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -1121,6 +1128,7 @@ class Database:
         (см. apply_snapshot: baseline is None -> тихо сохраняет, без рассылки).
         """
         async with self._connect() as db:
+            new_key = f"group:{schedule_id}"
             cursor = await db.execute(
                 """
                 UPDATE users
@@ -1128,9 +1136,18 @@ class Database:
                     group_name = ?, schedule_id = ?
                 WHERE subscription_key = ?
                 """,
-                (f"group:{schedule_id}", group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
+                (new_key, group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
             )
             moved = cursor.rowcount
+            if moved:
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_archive SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_references SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
             await db.commit()
         return moved
 
@@ -1173,6 +1190,14 @@ class Database:
             )
             moved = cursor.rowcount
             if moved:
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_archive SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_references SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
                 for snapshot_type in ("current", "daily_baseline"):
                     await db.execute(
                         """
@@ -1206,11 +1231,15 @@ class Database:
         source_key: str | None = None,
         source_title: str | None = None,
         source_url: str | None = None,
+        *,
+        archive_origin: str | None = None,
+        archive_dates: set[str] | None = None,
+        archive_projected: bool = False,
     ) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
         now = datetime.now().isoformat(timespec="seconds")
         async with self._connect() as db:
-            await db.execute(
+            cursor = await db.execute(
                 """
                 INSERT INTO schedule_snapshots (
                     snapshot_type, source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
@@ -1231,6 +1260,16 @@ class Database:
                     now,
                 ),
             )
+            if archive_origin and source_key and source_type:
+                await archive_accepted_snapshot(
+                    db, snapshot, source_key=source_key, source_type=source_type,
+                    origin=archive_origin, timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
+                    snapshot_id=cursor.lastrowid, dates=archive_dates,
+                )
+            if archive_projected or archive_origin:
+                await db.execute(
+                    "INSERT INTO schedule_archive_projected_snapshots (snapshot_id) VALUES (?)", (cursor.lastrowid,),
+                )
             await db.commit()
 
     async def get_latest_snapshot(

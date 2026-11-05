@@ -41,13 +41,16 @@ class ArchiveBackfill:
                 cursor = await db.execute("SELECT last_id, processed, skipped FROM schedule_archive_backfill WHERE name = 'snapshots_v1'")
                 last_id, processed, skipped = await cursor.fetchone()
                 cursor = await db.execute(
-                    """SELECT id, snapshot_type, source_type, source_key, schedule_id, content_json, fetched_at
-                       FROM schedule_snapshots WHERE id > ? ORDER BY id LIMIT ?""", (last_id, limit),
+                    """SELECT id, snapshot_type, source_type, source_key, schedule_id, content_json, fetched_at,
+                              EXISTS (SELECT 1 FROM schedule_archive_projected_snapshots m WHERE m.snapshot_id = s.id)
+                       FROM schedule_snapshots s WHERE id > ? ORDER BY id LIMIT ?""", (last_id, limit),
                 )
                 rows = await cursor.fetchall()
-                for snapshot_id, kind, source_type, source_key, schedule_id, raw, fetched_at in rows:
+                for snapshot_id, kind, source_type, source_key, schedule_id, raw, fetched_at, projected in rows:
                     last_id = snapshot_id
                     processed += 1
+                    if projected:
+                        continue
                     if kind not in ("current", "daily_baseline"):
                         skipped += 1
                         continue

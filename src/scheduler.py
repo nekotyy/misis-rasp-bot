@@ -605,6 +605,8 @@ class ScheduleJobs:
         snapshot: ScheduleSnapshot,
         *,
         notify: bool = True,
+        observed_dates: set[str] | None = None,
+        origin: str = "manual",
     ) -> ChangeSummary | None:
         """Проводит снимок из ручного источника (например, OCR фото) по общему конвейеру.
 
@@ -617,6 +619,8 @@ class ScheduleJobs:
             compute_snapshot_hash(snapshot),
             notify=notify,
             trust_empty=True,
+            observed_dates=observed_dates,
+            manual_origin=origin,
         )
 
     async def apply_snapshot(
@@ -627,6 +631,8 @@ class ScheduleJobs:
         *,
         notify: bool = True,
         trust_empty: bool = False,
+        observed_dates: set[str] | None = None,
+        manual_origin: str = "manual",
     ) -> ChangeSummary | None:
         async def save(snapshot_type: str) -> None:
             await self.db.save_snapshot(
@@ -639,6 +645,9 @@ class ScheduleJobs:
                 source_key=source["source_key"],
                 source_title=source["source_title"],
                 source_url=source["source_url"],
+                archive_origin=(manual_origin if trust_empty else "site" if source["source_type"] == "group" else "derived") if snapshot_type == "current" else None,
+                archive_dates=observed_dates,
+                archive_projected=True,
             )
 
         if not trust_empty:

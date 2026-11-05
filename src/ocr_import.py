@@ -448,6 +448,8 @@ class OcrScheduleImporter:
                 draft.source,
                 draft.snapshot,
                 notify=notify,
+                observed_dates=set(draft.merge.added_dates + draft.merge.replaced_dates),
+                origin="ocr",
             )
         except Exception as exc:
             logger.exception("Не удалось применить расписание из фото.")
@@ -592,6 +594,8 @@ class OcrScheduleImporter:
                     resolution.source,
                     resolution.merge.snapshot,
                     notify=notify,
+                    observed_dates=set(resolution.merge.added_dates + resolution.merge.replaced_dates),
+                    origin="ocr",
                 )
             except Exception as exc:
                 logger.exception(

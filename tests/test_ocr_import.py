@@ -313,6 +313,8 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.args[0]["schedule_id"], 600)
         self.assertIsInstance(call.args[1], ScheduleSnapshot)
         self.assertTrue(call.kwargs["notify"])
+        self.assertEqual(call.kwargs["origin"], "ocr")
+        self.assertEqual(call.kwargs["observed_dates"], {"2026-09-01"})
         self.assertIn("Отличий от эталона нет", report)
 
     async def test_apply_without_notify_passes_flag(self) -> None:
