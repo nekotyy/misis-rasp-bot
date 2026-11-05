@@ -154,6 +154,51 @@ class MiniappStatsTests(unittest.IsolatedAsyncioTestCase):
                 f"Отчет содержит эмодзи, что запрещено: {emojis_found}",
             )
 
+    async def test_database_instance_telemetry_and_stats(self):
+        import tempfile
+        from pathlib import Path
+
+        from src.db import Database
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "misis_test.db"
+            db_obj = Database(db_path)
+            await db_obj.initialize()
+
+            # Запись телеметрии через объект Database
+            await record_telemetry_session(
+                db_obj,
+                session_id="db_sess_1",
+                platform="telegram",
+                user_id=6605474392,
+                active_group="ИСП-25-1",
+            )
+            await record_telemetry_ping(
+                db_obj,
+                session_id="db_sess_1",
+                duration_seconds=95,
+            )
+            await record_telemetry_event(
+                db_obj,
+                session_id="db_sess_1",
+                platform="telegram",
+                user_id=6605474392,
+                event_type="page_view",
+                event_data={"page": "/schedule"},
+            )
+
+            # Сбор статистики через объект Database (как в Telegram и VK ботах)
+            report = await collect_miniapp_stats(db_obj)
+            self.assertEqual(report.total_unique_users, 1)
+            self.assertEqual(report.total_tg_unique, 1)
+            self.assertEqual(report.dau_today, 1)
+            self.assertEqual(report.total_sessions, 1)
+            self.assertEqual(report.avg_duration_seconds, 95)
+
+            report_text = format_miniapp_stats_report(report, html=True)
+            self.assertIn("Статистика Mini App", report_text)
+            self.assertIn("ИСП-25-1", report_text)
+
 
 if __name__ == "__main__":
     unittest.main()

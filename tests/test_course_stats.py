@@ -353,6 +353,16 @@ class TelegramCourseStatsButtonTests(unittest.IsolatedAsyncioTestCase):
         buttons = [b.callback_data for row in call.kwargs["reply_markup"].inline_keyboard for b in row]
         self.assertEqual(buttons, ["admin:back"])
 
+    async def test_full_admin_gets_miniapp_stats_report(self) -> None:
+        callback = self._callback("admin:miniapp_stats", FULL_ADMIN_ID)
+
+        await self._handler()(callback)
+
+        call = callback.message.edit_text.await_args
+        self.assertIn("<b>Статистика Mini App</b>", call.args[0])
+        buttons = [b.callback_data for row in call.kwargs["reply_markup"].inline_keyboard for b in row]
+        self.assertEqual(buttons, ["admin:back"])
+
     async def test_limited_admin_can_read_course_report(self) -> None:
         callback = self._callback("admin:course_stats", LIMITED_ADMIN_ID)
 
