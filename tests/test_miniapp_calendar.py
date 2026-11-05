@@ -24,15 +24,21 @@ class MiniappCalendarTests(unittest.TestCase):
         self.assertEqual(schedule_dates(date(2026, 12, 31)), (date(2026, 12, 31), date(2027, 1, 1), date(2027, 1, 2)))
         self.assertEqual(schedule_dates(date(2026, 11, 6)), (date(2026, 11, 6), date(2026, 11, 7), date(2026, 11, 8)))
 
-    def test_history_uses_past_dates_in_reverse_order_and_monday_fallback(self):
-        self.assertEqual(history_week_days(date(2026, 11, 4), date(2026, 11, 2)), (date(2026, 11, 3), date(2026, 11, 2)))
-        self.assertEqual(default_history_week(date(2026, 11, 2)), date(2026, 10, 26))
+    def test_history_uses_chronological_six_days_and_current_monday(self):
+        self.assertEqual(
+            history_week_days(date(2026, 11, 4), date(2026, 11, 2)),
+            tuple(date(2026, 11, d) for d in range(2, 8)),
+        )
+        self.assertEqual(default_history_week(date(2026, 11, 2)), date(2026, 11, 2))
         self.assertEqual(default_history_week(date(2026, 11, 4)), date(2026, 11, 2))
 
     def test_boundary_weeks_are_clipped_and_invalid_start_is_rejected(self):
         today = date(2026, 11, 4)
-        self.assertEqual(history_week_days(today, week_start(date(2026, 8, 4))), tuple(date(2026, 8, d) for d in (9, 8, 7, 6, 5, 4)))
-        self.assertEqual(history_week_days(today, date(2026, 7, 20)), ())
+        self.assertEqual(
+            history_week_days(today, week_start(date(2026, 8, 4))),
+            tuple(date(2026, 8, d) for d in (3, 4, 5, 6, 7, 8)),
+        )
+        self.assertEqual(history_week_days(today, date(2026, 5, 18)), ())
         with self.assertRaises(ValueError):
             history_week_days(today, date(2026, 11, 3))
 

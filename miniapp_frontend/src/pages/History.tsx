@@ -26,14 +26,13 @@ function formatWeekRange(weekStart: string): string {
   return `${fmt.format(start)} – ${fmt.format(end)}`
 }
 
-function formatDayHeader(dateStr: string, dayName: string): string {
+function formatDayHeader(dateStr: string): string {
   const date = new Date(dateStr + 'T00:00:00')
-  const formatted = new Intl.DateTimeFormat('ru', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-  }).format(date)
-  return dayName || formatted
+  const weekday = new Intl.DateTimeFormat('ru', { weekday: 'long' }).format(date)
+  const dayAndMonth = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long' }).format(date)
+  const year = date.getFullYear()
+  const full = `${weekday}, ${dayAndMonth} ${year} года`
+  return full.charAt(0).toUpperCase() + full.slice(1)
 }
 
 function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMotion: boolean }) {
@@ -52,14 +51,14 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
         className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/5 transition-colors"
       >
         <div className="min-w-0 pr-2">
-          <p className="font-heading font-bold text-base text-foreground capitalize tracking-tight truncate">
-            {formatDayHeader(day.date, day.day_name)}
+          <p className="font-heading font-bold text-base text-foreground capitalize tracking-tight break-words">
+            {formatDayHeader(day.date)}
           </p>
           <p className="text-sm text-neutral mt-0.5">
             {day.status === 'unpublished'
               ? 'Не опубликовано'
               : day.status === 'not_archived'
-                ? 'Не сохранено'
+                ? 'Пар пока нет'
                 : day.status === 'confirmed_empty'
                   ? 'Занятий нет'
                   : `${day.lessons.length} ${plural(day.lessons.length, 'пара', 'пары', 'пар')}`}
@@ -141,7 +140,7 @@ export function HistoryPage({
   }
 
   const days = [...(data?.days ?? [])].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
   )
 
   return (

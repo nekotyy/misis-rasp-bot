@@ -27,6 +27,7 @@ class IdentityDto(BaseModel):
     user_id: int
     username: str | None = None
     full_name: str | None = None
+    photo_url: str | None = None
 
 
 class SubscriptionDto(BaseModel):
@@ -139,7 +140,15 @@ class ConfirmLinkRequest(BaseModel):
 
 class GroupItemDto(BaseModel):
     group_name: str
-    schedule_id: int
-    source_key: str
-    source_title: str
-    source_url: str
+    schedule_id: int = 0
+    source_key: str = ""
+    source_title: str = ""
+    source_url: str = ""
+    name: str = ""
+    display_name: str | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.name:
+            self.name = self.group_name
+        if not self.display_name:
+            self.display_name = self.source_title or self.group_name

@@ -1,7 +1,12 @@
 import { apiFetch } from './client'
 
 export interface GroupItemDto {
-  name: string
+  group_name?: string
+  schedule_id?: number
+  source_key?: string
+  source_title?: string
+  source_url?: string
+  name?: string
   display_name?: string
 }
 

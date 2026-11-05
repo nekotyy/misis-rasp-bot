@@ -142,9 +142,9 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
         )}
 
         {lesson.teacher && (
-          <div className="glass-pill rounded-lg px-3 py-1.5 flex items-center gap-1.5 text-neutral truncate max-w-[220px] font-medium">
+          <div className="glass-pill rounded-lg px-3 py-1.5 flex items-center gap-1.5 text-neutral font-medium break-words">
             <User className="w-4 h-4 text-neutral stroke-[2] flex-shrink-0" />
-            <span className="truncate">{lesson.teacher}</span>
+            <span>{lesson.teacher}</span>
           </div>
         )}
       </div>

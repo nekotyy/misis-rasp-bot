@@ -67,4 +67,12 @@ describe('LessonCard', () => {
     render(<LessonCard lesson={{ ...baseLesson, status: 'changed', change: { kind: 'unknown_type' } }} />)
     expect(screen.getByText('Замена')).toBeInTheDocument()
   })
+
+  it('отображает длинное имя преподавателя без обрезания (break-words)', () => {
+    const longTeacher = 'Консультирующий преподаватель высшей категории Смирнов А.В.'
+    render(<LessonCard lesson={{ ...baseLesson, teacher: longTeacher }} />)
+    const el = screen.getByText(longTeacher)
+    expect(el).toBeInTheDocument()
+    expect(el.parentElement).toHaveClass('break-words')
+  })
 })

@@ -22,12 +22,12 @@ describe('useScale hook', () => {
     document.documentElement.style.fontSize = ''
   })
 
-  it('инициализируется с дефолтным масштабом 110%', () => {
+  it('инициализируется с дефолтным масштабом 100%', () => {
     const { result } = renderHook(() => useScale())
-    expect(result.current.scale).toBe(110)
+    expect(result.current.scale).toBe(100)
     expect(result.current.defaultScale).toBe(DEFAULT_SCALE)
-    expect(document.documentElement.style.fontSize).toBe('17.6px')
-    expect(document.documentElement.getAttribute('data-scale')).toBe('110')
+    expect(document.documentElement.style.fontSize).toBe('16px')
+    expect(document.documentElement.getAttribute('data-scale')).toBe('100')
   })
 
   it('сохраняет изменённый масштаб в localStorage и на root элемент', () => {

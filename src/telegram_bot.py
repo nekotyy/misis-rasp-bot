@@ -3064,13 +3064,12 @@ def build_dispatcher(
         await register_message_user(message)
         app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
         text = (
-            "📱 <b>Расписание МИСИС — Mini App</b>\n\n"
-            "Интерактивное расписание пар, история изменений и единый профиль студента доступны прямо внутри Telegram.\n\n"
-            f"🔗 <b>Прямой адрес:</b> {app_url}"
+            "<b>Расписание пар ОПК</b>\n\n"
+            "Интерактивное приложение с расписанием пар и историей изменений доступно прямо внутри Telegram."
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🚀 Запустить Mini App", web_app=WebAppInfo(url=app_url))],
+                [InlineKeyboardButton(text="Открыть расписание", web_app=WebAppInfo(url=app_url))],
             ]
         )
         await send_reply(message, text, reply_markup=keyboard)

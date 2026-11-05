@@ -43,17 +43,15 @@ def week_start(day: date) -> date:
 
 
 def history_week_days(today: date, monday: date) -> tuple[date, ...]:
-    """Прошедшие дни недели по убыванию, обрезанные доступным периодом."""
+    """Дни недели от понедельника до субботы в хронологическом порядке."""
     if monday.weekday() != 0:
         raise ValueError("Начало недели должно приходиться на понедельник")
-    first, last = history_bounds(today)
-    return tuple(
-        day
-        for offset in range(6, -1, -1)
-        if first <= (day := monday + timedelta(days=offset)) <= last
-    )
+    first, _ = history_bounds(today)
+    if monday < week_start(first):
+        return ()
+    return tuple(monday + timedelta(days=offset) for offset in range(6))
 
 
 def default_history_week(today: date) -> date:
-    """В понедельник открывает предыдущую неделю, иначе текущую."""
-    return week_start(today - timedelta(days=1))
+    """Возвращает понедельник текущей недели."""
+    return week_start(today)

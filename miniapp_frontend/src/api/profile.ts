@@ -6,6 +6,7 @@ export interface IdentityDto {
   username?: string | null
   full_name?: string | null
   display_name?: string
+  photo_url?: string | null
 }
 
 export interface SubscriptionDto {

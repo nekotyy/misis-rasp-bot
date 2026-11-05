@@ -676,7 +676,7 @@ async def get_history(
             )
 
     has_prev = monday - timedelta(days=7) >= week_start(first_bound)
-    has_next = monday + timedelta(days=7) <= week_start(last_bound)
+    has_next = monday < week_start(today)
 
     return HistoryResponse(
         subscription_id=sub.id,
@@ -685,5 +685,5 @@ async def get_history(
         days=days_dto,
         has_previous_week=has_prev,
         has_next_week=has_next,
-        bounds={"start": first_bound.isoformat(), "end": last_bound.isoformat()},
+        bounds={"start": first_bound.isoformat(), "end": (week_start(today) + timedelta(days=5)).isoformat()},
     )

@@ -3262,8 +3262,8 @@ def build_vk_bot(
         if text == "/app" or text.startswith("/app ") or text in {"Приложение", "Мини-приложение", "Mini App"}:
             app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
             msg_out = (
-                "📱 Расписание МИСИС — Mini App\n\n"
-                "Интерактивное расписание пар, история изменений и единый профиль студента доступны прямо по ссылке:\n"
+                "Расписание пар ОПК\n\n"
+                "Интерактивное приложение с расписанием пар и историей изменений доступно прямо внутри ВКонтакте:\n"
                 f"{app_url}\n\n"
                 "Официальное сообщество: https://vk.ru/nekotyopk"
             )

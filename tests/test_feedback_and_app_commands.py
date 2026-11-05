@@ -119,7 +119,7 @@ class FeedbackAndAppCommandsTests(unittest.IsolatedAsyncioTestCase):
 
         bot.send_message.assert_called_once()
         call_args = bot.send_message.call_args
-        self.assertIn("miniapp.opk.nekoty.ru", call_args.args[1])
+        self.assertIn("Расписание пар ОПК", call_args.args[1])
         reply_markup = call_args.kwargs.get("reply_markup")
         self.assertIsNotNone(reply_markup)
         self.assertTrue(len(reply_markup.inline_keyboard) > 0)

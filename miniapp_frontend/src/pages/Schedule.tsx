@@ -123,9 +123,9 @@ export function SchedulePage({
             </h1>
           )}
           {currentFormatted && (
-            <p className="text-sm text-neutral capitalize mt-1 flex items-center gap-2 font-medium">
+            <p className="text-sm text-neutral dark:text-white capitalize mt-1 flex items-center gap-2 font-medium">
               <Calendar className="w-4 h-4 text-primary stroke-[2]" />
-              <span>{currentFormatted.fullDate}</span>
+              <span className="text-neutral dark:text-white">{currentFormatted.fullDate}</span>
             </p>
           )}
         </div>
@@ -231,16 +231,25 @@ export function SchedulePage({
                       'flex flex-col items-center justify-center py-3 px-1.5 rounded-2xl transition-all duration-200 cursor-pointer border',
                       isSelected
                         ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.02] font-bold'
-                        : 'glass-card border-border text-neutral hover:text-foreground hover:bg-neutral-hover/10',
+                        : 'glass-card border-border text-neutral dark:text-white hover:text-foreground hover:bg-neutral-hover/10',
                     )}
                   >
-                    <span className="font-heading text-xs font-bold uppercase tracking-wider opacity-90 leading-none">
+                    <span className={cn(
+                      'font-heading text-xs font-bold uppercase tracking-wider opacity-90 leading-none',
+                      isSelected ? 'text-white' : 'text-neutral dark:text-white/80',
+                    )}>
                       {getDayLabel(day.date)}
                     </span>
-                    <span className="font-heading font-extrabold text-base tracking-tight my-1">
+                    <span className={cn(
+                      'font-heading font-extrabold text-base tracking-tight my-1',
+                      isSelected ? 'text-white' : 'text-neutral dark:text-white',
+                    )}>
                       {dayNum}
                     </span>
-                    <span className="font-heading text-xs font-semibold capitalize opacity-80 leading-none">
+                    <span className={cn(
+                      'font-heading text-xs font-semibold capitalize opacity-80 leading-none',
+                      isSelected ? 'text-white' : 'text-neutral dark:text-white/80',
+                    )}>
                       {dayName}
                     </span>
                   </button>

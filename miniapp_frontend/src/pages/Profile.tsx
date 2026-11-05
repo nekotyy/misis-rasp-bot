@@ -218,28 +218,49 @@ export function ProfilePage({
                     ident.username ||
                     ident.display_name ||
                     `ID: ${ident.user_id}`
+                  const tgAvatar = typeof window !== 'undefined'
+                    ? ((window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { photo_url?: string } } } } }).Telegram?.WebApp?.initDataUnsafe?.user?.photo_url)
+                    : undefined
+                  const avatarUrl = (isTg && isCurrent && tgAvatar) ? tgAvatar : ident.photo_url
+                  const initial = (title || 'U').charAt(0).toUpperCase()
 
                   return (
                     <div
                       key={`${ident.platform}-${ident.user_id}`}
                       className="flex items-center justify-between p-3.5 rounded-xl bg-card border border-border"
                     >
-                      <div className="flex items-center gap-3.5 min-w-0">
-                        <div
-                          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm border border-border bg-primary-surface text-primary"
-                        >
-                          {isTg ? <TelegramIcon className="w-5 h-5" /> : <VkIcon className="w-5 h-5" />}
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 shadow-sm border border-border bg-neutral-surface flex items-center justify-center">
+                          {avatarUrl ? (
+                            <img
+                              src={avatarUrl}
+                              alt={title}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center font-heading font-extrabold text-sm bg-primary-surface text-primary">
+                              {initial}
+                            </div>
+                          )}
+                          <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-card border border-border flex items-center justify-center shadow-xs">
+                            {isTg ? <TelegramIcon className="w-2.5 h-2.5 text-primary" /> : <VkIcon className="w-2.5 h-2.5 text-primary" />}
+                          </div>
                         </div>
                         <div className="min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <p className="font-heading text-base font-bold truncate text-foreground">{title}</p>
                             {isCurrent && (
-                              <span className="font-heading text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary-surface text-primary border border-primary/25">
+                              <span className="font-heading text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-primary-surface text-primary border border-primary/25 leading-none">
                                 Текущий
                               </span>
                             )}
                           </div>
-                          <p className="text-sm text-neutral mt-0.5">
+                          {ident.username && (
+                            <p className="text-xs text-neutral font-medium truncate">
+                              @{ident.username.replace(/^@/, '')}
+                            </p>
+                          )}
+                          <p className="text-xs text-neutral/80 mt-0.5">
                             {isTg ? 'Telegram' : 'ВКонтакте'}
                           </p>
                         </div>
@@ -262,22 +283,23 @@ export function ProfilePage({
                   )
                 })
               ) : (
-                <div className="flex items-center gap-3.5 p-3.5 rounded-xl bg-card border border-border">
-                  <div className="w-10 h-10 rounded-xl bg-primary-surface text-primary flex items-center justify-center border border-border">
-                    {data.current_identity.platform === 'telegram' ? (
-                      <TelegramIcon className="w-5 h-5 text-primary" />
-                    ) : (
-                      <VkIcon className="w-5 h-5 text-primary" />
-                    )}
+                <div className="flex items-center gap-3 p-3.5 rounded-xl bg-card border border-border">
+                  <div className="w-10 h-10 rounded-xl bg-primary-surface text-primary flex items-center justify-center border border-border font-heading font-extrabold text-sm">
+                    {((data.current_identity.full_name || data.current_identity.username || 'U')).charAt(0).toUpperCase()}
                   </div>
-                  <div>
-                    <p className="font-heading text-base font-bold text-foreground">
+                  <div className="min-w-0">
+                    <p className="font-heading text-base font-bold text-foreground truncate">
                       {data.current_identity.full_name ||
                         data.current_identity.username ||
                         data.current_identity.display_name ||
                         data.account_id}
                     </p>
-                    <p className="text-sm text-neutral mt-0.5">
+                    {data.current_identity.username && (
+                      <p className="text-xs text-neutral font-medium truncate">
+                        @{data.current_identity.username.replace(/^@/, '')}
+                      </p>
+                    )}
+                    <p className="text-xs text-neutral/80 mt-0.5">
                       {data.current_identity.platform === 'telegram' ? 'Telegram' : 'ВКонтакте'}
                     </p>
                   </div>
@@ -325,39 +347,37 @@ export function ProfilePage({
                     </button>
 
                     {createdToken && (
-                      <div className="p-3.5 rounded-xl bg-neutral-surface border border-primary/40 space-y-2.5 shadow-sm">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-heading text-xs font-bold text-neutral uppercase tracking-wider">
-                            Код связывания (5 мин)
-                          </span>
-                          <button
-                            type="button"
-                            onClick={handleCopyToken}
-                            className={cn(
-                              'font-heading flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold transition-all cursor-pointer flex-shrink-0',
-                              copied
-                                ? 'bg-success-surface text-success border border-success/40'
-                                : 'bg-primary-surface text-primary border border-primary/30 hover:bg-primary hover:text-white active:scale-95',
-                            )}
-                          >
-                            {copied ? (
-                              <>
-                                <Check className="w-4 h-4 text-success" />
-                                <span>Скопировано</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-4 h-4" />
-                                <span>Копировать</span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                        <div className="p-3 rounded-lg bg-base border border-border select-all overflow-hidden">
-                          <p className="font-mono font-bold text-sm text-primary tracking-wider break-all leading-relaxed select-all">
+                      <div className="p-3.5 rounded-xl bg-neutral-surface border border-primary/40 space-y-3 shadow-sm">
+                        <span className="font-heading text-xs font-bold text-neutral uppercase tracking-wider block">
+                          Код связывания (действует 5 мин)
+                        </span>
+                        <div className="p-3.5 rounded-xl bg-base border border-border select-all overflow-hidden shadow-inner">
+                          <p className="font-mono font-bold text-base text-primary tracking-wider break-all leading-relaxed select-all text-center">
                             {createdToken}
                           </p>
                         </div>
+                        <button
+                          type="button"
+                          onClick={handleCopyToken}
+                          className={cn(
+                            'font-heading w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-bold transition-all cursor-pointer shadow-sm active:scale-[0.98]',
+                            copied
+                              ? 'bg-success-surface text-success border border-success/40'
+                              : 'bg-primary text-white hover:bg-primary-hover shadow-primary/20',
+                          )}
+                        >
+                          {copied ? (
+                            <>
+                              <Check className="w-4 h-4 text-success" />
+                              <span>Скопировано в буфер</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4" />
+                              <span>Копировать код</span>
+                            </>
+                          )}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -556,16 +576,18 @@ export function ProfilePage({
                     <div className="max-h-48 overflow-y-auto space-y-1.5 pt-1">
                       {searchResults && searchResults.length > 0 ? (
                         searchResults.map((group) => {
-                          const alreadySubscribed = data.subscriptions.some(
-                            (s) => (s.group_name || '').toLowerCase() === group.name.toLowerCase(),
+                          const gName = group.group_name || group.name || ''
+                          const gDisplay = group.display_name || group.source_title || gName
+                          const alreadySubscribed = (data.subscriptions || []).some(
+                            (s) => (s.group_name || '').toLowerCase() === gName.toLowerCase(),
                           )
                           return (
                             <div
-                              key={group.name}
+                              key={gName || group.schedule_id}
                               className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-surface/60 border border-border hover:border-primary/40 transition-all"
                             >
                               <span className="font-heading font-bold text-sm text-foreground">
-                                {group.display_name || group.name}
+                                {gDisplay}
                               </span>
                               {alreadySubscribed ? (
                                 <span className="font-heading text-xs text-neutral font-semibold px-2 py-1 rounded-lg bg-base border border-border">
@@ -574,7 +596,7 @@ export function ProfilePage({
                               ) : (
                                 <button
                                   type="button"
-                                  onClick={() => addSubMutation.mutate(group.name)}
+                                  onClick={() => addSubMutation.mutate(gName)}
                                   disabled={addSubMutation.isPending}
                                   className="font-heading inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
                                 >
@@ -683,7 +705,7 @@ export function ProfilePage({
                     type="button"
                     onClick={() => onScaleChange?.(DEFAULT_SCALE)}
                     className="p-1 rounded-lg text-neutral hover:text-primary transition-colors cursor-pointer"
-                    title="Сбросить на значение по умолчанию (110%)"
+                    title="Сбросить на значение по умолчанию (100%)"
                     aria-label="Сбросить масштаб"
                   >
                     <RotateCcw className="w-4 h-4" />
@@ -728,8 +750,8 @@ export function ProfilePage({
               <div className="grid grid-cols-4 gap-1.5">
                 {[
                   { value: 90, label: '90%' },
-                  { value: 100, label: '100%' },
-                  { value: 110, label: '110% (умолч.)' },
+                  { value: 100, label: '100% (умолч.)' },
+                  { value: 110, label: '110%' },
                   { value: 125, label: '125%' },
                 ].map((preset) => {
                   const isPresetActive = scale === preset.value

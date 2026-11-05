@@ -32,8 +32,8 @@ vi.mock('../api/profile', () => ({
 
 vi.mock('../api/groups', () => ({
   searchGroups: vi.fn().mockResolvedValue([
-    { name: 'БПИ22-1', display_name: 'БПИ22-1' },
-    { name: 'БПИ22-2', display_name: 'БПИ22-2' },
+    { group_name: 'БПИ22-1', schedule_id: 1, source_title: 'БПИ22-1' },
+    { group_name: 'БПИ22-2', schedule_id: 2, source_title: 'БПИ22-2' },
   ]),
 }))
 
@@ -52,7 +52,7 @@ function renderProfile(props: Partial<React.ComponentProps<typeof ProfilePage>> 
       <ProfilePage
         theme="dark"
         onThemeChange={vi.fn()}
-        scale={110}
+        scale={100}
         onScaleChange={vi.fn()}
         {...props}
       />
@@ -66,24 +66,24 @@ describe('ProfilePage - Масштаб интерфейса', () => {
   })
 
   it('отображает секцию масштабирования интерфейса и текущий процент', async () => {
-    renderProfile({ scale: 110 })
+    renderProfile({ scale: 100 })
     expect(await screen.findByText('Масштаб интерфейса')).toBeDefined()
-    expect(screen.getByText('110%')).toBeDefined()
+    expect(screen.getByText('100%')).toBeDefined()
   })
 
   it('отображает ползунок с правильными диапазонами', async () => {
-    renderProfile({ scale: 110 })
+    renderProfile({ scale: 100 })
     const slider = (await screen.findByLabelText('Ползунок масштаба интерфейса')) as HTMLInputElement
     expect(slider).toBeDefined()
     expect(slider.min).toBe('90')
     expect(slider.max).toBe('130')
     expect(slider.step).toBe('5')
-    expect(slider.value).toBe('110')
+    expect(slider.value).toBe('100')
   })
 
   it('вызывает onScaleChange при перемещении ползунка', async () => {
     const onScaleChange = vi.fn()
-    renderProfile({ scale: 110, onScaleChange })
+    renderProfile({ scale: 100, onScaleChange })
     const slider = await screen.findByLabelText('Ползунок масштаба интерфейса')
     fireEvent.change(slider, { target: { value: '125' } })
     expect(onScaleChange).toHaveBeenCalledWith(125)
@@ -91,7 +91,7 @@ describe('ProfilePage - Масштаб интерфейса', () => {
 
   it('вызывает onScaleChange при клике на быстрые пресеты масштаба', async () => {
     const onScaleChange = vi.fn()
-    renderProfile({ scale: 110, onScaleChange })
+    renderProfile({ scale: 100, onScaleChange })
     const preset125 = await screen.findByText('125%')
     fireEvent.click(preset125)
     expect(onScaleChange).toHaveBeenCalledWith(125)
@@ -101,9 +101,9 @@ describe('ProfilePage - Масштаб интерфейса', () => {
     expect(onScaleChange).toHaveBeenCalledWith(90)
   })
 
-  it('отображает кнопку сброса только если масштаб отличается от 110%', async () => {
+  it('отображает кнопку сброса только если масштаб отличается от 100%', async () => {
     const onScaleChange = vi.fn()
-    const { rerender } = renderProfile({ scale: 110, onScaleChange })
+    const { rerender } = renderProfile({ scale: 100, onScaleChange })
     await screen.findByText('Масштаб интерфейса')
     expect(screen.queryByLabelText('Сбросить масштаб')).toBeNull()
 
@@ -122,7 +122,7 @@ describe('ProfilePage - Масштаб интерфейса', () => {
     const resetBtn = screen.getByLabelText('Сбросить масштаб')
     expect(resetBtn).toBeDefined()
     fireEvent.click(resetBtn)
-    expect(onScaleChange).toHaveBeenCalledWith(110)
+    expect(onScaleChange).toHaveBeenCalledWith(100)
   })
 })
 
@@ -146,5 +146,13 @@ describe('ProfilePage - Добавление групп', () => {
 
     expect(await screen.findByText('БПИ22-1')).toBeDefined()
     expect(screen.getByText('БПИ22-2')).toBeDefined()
+  })
+
+  it('отображает @username и компактную таблетку Текущий', async () => {
+    renderProfile()
+    expect(await screen.findByText('@test_user')).toBeDefined()
+    const badge = screen.getByText('Текущий')
+    expect(badge).toBeDefined()
+    expect(badge.className).toContain('text-[10px]')
   })
 })

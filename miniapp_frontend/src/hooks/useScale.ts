@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 /** Константы масштаба интерфейса */
-export const DEFAULT_SCALE = 110 // По умолчанию увеличенный (110%)
+export const DEFAULT_SCALE = 100 // По умолчанию 100%
 export const MIN_SCALE = 90
 export const MAX_SCALE = 130
 export const SCALE_STEP = 5
