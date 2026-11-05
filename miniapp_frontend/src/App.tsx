@@ -43,18 +43,18 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
 
   if (authState === 'loading' || authState === 'idle') {
     return (
-      <div className="flex h-screen items-center justify-center relative overflow-hidden bg-[var(--bg-base)]">
+      <div className="flex h-screen items-center justify-center relative overflow-hidden bg-base">
         <div className="ambient-glow" aria-hidden>
           <div className="ambient-orb-1" />
           <div className="ambient-orb-2" />
         </div>
         <div className="glass-card rounded-3xl p-8 text-center space-y-4 max-w-xs mx-4 z-10 shadow-2xl">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-primary/15 border border-primary/25 flex items-center justify-center text-primary shadow-lg shadow-primary/20">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-primary-surface border border-primary/25 flex items-center justify-center text-primary shadow-lg shadow-primary/20">
             <Loader2 className="w-7 h-7 animate-spin stroke-[2]" />
           </div>
           <div>
             <h2 className="font-heading font-bold text-base text-foreground">Загрузка данных</h2>
-            <p className="text-xs text-muted-foreground mt-1">Подключаемся к сервису расписания...</p>
+            <p className="text-xs text-neutral mt-1">Подключаемся к сервису расписания...</p>
           </div>
         </div>
       </div>
@@ -79,7 +79,7 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
     <div
       className="flex flex-col h-screen relative overflow-hidden text-foreground"
       style={{
-        background: 'var(--bg-gradient, var(--bg-base))',
+        background: 'var(--bg-base)',
         paddingTop: `max(${safeAreaInsets.top}px, env(safe-area-inset-top, 0px))`,
       }}
     >

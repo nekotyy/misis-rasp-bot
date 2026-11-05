@@ -2,21 +2,44 @@
 
 @theme {
   --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-surface: var(--primary-surface);
+  --color-primary-disabled: var(--primary-disabled);
+  --color-primary-foreground: var(--on-accent);
+
+  --color-neutral: var(--neutral);
+  --color-neutral-hover: var(--neutral-hover);
+  --color-neutral-surface: var(--neutral-surface);
+  --color-neutral-disabled: var(--neutral-disabled);
+
+  --color-base: var(--base);
+  --color-background: var(--base);
+  --color-foreground: var(--on-surface);
+
+  --color-card: var(--neutral-surface);
+  --color-card-foreground: var(--on-surface);
+
+  --color-muted: var(--neutral-surface);
+  --color-muted-foreground: var(--neutral);
+
   --color-border: var(--border);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-ring: var(--ring);
+
+  --color-destructive: var(--error);
+  --color-destructive-foreground: var(--on-accent);
+  --color-destructive-surface: var(--error-surface);
+
+  --color-error: var(--error);
+  --color-error-surface: var(--error-surface);
+
+  --color-success: var(--success);
+  --color-success-surface: var(--success-surface);
+
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-disabled: var(--on-surface-disabled);
+  --color-on-accent: var(--on-accent);
+  --color-on-accent-disabled: var(--on-accent-disabled);
+
+  --color-ring: var(--primary);
 
   --font-display: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-heading: 'Nekst', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -105,61 +128,82 @@
   [data-theme="dark"] {
     color-scheme: dark;
 
-    --bg-base: #070e22;
-    --bg-gradient: radial-gradient(130% 120% at 50% 0%, #152754 0%, #0c1735 50%, #060c1d 100%);
-    --bg-mesh-1: #152b63;
-    --bg-mesh-2: #1e3a8a;
+    /* Официальные дизайн-токены */
+    --primary: #4F85EB;
+    --primary-hover: #3B71D7;
+    --primary-surface: #313859;
+    --primary-disabled: #39558A;
 
-    --text-primary: #ffffff;
-    --text-secondary: #cdd7ee;
-    --text-muted: #8b9bb4;
+    --neutral: #97A0B2;
+    --neutral-hover: #838C9E;
+    --neutral-surface: #2A3140;
+    --neutral-disabled: #5D636E;
 
-    --brand-primary: #3b82f6;
-    --brand-primary-hover: #60a5fa;
-    --brand-electric: #0541f0;
-    --brand-glow: rgba(59, 130, 246, 0.45);
+    --base: #22252A;
 
-    --glass-bg: rgba(18, 30, 60, 0.72);
-    --glass-bg-hover: rgba(26, 42, 82, 0.85);
-    --glass-border: rgba(255, 255, 255, 0.13);
-    --glass-border-strong: rgba(79, 133, 235, 0.5);
-    --glass-shine: rgba(255, 255, 255, 0.18);
-    --glass-shadow: 0 16px 40px -8px rgba(2, 6, 20, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --error: #FF4548;
+    --error-surface: #4E2B30;
 
-    --dock-bg: rgba(10, 18, 38, 0.9);
-    --dock-border: rgba(255, 255, 255, 0.15);
+    --success: #019E57;
+    --success-surface: #1C3D33;
 
-    --chip-bg: rgba(255, 255, 255, 0.08);
-    --chip-border: rgba(255, 255, 255, 0.12);
+    --on-surface: #FFFFFF;
+    --on-surface-disabled: #909294;
 
-    --status-added-bg: rgba(16, 185, 129, 0.18);
-    --status-added-border: rgba(16, 185, 129, 0.4);
-    --status-added-text: #34d399;
+    --on-accent: #FFFFFF;
+    --on-accent-disabled: #909294;
 
-    --status-changed-bg: rgba(245, 158, 11, 0.18);
-    --status-changed-border: rgba(245, 158, 11, 0.45);
-    --status-changed-text: #fbbf24;
+    /* Семантические переменные */
+    --bg-base: #22252A;
+    --bg-gradient: linear-gradient(180deg, #25292F 0%, #22252A 100%);
 
-    --status-cancelled-bg: rgba(244, 63, 94, 0.16);
-    --status-cancelled-border: rgba(244, 63, 94, 0.4);
-    --status-cancelled-text: #fb7185;
+    --text-primary: #FFFFFF;
+    --text-secondary: #97A0B2;
+    --text-muted: #97A0B2;
 
-    --background: #070e22;
-    --foreground: #ffffff;
-    --card: rgba(18, 30, 60, 0.72);
-    --card-foreground: #ffffff;
-    --primary: #3b82f6;
-    --primary-foreground: #ffffff;
-    --secondary: rgba(255, 255, 255, 0.08);
-    --secondary-foreground: #ffffff;
-    --muted: rgba(255, 255, 255, 0.08);
-    --muted-foreground: #8b9bb4;
-    --accent: rgba(59, 130, 246, 0.18);
-    --accent-foreground: #60a5fa;
-    --destructive: #f43f5e;
-    --destructive-foreground: #ffffff;
-    --border: rgba(255, 255, 255, 0.12);
-    --ring: #3b82f6;
+    --brand-primary: #4F85EB;
+    --brand-primary-hover: #3B71D7;
+    --brand-glow: rgba(79, 133, 235, 0.35);
+
+    --glass-bg: rgba(42, 49, 64, 0.88);
+    --glass-bg-hover: rgba(50, 60, 78, 0.95);
+    --glass-border: rgba(151, 160, 178, 0.18);
+    --glass-border-strong: rgba(79, 133, 235, 0.45);
+    --glass-shine: rgba(255, 255, 255, 0.08);
+    --glass-shadow: 0 12px 32px -4px rgba(0, 0, 0, 0.4);
+
+    --dock-bg: rgba(34, 37, 42, 0.95);
+    --dock-border: rgba(151, 160, 178, 0.2);
+
+    --chip-bg: rgba(151, 160, 178, 0.12);
+    --chip-border: rgba(151, 160, 178, 0.18);
+
+    --status-added-bg: #1C3D33;
+    --status-added-border: rgba(1, 158, 87, 0.4);
+    --status-added-text: #019E57;
+
+    --status-changed-bg: #313859;
+    --status-changed-border: rgba(79, 133, 235, 0.4);
+    --status-changed-text: #4F85EB;
+
+    --status-cancelled-bg: #4E2B30;
+    --status-cancelled-border: rgba(255, 69, 72, 0.4);
+    --status-cancelled-text: #FF4548;
+
+    --background: #22252A;
+    --foreground: #FFFFFF;
+    --card: #2A3140;
+    --card-foreground: #FFFFFF;
+    --secondary: #313859;
+    --secondary-foreground: #FFFFFF;
+    --muted: #313859;
+    --muted-foreground: #97A0B2;
+    --accent: #313859;
+    --accent-foreground: #4F85EB;
+    --destructive: #FF4548;
+    --destructive-foreground: #FFFFFF;
+    --border: rgba(151, 160, 178, 0.2);
+    --ring: #4F85EB;
   }
 
   /* Светлая тема */
@@ -167,61 +211,82 @@
   [data-theme="light"] {
     color-scheme: light;
 
-    --bg-base: #f4f7ff;
-    --bg-gradient: radial-gradient(130% 120% at 50% 0%, #e3ecfc 0%, #f1f5fd 50%, #ffffff 100%);
-    --bg-mesh-1: #e1e9fd;
-    --bg-mesh-2: #d6e2ff;
+    /* Официальные дизайн-токены */
+    --primary: #0541F0;
+    --primary-hover: #0026D2;
+    --primary-surface: #E1E9FD;
+    --primary-disabled: #82A0F7;
 
-    --text-primary: #0a1e63;
-    --text-secondary: #24356e;
-    --text-muted: #5e6c8b;
+    --neutral: #4C5569;
+    --neutral-hover: #384155;
+    --neutral-surface: #F5F8FF;
+    --neutral-disabled: #A5AAB4;
 
-    --brand-primary: #0541f0;
-    --brand-primary-hover: #0c47b7;
-    --brand-electric: #0541f0;
+    --base: #FFFFFF;
+
+    --error: #FF2327;
+    --error-surface: #FFE9E9;
+
+    --success: #019E57;
+    --success-surface: #D9F1E6;
+
+    --on-surface: #0A1E63;
+    --on-surface-disabled: #848EB1;
+
+    --on-accent: #FFFFFF;
+    --on-accent-disabled: #E7E7E7;
+
+    /* Семантические переменные */
+    --bg-base: #FFFFFF;
+    --bg-gradient: linear-gradient(180deg, #F8FAFF 0%, #FFFFFF 100%);
+
+    --text-primary: #0A1E63;
+    --text-secondary: #4C5569;
+    --text-muted: #4C5569;
+
+    --brand-primary: #0541F0;
+    --brand-primary-hover: #0026D2;
     --brand-glow: rgba(5, 65, 240, 0.25);
 
-    --glass-bg: rgba(255, 255, 255, 0.78);
-    --glass-bg-hover: rgba(255, 255, 255, 0.92);
-    --glass-border: rgba(10, 30, 99, 0.12);
+    --glass-bg: rgba(245, 248, 255, 0.92);
+    --glass-bg-hover: rgba(255, 255, 255, 0.98);
+    --glass-border: rgba(10, 30, 99, 0.08);
     --glass-border-strong: rgba(5, 65, 240, 0.35);
     --glass-shine: rgba(255, 255, 255, 0.95);
-    --glass-shadow: 0 16px 36px -8px rgba(10, 30, 99, 0.12);
+    --glass-shadow: 0 12px 32px -4px rgba(10, 30, 99, 0.08);
 
-    --dock-bg: rgba(255, 255, 255, 0.88);
-    --dock-border: rgba(10, 30, 99, 0.12);
+    --dock-bg: rgba(255, 255, 255, 0.96);
+    --dock-border: rgba(10, 30, 99, 0.1);
 
-    --chip-bg: rgba(10, 30, 99, 0.04);
+    --chip-bg: rgba(225, 233, 253, 0.6);
     --chip-border: rgba(10, 30, 99, 0.08);
 
-    --status-added-bg: rgba(1, 158, 87, 0.12);
+    --status-added-bg: #D9F1E6;
     --status-added-border: rgba(1, 158, 87, 0.3);
-    --status-added-text: #059669;
+    --status-added-text: #019E57;
 
-    --status-changed-bg: rgba(245, 158, 11, 0.12);
-    --status-changed-border: rgba(245, 158, 11, 0.3);
-    --status-changed-text: #d97706;
+    --status-changed-bg: #E1E9FD;
+    --status-changed-border: rgba(5, 65, 240, 0.3);
+    --status-changed-text: #0541F0;
 
-    --status-cancelled-bg: rgba(239, 68, 68, 0.1);
-    --status-cancelled-border: rgba(239, 68, 68, 0.25);
-    --status-cancelled-text: #dc2626;
+    --status-cancelled-bg: #FFE9E9;
+    --status-cancelled-border: rgba(255, 35, 39, 0.25);
+    --status-cancelled-text: #FF2327;
 
-    --background: #f4f7ff;
-    --foreground: #0a1e63;
-    --card: rgba(255, 255, 255, 0.85);
-    --card-foreground: #0a1e63;
-    --primary: #0541f0;
-    --primary-foreground: #ffffff;
-    --secondary: rgba(10, 30, 99, 0.05);
-    --secondary-foreground: #0a1e63;
-    --muted: rgba(10, 30, 99, 0.06);
-    --muted-foreground: #5e6c8b;
-    --accent: rgba(5, 65, 240, 0.1);
-    --accent-foreground: #0541f0;
-    --destructive: #dc2626;
-    --destructive-foreground: #ffffff;
-    --border: rgba(10, 30, 99, 0.12);
-    --ring: #0541f0;
+    --background: #FFFFFF;
+    --foreground: #0A1E63;
+    --card: #F5F8FF;
+    --card-foreground: #0A1E63;
+    --secondary: #E1E9FD;
+    --secondary-foreground: #0A1E63;
+    --muted: #E1E9FD;
+    --muted-foreground: #4C5569;
+    --accent: #E1E9FD;
+    --accent-foreground: #0541F0;
+    --destructive: #FF2327;
+    --destructive-foreground: #FFFFFF;
+    --border: rgba(10, 30, 99, 0.1);
+    --ring: #0541F0;
   }
 }
 
@@ -281,10 +346,10 @@
 }
 
 .glass-pill-active {
-  background: linear-gradient(135deg, #0541f0 0%, #3b82f6 100%);
-  color: #ffffff;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  box-shadow: 0 4px 18px rgba(5, 65, 240, 0.45);
+  background: var(--primary);
+  color: var(--on-accent);
+  border: 1px solid var(--primary-hover);
+  box-shadow: 0 4px 16px var(--brand-glow);
 }
 
 /* Эффект свечения фонового жидкого градиента */
@@ -307,7 +372,7 @@
   border-radius: 50%;
   background: radial-gradient(circle, var(--brand-glow) 0%, transparent 70%);
   filter: blur(60px);
-  opacity: 0.65;
+  opacity: 0.15;
   animation: float-orb-1 18s ease-in-out infinite alternate;
 }
 
@@ -320,9 +385,9 @@
   max-width: 550px;
   max-height: 550px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(5, 65, 240, 0.3) 0%, transparent 70%);
+  background: radial-gradient(circle, var(--brand-glow) 0%, transparent 70%);
   filter: blur(75px);
-  opacity: 0.5;
+  opacity: 0.10;
   animation: float-orb-2 22s ease-in-out infinite alternate;
 }
 

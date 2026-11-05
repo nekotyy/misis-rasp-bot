@@ -93,7 +93,7 @@ export function SchedulePage({
             {subscriptionTitle ?? 'Расписание занятий'}
           </h1>
           {currentFormatted && (
-            <p className="text-xs text-muted-foreground capitalize mt-0.5 flex items-center gap-1.5 font-medium">
+            <p className="text-xs text-neutral capitalize mt-0.5 flex items-center gap-1.5 font-medium">
               <Calendar className="w-3.5 h-3.5 text-primary stroke-[2]" />
               <span>{currentFormatted.fullDate}</span>
             </p>
@@ -106,7 +106,7 @@ export function SchedulePage({
             refetch()
           }}
           className={cn(
-            'p-2 rounded-xl glass-pill hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground',
+            'p-2 rounded-xl glass-pill hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground cursor-pointer',
             isRefetching && 'animate-spin text-primary',
           )}
           aria-label="Обновить расписание"
@@ -133,19 +133,19 @@ export function SchedulePage({
                       setSelectedIndex(idx)
                     }}
                     className={cn(
-                      'flex flex-col items-center justify-center py-2.5 px-1 rounded-2xl transition-all duration-200',
+                      'flex flex-col items-center justify-center py-2.5 px-1 rounded-2xl transition-all duration-200 cursor-pointer border',
                       isSelected
-                        ? 'glass-pill-active scale-[1.02] shadow-lg'
-                        : 'glass-card text-muted-foreground hover:text-foreground hover:bg-white/5',
+                        ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.02] font-bold'
+                        : 'glass-card border-border text-neutral hover:text-foreground hover:bg-neutral-hover/10',
                     )}
                   >
-                    <span className="text-[10px] font-semibold uppercase tracking-wider opacity-80 leading-none">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider opacity-90 leading-none">
                       {getDayLabel(day.date)}
                     </span>
                     <span className="font-heading font-bold text-sm tracking-tight my-0.5">
                       {dayNum}
                     </span>
-                    <span className="text-[10px] font-medium capitalize opacity-70 leading-none">
+                    <span className="text-[10px] font-medium capitalize opacity-80 leading-none">
                       {dayName}
                     </span>
                   </button>

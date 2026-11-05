@@ -50,7 +50,7 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
           <p className="font-heading font-bold text-sm text-foreground capitalize tracking-tight truncate">
             {formatDayHeader(day.date, day.day_name)}
           </p>
-          <p className="text-xs text-muted-foreground mt-0.5">
+          <p className="text-xs text-neutral mt-0.5">
             {day.status === 'unpublished'
               ? 'Не опубликовано'
               : day.status === 'not_archived'
@@ -62,13 +62,13 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {hasData && (
-            <span className="glass-pill rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary">
+            <span className="glass-pill rounded-full px-2 py-0.5 text-[10px] font-semibold text-primary bg-primary-surface border border-primary/20">
               {day.lessons.length}
             </span>
           )}
           <ChevronRight
             className={cn(
-              'w-4 h-4 text-muted-foreground transition-transform duration-200',
+              'w-4 h-4 text-neutral transition-transform duration-200',
               open ? 'rotate-90 text-primary' : '',
               reducedMotion && 'transition-none',
             )}
@@ -134,7 +134,7 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
         <h1 className="font-heading font-extrabold text-xl text-foreground tracking-tight">
           Архив расписания
         </h1>
-        <p className="text-xs text-muted-foreground mt-0.5 font-medium">
+        <p className="text-xs text-neutral mt-0.5 font-medium">
           История проведённых пар за последние 3 месяца
         </p>
       </div>
@@ -151,13 +151,13 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
             }
           }}
           disabled={!data?.has_previous_week}
-          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground active:scale-95"
+          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground active:scale-95 cursor-pointer"
           aria-label="Предыдущая неделя"
         >
           <ChevronLeft className="w-4 h-4 stroke-[2]" />
         </button>
 
-        <div className="glass-pill rounded-xl px-4 py-2 flex-1 text-center font-heading font-semibold text-xs tracking-tight text-foreground shadow-sm">
+        <div className="glass-pill rounded-xl px-4 py-2 flex-1 text-center font-heading font-semibold text-xs tracking-tight text-foreground shadow-sm bg-neutral-surface border border-border">
           {isLoading
             ? 'Загрузка недели...'
             : data
@@ -175,7 +175,7 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
             }
           }}
           disabled={!data?.has_next_week}
-          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-white/10 transition-colors text-muted-foreground hover:text-foreground active:scale-95"
+          className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground active:scale-95 cursor-pointer"
           aria-label="Следующая неделя"
         >
           <ChevronRight className="w-4 h-4 stroke-[2]" />
@@ -188,13 +188,13 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
           <LoadingSkeleton count={5} />
         ) : days.length === 0 ? (
           <div className="glass-card rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-muted/40 border border-border/50 flex items-center justify-center text-muted-foreground">
+            <div className="w-12 h-12 rounded-2xl bg-neutral-surface border border-border flex items-center justify-center text-neutral">
               <CalendarRange className="w-6 h-6 stroke-[1.8]" />
             </div>
             <p className="font-heading font-semibold text-base text-foreground">
               Нет данных за эту неделю
             </p>
-            <p className="text-xs text-muted-foreground max-w-xs">
+            <p className="text-xs text-neutral max-w-xs">
               Записи архива для выбранной недели отсутствуют
             </p>
           </div>

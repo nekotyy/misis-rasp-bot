@@ -7,14 +7,11 @@ const THEME_KEY = 'miniapp_theme'
 
 function applyTheme(theme: Theme): void {
   const root = document.documentElement
-  if (theme === 'system') {
-    root.removeAttribute('data-theme')
-    root.classList.remove('dark', 'light')
-  } else {
-    root.setAttribute('data-theme', theme)
-    root.classList.toggle('dark', theme === 'dark')
-    root.classList.toggle('light', theme === 'light')
-  }
+  const eff = getEffectiveTheme(theme)
+  root.setAttribute('data-theme', eff)
+  root.setAttribute('data-theme-setting', theme)
+  root.classList.toggle('dark', eff === 'dark')
+  root.classList.toggle('light', eff === 'light')
 }
 
 function getEffectiveTheme(theme: Theme): 'light' | 'dark' {

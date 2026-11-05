@@ -26,21 +26,21 @@ const statusConfig = {
     icon: null,
   },
   added: {
-    cardClass: 'border-emerald-500/30 bg-emerald-500/5',
+    cardClass: 'border-success/40 bg-success-surface/30',
     badge: 'Добавлена',
-    badgeClass: 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
+    badgeClass: 'bg-success-surface text-success border border-success/40',
     icon: PlusCircle,
   },
   cancelled: {
-    cardClass: 'border-rose-500/30 bg-rose-500/5 opacity-60',
+    cardClass: 'border-destructive/40 bg-destructive-surface/30 opacity-70',
     badge: 'Отменена',
-    badgeClass: 'bg-rose-500/15 text-rose-400 border border-rose-500/30',
+    badgeClass: 'bg-destructive-surface text-destructive border border-destructive/40',
     icon: Ban,
   },
   changed: {
-    cardClass: 'border-amber-500/30 bg-amber-500/5',
+    cardClass: 'border-primary/40 bg-primary-surface/40',
     badge: 'Замена',
-    badgeClass: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+    badgeClass: 'bg-primary-surface text-primary border border-primary/40',
     icon: Sparkles,
   },
 }
@@ -74,7 +74,7 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
       {/* Верхняя строка: номер пары, предмет и бейджи */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
-          <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center font-display font-black text-sm shadow-md shadow-blue-500/25">
+          <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-primary text-white flex items-center justify-center font-display font-black text-sm shadow-sm">
             {lesson.number}
           </div>
           <div className="min-w-0 pt-0.5">
@@ -110,12 +110,12 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
           {lesson.status === 'changed' && lesson.change && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="p-1 rounded-lg hover:bg-white/10 dark:hover:bg-white/10 transition-colors cursor-pointer"
+              className="p-1 rounded-lg hover:bg-neutral-surface transition-colors cursor-pointer"
               aria-label={expanded ? 'Скрыть детали' : 'Показать детали'}
             >
               <ChevronDown
                 className={cn(
-                  'w-4 h-4 text-muted-foreground transition-transform duration-200',
+                  'w-4 h-4 text-neutral transition-transform duration-200',
                   expanded ? 'rotate-180 text-primary' : '',
                   reducedMotion && 'transition-none',
                 )}
@@ -128,22 +128,22 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
       {/* Мета-информация: преподаватель, аудитория, время */}
       <div className="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
         {lesson.classroom && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-blue-300 dark:text-blue-200 bg-blue-500/10 border-blue-500/25 font-semibold">
-            <MapPin className="w-3.5 h-3.5 text-blue-400 stroke-[2.2]" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-foreground bg-primary-surface/40 border-primary/20 font-semibold">
+            <MapPin className="w-3.5 h-3.5 text-primary stroke-[2.2]" />
             <span>{lesson.classroom}</span>
           </div>
         )}
 
         {lesson.time_start && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-indigo-300 dark:text-indigo-200 bg-indigo-500/10 border-indigo-500/25 font-medium">
-            <Clock className="w-3.5 h-3.5 text-indigo-400 stroke-[2]" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-neutral font-medium">
+            <Clock className="w-3.5 h-3.5 text-neutral stroke-[2]" />
             <span>{lesson.time_end ? `${lesson.time_start}–${lesson.time_end}` : lesson.time_start}</span>
           </div>
         )}
 
         {lesson.teacher && (
-          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-sky-300 dark:text-sky-200 bg-sky-500/10 border-sky-500/25 truncate max-w-[200px] font-medium">
-            <User className="w-3.5 h-3.5 text-sky-400 stroke-[2] flex-shrink-0" />
+          <div className="glass-pill rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-neutral truncate max-w-[200px] font-medium">
+            <User className="w-3.5 h-3.5 text-neutral stroke-[2] flex-shrink-0" />
             <span className="truncate">{lesson.teacher}</span>
           </div>
         )}
@@ -153,11 +153,11 @@ export function LessonCard({ lesson, reducedMotion = false }: LessonCardProps) {
       {lesson.status === 'changed' && lesson.change && expanded && (
         <div
           className={cn(
-            'border-t border-amber-500/20 pt-3 mt-2 space-y-2',
+            'border-t border-primary/30 pt-3 mt-2 space-y-2',
             reducedMotion ? '' : 'animate-in fade-in-0 duration-200',
           )}
         >
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-500/80">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">
             Детали изменения
           </p>
           <ChangeDetail change={lesson.change} />
@@ -181,15 +181,15 @@ function ChangeDetail({ change }: { change: NonNullable<LessonDto['change']> }) 
     return (
       <div className="flex items-center gap-2 text-xs flex-wrap">
         {change.before && (
-          <span className="glass-pill rounded-lg px-2.5 py-1 line-through text-muted-foreground bg-rose-500/10 border-rose-500/20">
+          <span className="glass-pill rounded-lg px-2.5 py-1 line-through text-destructive bg-destructive-surface border border-destructive/30">
             {renderValue(change.before)}
           </span>
         )}
         {change.before && change.after && (
-          <ArrowRight className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+          <ArrowRight className="w-3.5 h-3.5 text-primary flex-shrink-0" />
         )}
         {change.after && (
-          <span className="glass-pill rounded-lg px-2.5 py-1 text-emerald-400 font-semibold bg-emerald-500/15 border-emerald-500/30">
+          <span className="glass-pill rounded-lg px-2.5 py-1 text-success font-semibold bg-success-surface border border-success/30">
             {renderValue(change.after)}
           </span>
         )}
@@ -198,8 +198,8 @@ function ChangeDetail({ change }: { change: NonNullable<LessonDto['change']> }) 
   }
 
   return (
-    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-      <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+    <div className="flex items-center gap-1.5 text-xs text-neutral">
+      <AlertCircle className="w-3.5 h-3.5 text-primary" />
       <span>{formatChangeKind(change.kind)}</span>
     </div>
   )
