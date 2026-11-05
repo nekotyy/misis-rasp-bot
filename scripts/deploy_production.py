@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-APPLICATIONS = ("bot", "web")
-CONTAINERS = ("misis-rasp-bot", "misis-web-configurator", "misis-rabbitmq")
+APPLICATIONS = ("bot", "web", "miniapp-api", "miniapp-frontend")
+CONTAINERS = ("misis-rasp-bot", "misis-web-configurator", "misis-rabbitmq", "misis-miniapp-api", "misis-miniapp-frontend")
 LOGIN_PROBE = """import os, httpx
 with httpx.Client(base_url='http://127.0.0.1:8080', timeout=8,
                   headers={'Origin':'http://127.0.0.1:8080'}, follow_redirects=False) as c:
@@ -65,7 +65,7 @@ def schema_fingerprint(database: Path) -> str:
 
 def write_release(path: Path, images: dict[str, str]) -> None:
     # JSON is also valid YAML; json.dumps prevents image names from injecting YAML keys.
-    data = {"services": {service: {"image": images[service]} for service in APPLICATIONS}}
+    data = {"services": {service: {"image": images[service]} for service in images if service in APPLICATIONS}}
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(data) + "\n", encoding="utf-8")
     temporary.chmod(0o600)
@@ -74,19 +74,22 @@ def write_release(path: Path, images: dict[str, str]) -> None:
 
 def validate_compose(config: dict, settings: Settings) -> None:
     services = config["services"]
-    for service in APPLICATIONS:
-        volumes = services[service].get("volumes", [])
-        runtime = [v for v in volumes if v.get("target") == "/app/runtime"]
-        if (len(runtime) != 1 or runtime[0].get("type") != "bind" or runtime[0].get("read_only")
-                or Path(runtime[0]["source"]) != settings.repo / "runtime"):
-            raise DeploymentError("The production runtime bind mount must be preserved")
-    env_mount = [v for v in services["bot"].get("volumes", []) if v.get("target") == "/app/config/.env"]
-    if len(env_mount) != 1 or env_mount[0].get("type") != "bind" or Path(env_mount[0]["source"]) != settings.repo / ".env":
-        raise DeploymentError("The production environment bind mount must be preserved")
-    for service in ("bot", "web", "rabbitmq"):
-        for port in services[service].get("ports", []):
-            if port.get("host_ip") not in ("127.0.0.1", "::1"):
-                raise DeploymentError("Automatic deployment cannot expose internal ports")
+    for service in ("bot", "web", "miniapp-api"):
+        if service in services:
+            volumes = services[service].get("volumes", [])
+            runtime = [v for v in volumes if v.get("target") == "/app/runtime"]
+            if (len(runtime) != 1 or runtime[0].get("type") != "bind" or runtime[0].get("read_only")
+                    or Path(runtime[0]["source"]) != settings.repo / "runtime"):
+                raise DeploymentError(f"The production runtime bind mount must be preserved for {service}")
+    if "bot" in services:
+        env_mount = [v for v in services["bot"].get("volumes", []) if v.get("target") == "/app/config/.env"]
+        if len(env_mount) != 1 or env_mount[0].get("type") != "bind" or Path(env_mount[0]["source"]) != settings.repo / ".env":
+            raise DeploymentError("The production environment bind mount must be preserved")
+    for service in ("bot", "web", "rabbitmq", "miniapp-api", "miniapp-frontend"):
+        if service in services:
+            for port in services[service].get("ports", []):
+                if port.get("host_ip") not in ("127.0.0.1", "::1"):
+                    raise DeploymentError("Automatic deployment cannot expose internal ports")
 
 
 class Deployer:
@@ -147,18 +150,27 @@ class Deployer:
     def current_images(self) -> dict[str, str]:
         images = {}
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ").lower()
-        for service, container in zip(APPLICATIONS, CONTAINERS[:2], strict=True):
-            image_id = self.run("docker", "inspect", "--format", "{{.Image}}", container)
-            tag = f"misis-rasp-bot-rollback-{service}:{stamp}"
-            self.run("docker", "image", "tag", image_id, tag)
-            images[service] = tag
+        service_containers = (
+            ("bot", "misis-rasp-bot"),
+            ("web", "misis-web-configurator"),
+            ("miniapp-api", "misis-miniapp-api"),
+            ("miniapp-frontend", "misis-miniapp-frontend"),
+        )
+        for service, container in service_containers:
+            try:
+                image_id = self.run("docker", "inspect", "--format", "{{.Image}}", container)
+                tag = f"misis-rasp-bot-rollback-{service}:{stamp}"
+                self.run("docker", "image", "tag", image_id, tag)
+                images[service] = tag
+            except DeploymentError:
+                pass
         return images
 
     def wait_healthy(self) -> None:
         deadline = time.monotonic() + self.settings.health_timeout
         while time.monotonic() < deadline:
             try:
-                containers = json.loads(self.run("docker", "inspect", *CONTAINERS))
+                containers = json.loads(self.run("docker", "inspect", *CONTAINERS[:3]))
                 running = all(c["State"]["Status"] == "running" for c in containers)
                 broker_ready = containers[2]["State"].get("Health", {}).get("Status") == "healthy"
                 env = dict(entry.split("=", 1) for entry in containers[0]["Config"]["Env"])
@@ -167,6 +179,12 @@ class Deployer:
                 vk_ready = not env.get("VK_BOT_TOKEN") or "groups.getLongPollServer" in logs
                 if running and broker_ready and telegram_ready and vk_ready and "TelegramConflictError" not in logs:
                     self.run("docker", "exec", "misis-web-configurator", "python", "-c", LOGIN_PROBE, timeout=40)
+                    with contextlib.suppress(DeploymentError):
+                        self.run(
+                            "docker", "exec", "misis-miniapp-api", "python", "-c",
+                            "import httpx; assert httpx.get('http://127.0.0.1:8000/api/health').status_code == 200",
+                            timeout=20,
+                        )
                     return
             except (DeploymentError, json.JSONDecodeError, KeyError, IndexError):
                 pass
@@ -197,8 +215,21 @@ class Deployer:
             image = f"misis-rasp-bot-deploy:{sha}"
             print(f"Building tested revision {sha}; running services stay available", flush=True)
             self.run("docker", "build", "--pull", "--tag", image, str(worktree), timeout=1200)
+
+            image_frontend = f"misis-miniapp-frontend-deploy:{sha}"
+            frontend_dir = worktree / "miniapp_frontend"
+            if (frontend_dir / "Dockerfile").exists():
+                print(f"Building frontend {sha}; running services stay available", flush=True)
+                self.run("docker", "build", "--pull", "--tag", image_frontend, str(frontend_dir), timeout=600)
+
+            release_images = {
+                "bot": image,
+                "web": image,
+                "miniapp-api": image,
+                "miniapp-frontend": image_frontend,
+            }
             candidate = worktree / "release.override.json"
-            write_release(candidate, dict.fromkeys(APPLICATIONS, image))
+            write_release(candidate, release_images)
             before = json.loads(self.compose("config", "--format", "json"))
             after = json.loads(self.compose("config", "--format", "json", source=worktree, release=candidate))
             validate_compose(after, s)
@@ -219,7 +250,7 @@ class Deployer:
                 old_schema = self.backup(backup)
                 (backup / "deployment.json").write_text(json.dumps({"previous": previous, "target": sha, "images": old_images}) + "\n")
                 self.git("switch", "--detach", sha)
-                write_release(s.release_override, dict.fromkeys(APPLICATIONS, image))
+                write_release(s.release_override, release_images)
                 activated = True
                 self.compose("up", "--detach", "--no-deps", "--no-build", "--force-recreate", *APPLICATIONS)
                 self.wait_healthy()
