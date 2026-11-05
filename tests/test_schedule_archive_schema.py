@@ -57,7 +57,7 @@ class ScheduleArchiveMigrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(connection.execute("SELECT content_json FROM schedule_snapshots").fetchone()[0], '{"days":[]}')
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM schedule_day_archive").fetchone()[0], 1)
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM schedule_day_references").fetchone()[0], 0)
-                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261105_0004")
+                self.assertEqual(connection.execute("SELECT version_num FROM alembic_version").fetchone()[0], "20261105_0005")
                 self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
 
     async def test_archive_keys_variants_and_references_survive_snapshot_cleanup(self):

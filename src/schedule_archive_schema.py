@@ -37,3 +37,12 @@ CREATE TABLE IF NOT EXISTS schedule_day_references (
     PRIMARY KEY (source_key, date_iso, week_variant, reference_kind)
 );
 """
+
+SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1 = """
+CREATE TABLE IF NOT EXISTS schedule_archive_backfill (
+    name TEXT PRIMARY KEY,
+    last_id INTEGER NOT NULL DEFAULT 0,
+    processed INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0
+);
+"""
