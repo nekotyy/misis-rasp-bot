@@ -19,15 +19,28 @@ interface HistoryPageProps {
   reducedMotion?: boolean
 }
 
+/** Чистая календарная арифметика строк YYYY-MM-DD без сдвигов по часовым поясам UTC */
+function addDays(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split('-').map(Number)
+  const dt = new Date(y, m - 1, d + days)
+  const resY = dt.getFullYear()
+  const resM = String(dt.getMonth() + 1).padStart(2, '0')
+  const resD = String(dt.getDate()).padStart(2, '0')
+  return `${resY}-${resM}-${resD}`
+}
+
+/** Неделя отображается строго с понедельника по субботу (пн + 5 дней = сб) */
 function formatWeekRange(weekStart: string): string {
-  const start = new Date(weekStart + 'T00:00:00')
-  const end = new Date(start.getTime() + 6 * 86400000)
+  const [y, m, d] = weekStart.split('-').map(Number)
+  const start = new Date(y, m - 1, d)
+  const end = new Date(y, m - 1, d + 5)
   const fmt = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' })
   return `${fmt.format(start)} – ${fmt.format(end)}`
 }
 
 function formatDayHeader(dateStr: string): string {
-  const date = new Date(dateStr + 'T00:00:00')
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const date = new Date(y, m - 1, d)
   const weekday = new Intl.DateTimeFormat('ru', { weekday: 'long' }).format(date)
   const dayAndMonth = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long' }).format(date)
   const year = date.getFullYear()
@@ -48,7 +61,7 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
           platform.hapticFeedback('light')
           setOpen(!open)
         }}
-        className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/5 transition-colors"
+        className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/5 transition-colors cursor-pointer"
       >
         <div className="min-w-0 pr-2">
           <p className="font-heading font-bold text-base text-foreground capitalize tracking-tight break-words">
@@ -171,20 +184,20 @@ export function HistoryPage({
               </h1>
             )}
             <p className="text-sm text-neutral mt-1 font-medium">
-              История проведённых пар за последние 3 месяца
+              История пар за последние 3 месяца (понедельник — суббота)
             </p>
           </div>
         </div>
       </div>
 
-      {/* Модальное окно выбора группы */}
+      {/* Модальное окно выбора группы — поднято над нижней панелью навигации */}
       {showGroupPicker && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-28 sm:pb-4 animate-in fade-in duration-150"
           onClick={() => setShowGroupPicker(false)}
         >
           <div
-            className="w-full max-w-sm glass-card rounded-2xl p-4 space-y-3 shadow-2xl border border-primary/30"
+            className="w-full max-w-sm glass-card rounded-2xl p-4 space-y-3 shadow-2xl border border-primary/30 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -242,15 +255,13 @@ export function HistoryPage({
         </div>
       )}
 
-      {/* Навигация по неделям */}
+      {/* Навигация по неделям (понедельник — суббота) */}
       <div className="px-4 pb-3.5 flex items-center justify-between gap-2.5">
         <button
           onClick={() => {
-            if (data?.has_previous_week) {
+            if (data?.has_previous_week && data.week_start) {
               platform.hapticFeedback('light')
-              const start = new Date(data.week_start + 'T00:00:00')
-              start.setDate(start.getDate() - 7)
-              setWeekStart(start.toISOString().slice(0, 10))
+              setWeekStart(addDays(data.week_start, -7))
             }
           }}
           disabled={!data?.has_previous_week}
@@ -263,18 +274,16 @@ export function HistoryPage({
         <div className="glass-pill rounded-xl px-4 py-2.5 flex-1 text-center font-heading font-bold text-sm tracking-tight text-foreground shadow-sm bg-neutral-surface border border-border">
           {isLoading
             ? 'Загрузка недели...'
-            : data
+            : data?.week_start
               ? formatWeekRange(data.week_start)
               : 'Текущая неделя'}
         </div>
 
         <button
           onClick={() => {
-            if (data?.has_next_week) {
+            if (data?.has_next_week && data.week_start) {
               platform.hapticFeedback('light')
-              const start = new Date(data.week_start + 'T00:00:00')
-              start.setDate(start.getDate() + 7)
-              setWeekStart(start.toISOString().slice(0, 10))
+              setWeekStart(addDays(data.week_start, 7))
             }
           }}
           disabled={!data?.has_next_week}

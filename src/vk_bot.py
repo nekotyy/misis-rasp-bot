@@ -37,6 +37,7 @@ from src.lesson_counters import (
     teacher_matches,
 )
 from src.message_broker import OutboundMessage
+from src.miniapp_stats import collect_miniapp_stats, format_miniapp_stats_report
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
     OCR_STAGE_UPLOAD,
@@ -181,7 +182,7 @@ VK_ADMIN_SECTIONS: dict[str, dict] = {
         "rows": [
             ["Статус", "Ошибки за день"],
             ["Последнее изменение", "Информация по группам"],
-            ["Статистика по курсам"],
+            ["Статистика по курсам", "Статистика Mini App"],
             [VK_ADMIN_SECTION_BACK],
         ],
     },
@@ -3637,6 +3638,14 @@ def build_vk_bot(
                 await show_screen(
                     peer_id,
                     format_course_stats_report(await collect_course_stats(db), html=False),
+                    keyboard=admin_back_keyboard(),
+                )
+                return
+            if text in {"Статистика Mini App", "/miniapp_stats", "/app_stats"}:
+                report = await collect_miniapp_stats(db)
+                await show_screen(
+                    peer_id,
+                    format_miniapp_stats_report(report, html=False),
                     keyboard=admin_back_keyboard(),
                 )
                 return

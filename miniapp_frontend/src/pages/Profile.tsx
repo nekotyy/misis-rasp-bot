@@ -21,7 +21,7 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import { useState } from 'react'
-import { searchGroups } from '../api/groups'
+import { searchGroups, type GroupItemDto } from '../api/groups'
 import {
   confirmLinkRequest,
   createLinkRequest,
@@ -83,11 +83,16 @@ export function ProfilePage({
   })
 
   const addSubMutation = useMutation({
-    mutationFn: (groupName: string) =>
-      addSubscription({
-        group_name: groupName,
-        is_primary: (data?.subscriptions.length ?? 0) === 0,
-      }),
+    mutationFn: (group: GroupItemDto) => {
+      const gName = group.group_name || group.name || ''
+      return addSubscription({
+        group_name: gName,
+        schedule_id: group.schedule_id,
+        subscription_key: group.source_key,
+        subscription_title: group.source_title || group.display_name || gName,
+        is_primary: (data?.subscriptions?.length ?? 0) === 0,
+      })
+    },
     onSuccess: () => {
       setShowAddGroup(false)
       setGroupSearchQuery('')
@@ -572,18 +577,25 @@ export function ProfilePage({
                     <p className="font-heading text-xs text-destructive font-semibold">{addGroupError}</p>
                   )}
 
+                  {isSearchingGroups && (
+                    <div className="py-2 text-center text-xs text-neutral flex items-center justify-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                      <span>Поиск групп...</span>
+                    </div>
+                  )}
+
                   {groupSearchQuery.trim().length >= 1 && !isSearchingGroups && (
                     <div className="max-h-48 overflow-y-auto space-y-1.5 pt-1">
-                      {searchResults && searchResults.length > 0 ? (
+                      {Array.isArray(searchResults) && searchResults.length > 0 ? (
                         searchResults.map((group) => {
                           const gName = group.group_name || group.name || ''
                           const gDisplay = group.display_name || group.source_title || gName
-                          const alreadySubscribed = (data.subscriptions || []).some(
+                          const alreadySubscribed = (data?.subscriptions ?? []).some(
                             (s) => (s.group_name || '').toLowerCase() === gName.toLowerCase(),
                           )
                           return (
                             <div
-                              key={gName || group.schedule_id}
+                              key={group.schedule_id ? `group-${group.schedule_id}` : gName}
                               className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-surface/60 border border-border hover:border-primary/40 transition-all"
                             >
                               <span className="font-heading font-bold text-sm text-foreground">
@@ -596,7 +608,7 @@ export function ProfilePage({
                               ) : (
                                 <button
                                   type="button"
-                                  onClick={() => addSubMutation.mutate(gName)}
+                                  onClick={() => addSubMutation.mutate(group)}
                                   disabled={addSubMutation.isPending}
                                   className="font-heading inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
                                 >

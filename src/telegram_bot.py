@@ -59,6 +59,7 @@ from src.lesson_counters import (
     teacher_matches,
 )
 from src.message_broker import OutboundMessage
+from src.miniapp_stats import collect_miniapp_stats, format_miniapp_stats_report
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
     OCR_STAGE_UPLOAD,
@@ -415,7 +416,7 @@ ADMIN_SECTION_KEYBOARDS: dict[str, InlineKeyboardMarkup] = {
         inline_keyboard=[
             [_admin_button("Статус", "status"), _admin_button("Ошибки за день", "daily_errors")],
             [_admin_button("Последнее изменение", "last_change"), _admin_button("Информация по группам", "group_info")],
-            [_admin_button("Статистика по курсам", "course_stats")],
+            [_admin_button("Статистика по курсам", "course_stats"), _admin_button("Статистика Mini App", "miniapp_stats")],
             _ADMIN_BACK_TO_MENU_ROW,
         ]
     ),
@@ -3059,6 +3060,15 @@ def build_dispatcher(
                     await db.answer_feedback_message(latest["id"], reply_text)
             await send_reply(msg, f"✅ Ответ успешно отправлен пользователю <code>{target_user_id}</code> ({target_platform})!")
 
+    @dispatcher.message(Command("miniapp_stats"))
+    @dispatcher.message(Command("app_stats"))
+    async def handle_miniapp_stats_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None or not user_is_admin(message.from_user.id):
+            return
+        text = format_miniapp_stats_report(await collect_miniapp_stats(db), html=True)
+        await send_reply(message, text)
+
     @dispatcher.message(Command("app"))
     async def handle_app_command(message: Message) -> None:
         await register_message_user(message)
@@ -4534,6 +4544,9 @@ def build_dispatcher(
             reply_markup = ADMIN_BACK_KEYBOARD
         elif action == "course_stats":
             text = format_course_stats_report(await collect_course_stats(db), html=True)
+            reply_markup = ADMIN_BACK_KEYBOARD
+        elif action == "miniapp_stats":
+            text = format_miniapp_stats_report(await collect_miniapp_stats(db), html=True)
             reply_markup = ADMIN_BACK_KEYBOARD
         else:
             if broadcaster is not None:

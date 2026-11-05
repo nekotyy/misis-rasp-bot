@@ -152,3 +152,29 @@ class GroupItemDto(BaseModel):
             self.name = self.group_name
         if not self.display_name:
             self.display_name = self.source_title or self.group_name
+
+
+class TelemetrySessionRequest(BaseModel):
+    session_id: str
+    platform: str
+    user_id: int
+    account_id: str | None = None
+    theme: str = "system"
+    scale: int = 100
+    active_group: str | None = None
+    initial_page: str = "/schedule"
+
+
+class TelemetryPingRequest(BaseModel):
+    session_id: str
+    duration_seconds: int = 0
+    active_group: str | None = None
+    current_page: str | None = None
+
+
+class TelemetryEventRequest(BaseModel):
+    session_id: str
+    event_type: str
+    event_data: dict[str, Any] = Field(default_factory=dict)
+    platform: str = "unknown"
+    user_id: int = 0

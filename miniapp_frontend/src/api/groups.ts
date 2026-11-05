@@ -11,6 +11,13 @@ export interface GroupItemDto {
 }
 
 export async function searchGroups(query: string): Promise<GroupItemDto[]> {
-  const params = new URLSearchParams({ query })
-  return apiFetch<GroupItemDto[]>(`/groups?${params}`)
+  const clean = query.trim()
+  if (!clean) return []
+  const params = new URLSearchParams({ query: clean })
+  try {
+    const res = await apiFetch<GroupItemDto[]>(`/groups?${params}`)
+    return Array.isArray(res) ? res : []
+  } catch {
+    return []
+  }
 }

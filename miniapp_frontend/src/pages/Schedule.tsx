@@ -18,29 +18,23 @@ interface SchedulePageProps {
 }
 
 /** Форматировать дату по-русски */
-function formatDate(dateStr: string): { dayNum: string; dayName: string; fullDate: string } {
-  const date = new Date(dateStr + 'T00:00:00')
-  const dayNum = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' }).format(date)
+function formatDate(dateStr: string): { dayNum: string; dayName: string; monthName: string; fullDate: string } {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const date = new Date(y, m - 1, d)
+  const dayNum = String(d)
   const dayName = new Intl.DateTimeFormat('ru', { weekday: 'short' }).format(date)
+  const monthName = new Intl.DateTimeFormat('ru', { month: 'short' }).format(date)
   const fullDate = new Intl.DateTimeFormat('ru', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
   }).format(date)
-  return { dayNum, dayName, fullDate }
-}
-
-/** Определить «Сегодня» / «Завтра» / «Послезавтра» */
-function getDayLabel(dateStr: string): string {
-  const today = new Date()
-  const d = new Date(dateStr + 'T00:00:00')
-  const diff = Math.round(
-    (d.getTime() - new Date(today.toISOString().slice(0, 10) + 'T00:00:00').getTime()) / 86400000,
-  )
-  if (diff === 0) return 'Сегодня'
-  if (diff === 1) return 'Завтра'
-  if (diff === 2) return 'Послезавтра'
-  return new Intl.DateTimeFormat('ru', { weekday: 'short' }).format(d)
+  return {
+    dayNum,
+    dayName: dayName.toUpperCase(),
+    monthName,
+    fullDate: fullDate.charAt(0).toUpperCase() + fullDate.slice(1),
+  }
 }
 
 export function SchedulePage({
@@ -50,7 +44,7 @@ export function SchedulePage({
   onSelectSubscription,
   reducedMotion = false,
 }: SchedulePageProps) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [showGroupPicker, setShowGroupPicker] = useState(false)
   const navigate = useNavigate()
   const platform = usePlatform()
@@ -92,8 +86,27 @@ export function SchedulePage({
     )
   }
 
+  const todayStr = (() => {
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  })()
+
   const days = data?.days ?? []
-  const selectedDay = days[selectedIndex]
+
+  const effectiveIndex = (() => {
+    if (days.length === 0) return 0
+    if (selectedDate) {
+      const idx = days.findIndex((d) => d.date === selectedDate)
+      if (idx !== -1) return idx
+    }
+    const todayIdx = days.findIndex((d) => d.date === todayStr)
+    return todayIdx !== -1 ? todayIdx : 0
+  })()
+
+  const selectedDay = days[effectiveIndex]
   const currentFormatted = selectedDay ? formatDate(selectedDay.date) : null
 
   return (
@@ -123,9 +136,11 @@ export function SchedulePage({
             </h1>
           )}
           {currentFormatted && (
-            <p className="text-sm text-neutral dark:text-white capitalize mt-1 flex items-center gap-2 font-medium">
+            <p className="text-sm capitalize mt-1 flex items-center gap-2 font-medium text-gray-700 [data-theme=dark]:text-white dark:text-white">
               <Calendar className="w-4 h-4 text-primary stroke-[2]" />
-              <span className="text-neutral dark:text-white">{currentFormatted.fullDate}</span>
+              <span className="text-gray-700 [data-theme=dark]:text-white dark:text-white">
+                {currentFormatted.fullDate}
+              </span>
             </p>
           )}
         </div>
@@ -145,14 +160,14 @@ export function SchedulePage({
         </button>
       </div>
 
-      {/* Модальное окно выбора группы */}
+      {/* Модальное окно выбора группы — поднято над нижней панелью навигации */}
       {showGroupPicker && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 pb-28 sm:pb-4 animate-in fade-in duration-150"
           onClick={() => setShowGroupPicker(false)}
         >
           <div
-            className="w-full max-w-sm glass-card rounded-2xl p-4 space-y-3 shadow-2xl border border-primary/30"
+            className="w-full max-w-sm glass-card rounded-2xl p-4 space-y-3 shadow-2xl border border-primary/30 my-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
@@ -210,47 +225,58 @@ export function SchedulePage({
         </div>
       )}
 
-      {/* Переключатель дней (Стекло + пилюли) */}
+      {/* Переключатель дней: неделя с понедельника по субботу (6 колонок) */}
       <div className="px-4 pb-3.5">
-        <div className="grid grid-cols-3 gap-2.5">
+        <div className="grid grid-cols-6 gap-1 sm:gap-2">
           {isLoading
-            ? [0, 1, 2].map((i) => (
-                <div key={i} className="h-18 rounded-2xl glass-card animate-pulse" />
+            ? [0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="h-16 rounded-2xl glass-card animate-pulse" />
               ))
             : days.map((day, idx) => {
-                const { dayNum, dayName } = formatDate(day.date)
-                const isSelected = idx === selectedIndex
+                const { dayNum, dayName, monthName } = formatDate(day.date)
+                const isSelected = idx === effectiveIndex
+                const isToday = day.date === todayStr
                 return (
                   <button
                     key={day.date}
                     onClick={() => {
                       platform.hapticFeedback('light')
-                      setSelectedIndex(idx)
+                      setSelectedDate(day.date)
                     }}
                     className={cn(
-                      'flex flex-col items-center justify-center py-3 px-1.5 rounded-2xl transition-all duration-200 cursor-pointer border',
+                      'flex flex-col items-center justify-center py-2 px-1 rounded-2xl transition-all duration-200 cursor-pointer border',
                       isSelected
-                        ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.02] font-bold'
-                        : 'glass-card border-border text-neutral dark:text-white hover:text-foreground hover:bg-neutral-hover/10',
+                        ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.03] font-bold'
+                        : 'glass-card border-border hover:bg-neutral-hover/10 text-gray-800 [data-theme=dark]:text-white dark:text-white',
                     )}
                   >
-                    <span className={cn(
-                      'font-heading text-xs font-bold uppercase tracking-wider opacity-90 leading-none',
-                      isSelected ? 'text-white' : 'text-neutral dark:text-white/80',
-                    )}>
-                      {getDayLabel(day.date)}
+                    <span
+                      className={cn(
+                        'font-heading text-[10px] sm:text-xs font-bold uppercase tracking-wider leading-none',
+                        isSelected ? 'text-white' : 'text-gray-500 [data-theme=dark]:text-white/70 dark:text-white/70',
+                      )}
+                    >
+                      {dayName}
                     </span>
-                    <span className={cn(
-                      'font-heading font-extrabold text-base tracking-tight my-1',
-                      isSelected ? 'text-white' : 'text-neutral dark:text-white',
-                    )}>
+                    <span
+                      className={cn(
+                        'font-heading font-extrabold text-sm sm:text-base tracking-tight my-0.5',
+                        isSelected ? 'text-white' : 'text-gray-900 [data-theme=dark]:text-white dark:text-white',
+                      )}
+                    >
                       {dayNum}
                     </span>
-                    <span className={cn(
-                      'font-heading text-xs font-semibold capitalize opacity-80 leading-none',
-                      isSelected ? 'text-white' : 'text-neutral dark:text-white/80',
-                    )}>
-                      {dayName}
+                    <span
+                      className={cn(
+                        'font-heading text-[9px] sm:text-[10px] font-semibold leading-none truncate max-w-full px-0.5',
+                        isSelected
+                          ? 'text-white/90'
+                          : isToday
+                            ? 'text-primary font-bold'
+                            : 'text-gray-400 [data-theme=dark]:text-white/50 dark:text-white/50',
+                      )}
+                    >
+                      {isToday ? 'Сегодня' : monthName}
                     </span>
                   </button>
                 )

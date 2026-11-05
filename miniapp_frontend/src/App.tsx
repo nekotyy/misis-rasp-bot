@@ -9,6 +9,7 @@ import { ErrorState } from './components/ErrorState'
 import type { AuthState } from './hooks/useAuth'
 import { usePlatform } from './hooks/usePlatform'
 import { useScale } from './hooks/useScale'
+import { useTelemetry } from './hooks/useTelemetry'
 import { useTheme } from './hooks/useTheme'
 import { HistoryPage } from './pages/History'
 import { ProfilePage } from './pages/Profile'
@@ -51,6 +52,14 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
     subscriptions[0]
   const subscriptionId = activeSub?.id
   const subscriptionTitle = activeSub?.group_name || activeSub?.subscription_title || undefined
+
+  // Сбор телеметрии Mini App (время пребывания, пики активности, онлайн, раздел, группа)
+  useTelemetry({
+    activeGroup: subscriptionTitle,
+    theme,
+    scale,
+    enabled: authState === 'authenticated',
+  })
 
   if (authState === 'loading' || authState === 'idle') {
     return (

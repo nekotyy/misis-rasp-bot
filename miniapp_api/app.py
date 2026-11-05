@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager, suppress
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from miniapp_api.auth import (
@@ -35,6 +37,9 @@ from miniapp_api.dto import (
     ProfileResponse,
     ScheduleResponse,
     SubscriptionDto,
+    TelemetryEventRequest,
+    TelemetryPingRequest,
+    TelemetrySessionRequest,
     UpdateSubscriptionRequest,
 )
 from src.account_service import Account, AccountIdentity, AccountService
@@ -50,6 +55,11 @@ from src.miniapp_calendar import (
     week_start,
 )
 from src.miniapp_diff import DayChanges, compare_lessons
+from src.miniapp_stats import (
+    record_telemetry_event,
+    record_telemetry_ping,
+    record_telemetry_session,
+)
 from src.models import DaySchedule, Lesson
 from src.schedule_archive import ScheduleDayArchive
 from src.university_subgroups import filter_day
@@ -193,6 +203,7 @@ def _build_profile_response(account: Account, current_ident: AccountIdentity) ->
             user_id=i.user_id,
             username=i.username,
             full_name=i.full_name,
+            photo_url=f"/api/miniapp/v1/avatar/{i.platform}/{i.user_id}",
         )
         for i in account.identities
     ]
@@ -218,6 +229,7 @@ def _build_profile_response(account: Account, current_ident: AccountIdentity) ->
             user_id=current_ident.user_id,
             username=current_ident.username,
             full_name=current_ident.full_name,
+            photo_url=f"/api/miniapp/v1/avatar/{current_ident.platform}/{current_ident.user_id}",
         ),
         identities=identities_dto,
         subscriptions=subscriptions_dto,
@@ -687,3 +699,103 @@ async def get_history(
         has_next_week=has_next,
         bounds={"start": first_bound.isoformat(), "end": (week_start(today) + timedelta(days=5)).isoformat()},
     )
+
+
+# --- Аватарки пользователей ---
+
+_AVATAR_CACHE: dict[str, tuple[float, bytes, str]] = {}
+
+
+@app.get("/api/miniapp/v1/avatar/{platform}/{user_id}")
+async def get_user_avatar(platform: str, user_id: int):
+    cache_key = f"{platform}:{user_id}"
+    now_ts = datetime.now(UTC).timestamp()
+    if cache_key in _AVATAR_CACHE:
+        ts, data, ctype = _AVATAR_CACHE[cache_key]
+        if now_ts - ts < 3600:
+            return Response(content=data, media_type=ctype)
+
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or Settings.from_env().telegram_bot_token
+    if platform == "telegram" and bot_token:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.get(
+                    f"https://api.telegram.org/bot{bot_token}/getUserProfilePhotos",
+                    params={"user_id": user_id, "limit": 1},
+                )
+                if resp.status_code == 200:
+                    result = resp.json().get("result", {})
+                    photos = result.get("photos", [])
+                    if photos and photos[0]:
+                        file_id = photos[0][-1]["file_id"]
+                        f_resp = await client.get(
+                            f"https://api.telegram.org/bot{bot_token}/getFile",
+                            params={"file_id": file_id},
+                        )
+                        if f_resp.status_code == 200:
+                            file_path = f_resp.json().get("result", {}).get("file_path")
+                            if file_path:
+                                img_resp = await client.get(
+                                    f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+                                )
+                                if img_resp.status_code == 200:
+                                    ctype = img_resp.headers.get("content-type", "image/jpeg")
+                                    _AVATAR_CACHE[cache_key] = (now_ts, img_resp.content, ctype)
+                                    return Response(content=img_resp.content, media_type=ctype)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Failed to fetch Telegram avatar for %s: %s", user_id, e)
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">'
+        '<rect width="96" height="96" rx="24" fill="#4F85EB"/>'
+        '<text x="48" y="58" font-family="-apple-system, sans-serif" font-size="36" font-weight="bold" fill="#ffffff" text-anchor="middle">U</text>'
+        '</svg>'
+    )
+    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml")
+
+
+# --- Телеметрия Mini App ---
+
+
+@app.post("/api/miniapp/v1/telemetry/session")
+async def telemetry_session(req: TelemetrySessionRequest, db: aiosqlite.Connection = Depends(get_db)):
+    await record_telemetry_session(
+        db,
+        session_id=req.session_id,
+        platform=req.platform,
+        user_id=req.user_id,
+        account_id=req.account_id,
+        theme=req.theme,
+        scale=req.scale,
+        active_group=req.active_group,
+        last_page=req.initial_page,
+    )
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/miniapp/v1/telemetry/ping")
+async def telemetry_ping(req: TelemetryPingRequest, db: aiosqlite.Connection = Depends(get_db)):
+    await record_telemetry_ping(
+        db,
+        session_id=req.session_id,
+        duration_seconds=req.duration_seconds,
+        active_group=req.active_group,
+        current_page=req.current_page,
+    )
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/miniapp/v1/telemetry/event")
+async def telemetry_event(req: TelemetryEventRequest, db: aiosqlite.Connection = Depends(get_db)):
+    await record_telemetry_event(
+        db,
+        session_id=req.session_id,
+        event_type=req.event_type,
+        event_data=req.event_data,
+        platform=req.platform,
+        user_id=req.user_id,
+    )
+    await db.commit()
+    return {"ok": True}

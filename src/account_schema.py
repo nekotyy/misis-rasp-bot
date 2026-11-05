@@ -72,4 +72,39 @@ CREATE TABLE IF NOT EXISTS miniapp_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_miniapp_sessions_account
 ON miniapp_sessions(account_id);
+
+CREATE TABLE IF NOT EXISTS miniapp_telemetry_sessions (
+    id TEXT PRIMARY KEY,
+    account_id TEXT,
+    platform TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    theme TEXT DEFAULT 'system',
+    scale INTEGER DEFAULT 100,
+    start_time TEXT NOT NULL,
+    last_ping_time TEXT NOT NULL,
+    duration_seconds INTEGER DEFAULT 0,
+    active_group TEXT,
+    last_page TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_user
+ON miniapp_telemetry_sessions(platform, user_id, start_time);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_sessions_start
+ON miniapp_telemetry_sessions(start_time);
+
+CREATE TABLE IF NOT EXISTS miniapp_telemetry_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    account_id TEXT,
+    platform TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_data TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_type_time
+ON miniapp_telemetry_events(event_type, created_at);
 """

@@ -27,9 +27,14 @@ def subtract_calendar_months(day: date, months: int) -> date:
     return date(year, month, min(day.day, monthrange(year, month)[1]))
 
 
-def schedule_dates(today: date) -> tuple[date, date, date]:
-    """Три последовательных календарных дня, включая выходные."""
-    return today, today + timedelta(days=1), today + timedelta(days=2)
+def schedule_dates(today: date) -> tuple[date, ...]:
+    """Возвращает дни недели от понедельника до субботы для расписания.
+
+    Если сегодня воскресенье, возвращается следующая неделя (пн..сб).
+    В остальные дни возвращается текущая неделя от понедельника до субботы.
+    """
+    base_monday = today + timedelta(days=1) if today.weekday() == 6 else week_start(today)
+    return tuple(base_monday + timedelta(days=offset) for offset in range(6))
 
 
 def history_bounds(today: date) -> tuple[date, date]:
