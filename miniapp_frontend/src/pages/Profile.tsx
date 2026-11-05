@@ -226,7 +226,7 @@ export function ProfilePage({
                   const tgAvatar = typeof window !== 'undefined'
                     ? ((window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { photo_url?: string } } } } }).Telegram?.WebApp?.initDataUnsafe?.user?.photo_url)
                     : undefined
-                  const avatarUrl = (isTg && isCurrent && tgAvatar) ? tgAvatar : ident.photo_url
+                  const avatarUrl = ident.photo_url || ((isTg && isCurrent && tgAvatar) ? tgAvatar : undefined)
                   const initial = (title || 'U').charAt(0).toUpperCase()
 
                   return (
@@ -235,19 +235,21 @@ export function ProfilePage({
                       className="flex items-center justify-between p-3.5 rounded-xl bg-card border border-border"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 shadow-sm border border-border bg-neutral-surface flex items-center justify-center">
-                          {avatarUrl ? (
+                        <div className="relative w-10 h-10 rounded-xl overflow-hidden flex-shrink-0 shadow-sm border border-border bg-primary-surface flex items-center justify-center">
+                          <div className="w-full h-full flex items-center justify-center font-heading font-extrabold text-sm text-primary select-none">
+                            {initial}
+                          </div>
+                          {avatarUrl && (
                             <img
                               src={avatarUrl}
                               alt={title}
-                              className="w-full h-full object-cover"
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLElement).style.display = 'none'
+                              }}
                             />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center font-heading font-extrabold text-sm bg-primary-surface text-primary">
-                              {initial}
-                            </div>
                           )}
-                          <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-card border border-border flex items-center justify-center shadow-xs">
+                          <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-card border border-border flex items-center justify-center shadow-xs z-10">
                             {isTg ? <TelegramIcon className="w-2.5 h-2.5 text-primary" /> : <VkIcon className="w-2.5 h-2.5 text-primary" />}
                           </div>
                         </div>

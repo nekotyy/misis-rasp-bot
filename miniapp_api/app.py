@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiosqlite
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from miniapp_api.auth import (
@@ -196,6 +196,14 @@ async def logout(
 
 # --- Маршруты профиля и настроек ---
 
+def _get_avatar_url(platform: str, user_id: int) -> str:
+    cache_key = f"{platform}:{user_id}"
+    cached = _AVATAR_CACHE.get(cache_key)
+    if cached and cached[1]:
+        return f"/api/miniapp/v1/avatar/{platform}/{user_id}?v={cached[1]}"
+    return f"/api/miniapp/v1/avatar/{platform}/{user_id}"
+
+
 def _build_profile_response(account: Account, current_ident: AccountIdentity) -> ProfileResponse:
     identities_dto = [
         IdentityDto(
@@ -203,7 +211,7 @@ def _build_profile_response(account: Account, current_ident: AccountIdentity) ->
             user_id=i.user_id,
             username=i.username,
             full_name=i.full_name,
-            photo_url=f"/api/miniapp/v1/avatar/{i.platform}/{i.user_id}",
+            photo_url=_get_avatar_url(i.platform, i.user_id),
         )
         for i in account.identities
     ]
@@ -229,7 +237,7 @@ def _build_profile_response(account: Account, current_ident: AccountIdentity) ->
             user_id=current_ident.user_id,
             username=current_ident.username,
             full_name=current_ident.full_name,
-            photo_url=f"/api/miniapp/v1/avatar/{current_ident.platform}/{current_ident.user_id}",
+            photo_url=_get_avatar_url(current_ident.platform, current_ident.user_id),
         ),
         identities=identities_dto,
         subscriptions=subscriptions_dto,
@@ -703,17 +711,30 @@ async def get_history(
 
 # --- Аватарки пользователей ---
 
-_AVATAR_CACHE: dict[str, tuple[float, bytes, str]] = {}
+_AVATAR_CACHE: dict[str, tuple[float, str, bytes, str]] = {}
 
 
 @app.get("/api/miniapp/v1/avatar/{platform}/{user_id}")
-async def get_user_avatar(platform: str, user_id: int):
+async def get_user_avatar(
+    platform: str,
+    user_id: int,
+    request: Request,
+    v: str | None = Query(None),
+):
     cache_key = f"{platform}:{user_id}"
     now_ts = datetime.now(UTC).timestamp()
+
+    # Быстрый возврат кэша младше 20 секунд
     if cache_key in _AVATAR_CACHE:
-        ts, data, ctype = _AVATAR_CACHE[cache_key]
-        if now_ts - ts < 3600:
-            return Response(content=data, media_type=ctype)
+        ts, unique_id, data, ctype = _AVATAR_CACHE[cache_key]
+        if now_ts - ts < 20:
+            headers = {
+                "Cache-Control": "no-cache, must-revalidate",
+                "ETag": f'"{unique_id}"',
+            }
+            if request.headers.get("if-none-match") == f'"{unique_id}"':
+                return Response(status_code=304, headers=headers)
+            return Response(content=data, media_type=ctype, headers=headers)
 
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or Settings.from_env().telegram_bot_token
     if platform == "telegram" and bot_token:
@@ -727,7 +748,23 @@ async def get_user_avatar(platform: str, user_id: int):
                     result = resp.json().get("result", {})
                     photos = result.get("photos", [])
                     if photos and photos[0]:
-                        file_id = photos[0][-1]["file_id"]
+                        photo_info = photos[0][-1]
+                        file_id = photo_info["file_id"]
+                        unique_id = photo_info.get("file_unique_id") or file_id
+
+                        # Если фото не менялось — обновляем timestamp и отдаем кэшированные байты
+                        if cache_key in _AVATAR_CACHE and _AVATAR_CACHE[cache_key][1] == unique_id:
+                            _, _, data, ctype = _AVATAR_CACHE[cache_key]
+                            _AVATAR_CACHE[cache_key] = (now_ts, unique_id, data, ctype)
+                            headers = {
+                                "Cache-Control": "no-cache, must-revalidate",
+                                "ETag": f'"{unique_id}"',
+                            }
+                            if request.headers.get("if-none-match") == f'"{unique_id}"':
+                                return Response(status_code=304, headers=headers)
+                            return Response(content=data, media_type=ctype, headers=headers)
+
+                        # Фото обновилось (новый unique_id) — скачиваем актуальный файл
                         f_resp = await client.get(
                             f"https://api.telegram.org/bot{bot_token}/getFile",
                             params={"file_id": file_id},
@@ -740,8 +777,16 @@ async def get_user_avatar(platform: str, user_id: int):
                                 )
                                 if img_resp.status_code == 200:
                                     ctype = img_resp.headers.get("content-type", "image/jpeg")
-                                    _AVATAR_CACHE[cache_key] = (now_ts, img_resp.content, ctype)
-                                    return Response(content=img_resp.content, media_type=ctype)
+                                    _AVATAR_CACHE[cache_key] = (now_ts, unique_id, img_resp.content, ctype)
+                                    headers = {
+                                        "Cache-Control": "no-cache, must-revalidate",
+                                        "ETag": f'"{unique_id}"',
+                                    }
+                                    if request.headers.get("if-none-match") == f'"{unique_id}"':
+                                        return Response(status_code=304, headers=headers)
+                                    return Response(content=img_resp.content, media_type=ctype, headers=headers)
+                    else:
+                        _AVATAR_CACHE.pop(cache_key, None)
         except Exception as e:
             logging.getLogger(__name__).warning("Failed to fetch Telegram avatar for %s: %s", user_id, e)
 
@@ -751,7 +796,8 @@ async def get_user_avatar(platform: str, user_id: int):
         '<text x="48" y="58" font-family="-apple-system, sans-serif" font-size="36" font-weight="bold" fill="#ffffff" text-anchor="middle">U</text>'
         '</svg>'
     )
-    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml")
+    headers = {"Cache-Control": "no-cache, must-revalidate"}
+    return Response(content=svg.encode("utf-8"), media_type="image/svg+xml", headers=headers)
 
 
 # --- Телеметрия Mini App ---

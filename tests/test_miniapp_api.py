@@ -445,6 +445,73 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp2.status_code, 200)
         self.assertEqual(resp2.json(), {"status": "ok"})
 
+    def test_avatar_endpoint_and_cache_invalidation(self):
+        client = TestClient(app)
+
+        # При отсутствии фото возвращается SVG с инициалами и заголовками валидации
+        svg_resp = client.get("/api/miniapp/v1/avatar/telegram/99999")
+        self.assertEqual(svg_resp.status_code, 200)
+        self.assertIn("image/svg+xml", svg_resp.headers["content-type"])
+        self.assertIn("<svg", svg_resp.text)
+        self.assertIn("Cache-Control", svg_resp.headers)
+
+        # Проверка кэширования и 304 Not Modified при наличии ETag
+        from datetime import UTC, datetime
+
+        from miniapp_api.app import _AVATAR_CACHE, _build_profile_response, _get_avatar_url
+        from src.account_service import Account, AccountIdentity
+
+        test_uid = 777777
+        cache_key = f"telegram:{test_uid}"
+        now_ts = datetime.now(UTC).timestamp()
+        _AVATAR_CACHE[cache_key] = (now_ts, "unique_avatar_1", b"fake_jpeg_data", "image/jpeg")
+
+        # 1. Запрос с пустым / несовпадающим ETag возвращает 200 и контент
+        resp = client.get(f"/api/miniapp/v1/avatar/telegram/{test_uid}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b"fake_jpeg_data")
+        self.assertEqual(resp.headers.get("etag"), '"unique_avatar_1"')
+        self.assertIn("no-cache", resp.headers.get("cache-control", ""))
+
+        # 2. Запрос с If-None-Match возвращает 304 Not Modified
+        resp_304 = client.get(
+            f"/api/miniapp/v1/avatar/telegram/{test_uid}",
+            headers={"if-none-match": '"unique_avatar_1"'},
+        )
+        self.assertEqual(resp_304.status_code, 304)
+        self.assertEqual(len(resp_304.content), 0)
+
+        # 3. URL аватара в профиле содержит версию ?v=unique_avatar_1
+        avatar_url = _get_avatar_url("telegram", test_uid)
+        self.assertIn("?v=unique_avatar_1", avatar_url)
+
+        ident = AccountIdentity(
+            account_id="acc-test",
+            platform="telegram",
+            user_id=test_uid,
+            username="test_user",
+            full_name="User Test",
+            created_at="2026-11-05T00:00:00Z",
+            last_seen_at="2026-11-05T00:00:00Z",
+        )
+        acc = Account(
+            id="acc-test",
+            theme="dark",
+            accent="blue",
+            density="comfortable",
+            reduced_motion=False,
+            notifications_enabled=True,
+            created_at="2026-11-05T00:00:00Z",
+            updated_at="2026-11-05T00:00:00Z",
+            identities=(ident,),
+            subscriptions=(),
+        )
+        prof = _build_profile_response(acc, ident)
+        self.assertIn("?v=unique_avatar_1", prof.current_identity.photo_url)
+
+        # Очистка кэша
+        _AVATAR_CACHE.pop(cache_key, None)
+
 
 if __name__ == "__main__":
     unittest.main()

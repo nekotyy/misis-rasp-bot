@@ -16,6 +16,7 @@ vi.mock('../api/profile', () => ({
         platform: 'telegram',
         user_id: 12345,
         username: 'test_user',
+        photo_url: '/api/miniapp/v1/avatar/telegram/12345?v=unique123',
       },
     ],
     subscriptions: [],
@@ -154,5 +155,12 @@ describe('ProfilePage - Добавление групп', () => {
     const badge = screen.getByText('Текущий')
     expect(badge).toBeDefined()
     expect(badge.className).toContain('text-[10px]')
+  })
+
+  it('отображает аватар пользователя с приоритетом ident.photo_url', async () => {
+    renderProfile()
+    const img = (await screen.findByAltText('test_user')) as HTMLImageElement
+    expect(img).toBeDefined()
+    expect(img.src).toContain('/api/miniapp/v1/avatar/telegram/12345?v=unique123')
   })
 })
