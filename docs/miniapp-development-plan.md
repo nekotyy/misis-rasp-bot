@@ -6,6 +6,8 @@
 
 Карта существующих путей и черновые контракты: [miniapp-integration-audit.md](miniapp-integration-audit.md).
 
+Ход работ: [фазы реализации](miniapp-phases.md); архитектурное решение: [ADR 0001](adr/0001-miniapp-architecture.md).
+
 ## 1. Согласованное поведение
 
 - Один React-фронтенд для Telegram и VK с адаптерами платформ; FastAPI-бэкенд поверх бизнес-логики существующего бота.
