@@ -1808,20 +1808,11 @@ class Database:
                 logger.warning("Failed to cleanup old change_events: %s", exc)
                 deleted_counts["change_events"] = 0
 
-            # 3. schedule_snapshots (preserve latest snapshot for each source_key)
-            try:
-                cursor = await db.execute(
-                    """
-                    DELETE FROM schedule_snapshots
-                    WHERE datetime(created_at) < datetime('now', ?)
-                      AND id NOT IN (SELECT MAX(id) FROM schedule_snapshots GROUP BY source_key)
-                    """,
-                    (cutoff_offset,),
-                )
-                deleted_counts["schedule_snapshots"] = cursor.rowcount if cursor.rowcount is not None else 0
-            except Exception as exc:
-                logger.warning("Failed to cleanup old schedule_snapshots: %s", exc)
-                deleted_counts["schedule_snapshots"] = 0
+            # До реализации и успешного завершения backfill нельзя удалять
+            # единственный источник исторических дней. Остальные журналы
+            # продолжают очищаться по обычной политике.
+            deleted_counts["schedule_snapshots"] = 0
+            logger.warning("Очистка снимков приостановлена до восстановления архива расписания.")
 
             # 4. system_errors
             try:
