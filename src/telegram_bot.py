@@ -5,6 +5,7 @@ import logging
 import tempfile
 import zipfile
 from collections import defaultdict
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -81,6 +82,7 @@ from src.schedule_service import (
     university_week_name,
 )
 from src.schedule_sources import UNIVERSITY_BELLS_HTML
+from src.snapshot_acceptance import save_admin_snapshot
 from src.subscription_utils import (
     make_audience_subscription,
     make_group_subscription,
@@ -1585,22 +1587,28 @@ def build_dispatcher(
     ) -> bool:
         if not file_path.exists():
             return False
-        size = file_path.stat().st_size
-        if size <= ADMIN_FILE_MAX_BYTES:
-            await bot.send_document(chat_id, document=FSInputFile(file_path), caption=caption)
-            return True
-
-        with tempfile.TemporaryDirectory(prefix="tg-admin-") as tmp_dir:
-            zip_path = Path(tmp_dir) / f"{caption}.zip"
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.write(file_path, arcname=caption)
-            if zip_path.stat().st_size > ADMIN_FILE_MAX_BYTES:
-                return False
-            try:
-                await bot.send_document(chat_id, document=FSInputFile(zip_path), caption=zip_path.name)
+        snapshot = db.snapshot() if file_path.resolve() == db.path.resolve() else nullcontext(file_path)
+        async with snapshot as source_path:
+            size = source_path.stat().st_size
+            if size <= ADMIN_FILE_MAX_BYTES:
+                await bot.send_document(chat_id, document=FSInputFile(source_path), caption=caption)
                 return True
-            except TelegramEntityTooLarge:
-                return False
+
+            with tempfile.TemporaryDirectory(prefix="tg-admin-") as tmp_dir:
+                zip_path = Path(tmp_dir) / f"{caption}.zip"
+
+                def compress() -> None:
+                    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.write(source_path, arcname=caption)
+
+                await asyncio.to_thread(compress)
+                if zip_path.stat().st_size > ADMIN_FILE_MAX_BYTES:
+                    return False
+                try:
+                    await bot.send_document(chat_id, document=FSInputFile(zip_path), caption=zip_path.name)
+                    return True
+                except TelegramEntityTooLarge:
+                    return False
 
     async def sync_lesson_counters_from_file() -> None:
         try:
@@ -1949,17 +1957,9 @@ def build_dispatcher(
                 logger.warning("Admin refresh failed for source %s: %s", source["source_title"], exc)
                 rows.append((source["source_title"], "-", f"ошибка: {exc}"))
                 continue
-            await db.save_snapshot(
-                "current",
-                snapshot_hash,
-                snapshot,
-                source["schedule_id"],
-                source["group_name"],
-                source_type=source["source_type"],
-                source_key=source["source_key"],
-                source_title=source["source_title"],
-                source_url=source["source_url"],
-            )
+            if not await save_admin_snapshot(db, source, snapshot, snapshot_hash, snapshot_type="current"):
+                rows.append((source["source_title"], "-", "пустой ответ сайта пропущен"))
+                continue
             rows.append((source["source_title"], snapshot.fetched_at.strftime("%Y-%m-%d %H:%M"), "перепарсено"))
         return rows
 

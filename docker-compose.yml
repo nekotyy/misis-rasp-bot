@@ -39,14 +39,44 @@ services:
     volumes:
       - ./runtime:/app/runtime
 
+  miniapp-api:
+    build: .
+    container_name: misis-miniapp-api
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file:
+      - .env
+    environment:
+      TZ: ${APP_TIMEZONE:-Europe/Moscow}
+      DATABASE_PATH: /app/runtime/bot.db
+      LESSON_COUNTERS_PATH: /app/runtime/lesson_counters.json
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+      MINIAPP_DEV_MODE: ${MINIAPP_DEV_MODE:-0}
+    command: ["uvicorn", "miniapp_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${MINIAPP_API_BIND_IP:-127.0.0.1}:${MINIAPP_API_PORT:-8000}:8000"
+    volumes:
+      - ./runtime:/app/runtime
+
+  miniapp-frontend:
+    build:
+      context: ./miniapp_frontend
+      dockerfile: Dockerfile
+    container_name: misis-miniapp-frontend
+    restart: unless-stopped
+    ports:
+      - "${MINIAPP_FRONTEND_BIND_IP:-127.0.0.1}:${MINIAPP_FRONTEND_PORT:-3000}:80"
+
   nginx:
     image: nginx:1.27-alpine
-    container_name: misis-dashboard-nginx
+    container_name: misis-nginx
     restart: unless-stopped
     profiles:
       - nginx
     depends_on:
       - web
+      - miniapp-api
+      - miniapp-frontend
     environment:
       NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-dashboard.example.com}
       NGINX_HTTP_PORT: ${NGINX_HTTP_PORT:-80}
@@ -54,11 +84,18 @@ services:
       WEB_UPSTREAM: ${WEB_UPSTREAM:-web:8080}
       NGINX_SSL_CERT_PATH: ${NGINX_SSL_CERT_PATH:-/etc/letsencrypt/live/dashboard.example.com/fullchain.pem}
       NGINX_SSL_KEY_PATH: ${NGINX_SSL_KEY_PATH:-/etc/letsencrypt/live/dashboard.example.com/privkey.pem}
+      MINIAPP_SERVER_NAME: ${MINIAPP_SERVER_NAME:-miniapp.opk.nekoty.ru}
+      MINIAPP_HTTPS_PORT: ${MINIAPP_HTTPS_PORT:-443}
+      MINIAPP_API_UPSTREAM: ${MINIAPP_API_UPSTREAM:-miniapp-api:8000}
+      MINIAPP_FRONTEND_UPSTREAM: ${MINIAPP_FRONTEND_UPSTREAM:-miniapp-frontend:80}
+      MINIAPP_SSL_CERT_PATH: ${MINIAPP_SSL_CERT_PATH:-/etc/letsencrypt/live/miniapp.opk.nekoty.ru/fullchain.pem}
+      MINIAPP_SSL_KEY_PATH: ${MINIAPP_SSL_KEY_PATH:-/etc/letsencrypt/live/miniapp.opk.nekoty.ru/privkey.pem}
     ports:
       - "${NGINX_HTTP_PORT:-80}:80"
+      - "${MINIAPP_HTTPS_PORT:-443}:443"
       - "${NGINX_HTTPS_PORT:-2443}:2443"
     volumes:
-      - ./deploy/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./deploy/nginx:/etc/nginx/templates:ro
       - ./deploy/certs:/etc/letsencrypt:ro
 
   rabbitmq:

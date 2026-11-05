@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ИАС ОПК">
+  <rect width="64" height="64" rx="14" fill="#274a8a"/>
+  <path d="M32 14 8 26l24 12 24-12z" fill="#fff"/>
+  <path d="M18 33v10c0 4 6.5 8 14 8s14-4 14-8V33l-14 7z" fill="#fff" fill-opacity=".85"/>
+  <path d="M56 27v14" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+</svg>

@@ -36,6 +36,7 @@ from vkbottle.exception_factory.base_exceptions import VKAPIError
 from vkbottle.http import AiohttpClient
 from vkbottle.modules import json as vk_json
 from vkbottle.polling import BotPolling
+from vkbottle.tools import DocMessagesUploader
 
 from src.outbox_context import delivery_context
 
@@ -105,6 +106,14 @@ class StrictJSONResponseValidator(ABCResponseValidator):
                 return parsed
         preview = str(response)[:200].replace("\n", " ")
         raise VkTransportError(f"VK вернул не-JSON ответ на {method}: {preview}")
+
+
+class ResilientDocMessagesUploader(DocMessagesUploader):
+    """Не-JSON от сервера загрузки тоже должен запускать сетевой повтор."""
+
+    async def upload_files(self, upload_url: str, files: dict[str, Any]) -> dict[str, Any]:
+        response = await self.api.http_client.request_text(upload_url, method="POST", data=files)
+        return await StrictJSONResponseValidator().validate("загрузку документа", {}, response, self.api)
 
 
 class ResilientAiohttpClient(AiohttpClient):

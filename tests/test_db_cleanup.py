@@ -69,8 +69,8 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
         res = await self.db.cleanup_old_records(days=90)
         self.assertEqual(res["deleted_counts"]["delivery_events"], 1)
         self.assertEqual(res["deleted_counts"]["change_events"], 1)
-        # Group A's old snapshot should be deleted, Group B's sole old snapshot MUST BE PRESERVED
-        self.assertEqual(res["deleted_counts"]["schedule_snapshots"], 1)
+        # Исторические снимки сохраняются до завершения backfill.
+        self.assertEqual(res["deleted_counts"]["schedule_snapshots"], 0)
 
         async with aiosqlite.connect(self.db_path) as conn:
             # Check delivery_events
@@ -79,12 +79,13 @@ class DatabaseCleanupTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0][0], 1)
 
-            # Check schedule_snapshots: Group A new and Group B sole old must remain
+            # Снимки обеих групп сохранены, остальные журналы очищены.
             async with conn.execute("SELECT source_key, snapshot_hash FROM schedule_snapshots ORDER BY id ASC") as cursor:
                 rows = await cursor.fetchall()
-                self.assertEqual(len(rows), 2)
-                self.assertEqual(rows[0], ("group:1", "new_hash_a"))
-                self.assertEqual(rows[1], ("group:2", "sole_old_hash_b"))
+                self.assertEqual(len(rows), 3)
+                self.assertEqual(rows[0], ("group:1", "old_hash_a"))
+                self.assertEqual(rows[1], ("group:1", "new_hash_a"))
+                self.assertEqual(rows[2], ("group:2", "sole_old_hash_b"))
 
     async def test_scheduler_cleanup_job_trigger(self):
         mock_db = MagicMock()

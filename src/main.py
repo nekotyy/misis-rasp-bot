@@ -14,6 +14,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from src.archive_backfill import ArchiveBackfill
 from src.config import Settings
 from src.db import Database
 from src.db_migrations import apply_migrations
@@ -354,6 +355,7 @@ async def main() -> None:
     log_memory("после старта")
     db = Database(settings.database_path)
     await db.initialize()
+    start_background_task("archive-backfill", ArchiveBackfill(settings.database_path, settings.app_timezone).run())
 
     group_catalog = GroupCatalog(settings.schedule_url, university_url=settings.university_schedule_url, db=db)
     await group_catalog.ensure_loaded()

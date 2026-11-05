@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_DELIVERY_TTL = 86400.0
 EPHEMERAL_DELIVERY_TTL = 8.0
 RETRY_DELAYS = (10.0, 30.0, 60.0, 300.0)
+API_REQUEST_TIMEOUT = 90.0
+DOCUMENT_REQUEST_TIMEOUT = 600.0
 
 
 class DeliveryExpiredError(TimeoutError):
@@ -99,14 +101,12 @@ class DeliveryOutbox:
         async def send(row):
             payload = self.files.decode(json.loads(row["payload_json"]))
             if row["method"] == "outbox.sendDocument":
-                from vkbottle.tools import DocMessagesUploader
-
-                from src.vk_runtime import _extract_message_id
+                from src.vk_runtime import ResilientDocMessagesUploader, _extract_message_id
                 # API без outbox исключает рекурсивную постановку docs.save самим воркером.
                 upload_api = copy(api)
                 upload_api.outbox = None
-                document = await DocMessagesUploader(upload_api).upload(
-                    payload["document"].path, peer_id=payload["peer_id"], title=payload["message"],
+                document = await ResilientDocMessagesUploader(upload_api).upload(
+                    str(payload["document"].path), peer_id=payload["peer_id"], title=payload["message"],
                 )
                 response = await API.request(api, "messages.send", {
                     "peer_id": payload["peer_id"], "message": payload["message"],
@@ -339,7 +339,8 @@ class DeliveryOutbox:
             keep_alive = asyncio.create_task(heartbeat(), name="outbox-lease")
             try:
                 try:
-                    async with asyncio.timeout(min(90.0, max(0.01, row["expires_at"] - time()))):
+                    timeout = DOCUMENT_REQUEST_TIMEOUT if row["method"] in {"sendDocument", "outbox.sendDocument"} else API_REQUEST_TIMEOUT
+                    async with asyncio.timeout(min(timeout, max(0.01, row["expires_at"] - time()))):
                         result = await self._senders[row["platform"]](row)
                 except Exception as error:
                     delay = retry_delay(error, row["attempts"])

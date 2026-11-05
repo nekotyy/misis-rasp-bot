@@ -266,6 +266,9 @@ class ApplySummaryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(applied)
         self.assertEqual(jobs.apply_manual_snapshot.await_count, 2)
+        for call in jobs.apply_manual_snapshot.await_args_list:
+            self.assertEqual(call.kwargs["origin"], "ocr")
+            self.assertEqual(call.kwargs["observed_dates"], {draft.result.date_iso})
         self.assertIn("2 из 2", report)
 
     async def test_refuses_when_nothing_resolved(self) -> None:

@@ -286,6 +286,12 @@ flowchart LR
 - Вложения копируются в `runtime/outbox_files/` (рядом с БД при другом `DATABASE_PATH`) до постановки
   задания. Это позволяет удалить исходный временный файл. Копия рабочей SQLite создаётся backup API
   с учётом WAL. Права веб-админки, cookie policy и проверки доступа остаются на существующих endpoints.
+- Ручная выгрузка БД в Telegram/VK и автобэкапы без outbox также используют согласованный снимок
+  SQLite с учётом WAL; ZIP для больших баз Telegram создаётся из этого снимка. Выгрузка БД и JSON
+  в VK выполняется в фоне, в отдельной последовательности outbox: админкой можно пользоваться,
+  повторный запуск той же выгрузки отклоняется.
+  Outbox даёт отправке документов до 10 минут на попытку (обычным API-запросам — 90 секунд),
+  а не-JSON от сервера загрузки VK обрабатывается как временный сетевой сбой.
 - При старте и далее раз в сутки outbox автоматически удаляет записи и их копии вложений старше
   **трёх календарных месяцев**, сохраняя активные lease. Срок хранения истории отличается от 24-часового
   срока актуальности отправки. Очистка ограничена таблицей outbox и собственным каталогом вложений.
@@ -399,6 +405,8 @@ docker compose up -d --build
 - `bot`
 - `rabbitmq`
 - `web`
+- `miniapp-api`
+- `miniapp-frontend`
 - `nginx`
 
 Можно включить профиль и без `.env`:
@@ -409,13 +417,15 @@ docker compose --profile nginx up -d --build
 
 Пример публичной схемы:
 
-- `http://dashboard.example.com`
-- `https://dashboard.example.com`
+- `https://miniapp.opk.nekoty.ru` (Mini App: Telegram WebApp / VK Mini App, порт 443 HTTPS)
+- `https://dashboard.example.com` (Админ-панель)
 
 Внутри Docker трафик идет так:
 
 ```text
-internet -> nginx -> web:8080
+internet (port 443) -> nginx -> miniapp-frontend:80 (SPA)
+                             -> miniapp-api:8000 (/api/*)
+internet (port 2443) -> nginx -> web:8080 (Админка)
 ```
 
 ### Сертификаты
@@ -423,6 +433,8 @@ internet -> nginx -> web:8080
 Если используется `nginx`, контейнер ожидает сертификаты в смонтированной директории:
 
 ```text
+deploy/certs/live/miniapp.opk.nekoty.ru/fullchain.pem
+deploy/certs/live/miniapp.opk.nekoty.ru/privkey.pem
 deploy/certs/live/dashboard.example.com/fullchain.pem
 deploy/certs/live/dashboard.example.com/privkey.pem
 ```

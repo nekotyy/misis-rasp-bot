@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.models import DaySchedule, Lesson, ScheduleSnapshot
 from src.ocr_import import OcrScheduleImporter, build_ocr_importer, format_ocr_preview
-from src.ocr_schedule import OcrEngineError, OcrScheduleParser
+from src.ocr_schedule import OcrEngineError, OcrScheduleParser, merge_ocr_days
 
 RECOGNIZED_JSON = json.dumps(
     {
@@ -313,6 +313,8 @@ class ApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call.args[0]["schedule_id"], 600)
         self.assertIsInstance(call.args[1], ScheduleSnapshot)
         self.assertTrue(call.kwargs["notify"])
+        self.assertEqual(call.kwargs["origin"], "ocr")
+        self.assertEqual(call.kwargs["observed_dates"], {"2026-09-01"})
         self.assertIn("Отличий от эталона нет", report)
 
     async def test_apply_without_notify_passes_flag(self) -> None:
@@ -499,6 +501,54 @@ class ManualSnapshotPipelineTests(unittest.IsolatedAsyncioTestCase):
         args = jobs.apply_snapshot.await_args
         self.assertEqual(args.args[2], compute_snapshot_hash(snapshot))
         self.assertFalse(args.kwargs["notify"])
+
+
+class OcrMergeUniversityWeekTests(unittest.TestCase):
+    def test_untouched_days_keep_week_variants_and_subgroup_lessons(self) -> None:
+        previous = ScheduleSnapshot(
+            group_name="Группа",
+            fetched_at=datetime(2026, 9, 1, 10),
+            days=[DaySchedule(
+                date_label="02.09.2026", date_iso="2026-09-02", week_variant=2, current_week_variant=1,
+                lessons=[
+                    Lesson(number=1, subject="Физика (подгруппа 1)", teacher="Иванов", classroom="101"),
+                    Lesson(number=1, subject="Химия (подгруппа 2)", teacher="Петров", classroom="102"),
+                ],
+            )],
+        )
+        imported = ScheduleSnapshot(
+            group_name="Группа", fetched_at=datetime(2026, 9, 1, 12),
+            days=[DaySchedule(date_label="01.09.2026", date_iso="2026-09-01", lessons=[])],
+        )
+
+        result = merge_ocr_days(previous.to_dict(), imported)
+
+        self.assertEqual(result.kept_dates, ["2026-09-02"])
+        self.assertEqual(result.snapshot.days[1], previous.days[0])
+
+    def test_current_week_is_shifted_to_the_new_snapshot_date(self) -> None:
+        previous = ScheduleSnapshot(
+            group_name="Группа", fetched_at=datetime(2026, 9, 1, 10),
+            days=[DaySchedule(
+                date_label="02.09.2026", date_iso="2026-09-02", lessons=[],
+                week_variant=1, current_week_variant=1,
+            )],
+        )
+        imported = ScheduleSnapshot(group_name="Группа", fetched_at=datetime(2026, 9, 8, 12), days=[])
+
+        day = merge_ocr_days(previous.to_dict(), imported).snapshot.days[0]
+
+        self.assertEqual(day.week_variant, 1)
+        self.assertEqual(day.current_week_variant, 2)
+
+    def test_missing_old_fetch_time_does_not_invent_current_week(self) -> None:
+        previous = {"days": [{"date_iso": "2026-09-02", "lessons": [], "week_variant": 1, "current_week_variant": 1}]}
+        imported = ScheduleSnapshot(group_name="Группа", fetched_at=datetime(2026, 9, 8, 12), days=[])
+
+        day = merge_ocr_days(previous, imported).snapshot.days[0]
+
+        self.assertEqual(day.week_variant, 1)
+        self.assertIsNone(day.current_week_variant)
 
 
 class SingleGroupDuplicateLessonTests(unittest.TestCase):

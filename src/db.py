@@ -1,6 +1,10 @@
 import json
 import logging
+import os
 import re
+import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -8,8 +12,16 @@ from typing import Any
 
 import aiosqlite
 
+from src.account_schema import ACCOUNTS_SCHEMA_V1
+from src.account_service import AccountService
 from src.models import ScheduleSnapshot, UserRecord
 from src.outbox_store import OUTBOX_SCHEMA
+from src.schedule_archive import archive_accepted_snapshot
+from src.schedule_archive_schema import (
+    SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1,
+    SCHEDULE_ARCHIVE_MARKERS_SCHEMA_V1,
+    SCHEDULE_ARCHIVE_SCHEMA_V1,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +39,25 @@ class Database:
     def _connect(self) -> aiosqlite.Connection:
         return aiosqlite.connect(self.path, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
 
+    @asynccontextmanager
+    async def snapshot(self) -> AsyncIterator[Path]:
+        """Временная согласованная копия SQLite, включая подтверждённые записи WAL."""
+        with tempfile.TemporaryDirectory(prefix="bot-backup-") as directory:
+            path = Path(directory) / self.path.name
+            async with (
+                aiosqlite.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=SQLITE_BUSY_TIMEOUT_SECONDS) as source,
+                aiosqlite.connect(path) as target,
+            ):
+                await source.backup(target)
+            yield path
+
     async def initialize(self) -> None:
         async with self._connect() as db:
             await db.executescript(OUTBOX_SCHEMA)
+            await db.executescript(SCHEDULE_ARCHIVE_SCHEMA_V1)
+            await db.executescript(SCHEDULE_ARCHIVE_BACKFILL_SCHEMA_V1)
+            await db.executescript(SCHEDULE_ARCHIVE_MARKERS_SCHEMA_V1)
+            await db.executescript(ACCOUNTS_SCHEMA_V1)
             await db.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -644,6 +672,18 @@ class Database:
                     user_id,
                 ),
             )
+            account = await AccountService.get_or_create_account(db, platform, user_id)
+            await AccountService.add_subscription(
+                db,
+                account.id,
+                subscription_type=subscription_type,
+                subscription_key=subscription_key,
+                subscription_title=subscription_title,
+                subscription_url=subscription_url,
+                group_name=group_name,
+                schedule_id=schedule_id,
+                is_primary=True,
+            )
             await db.commit()
 
     async def clear_user_group(self, platform: str, user_id: int) -> None:
@@ -658,6 +698,15 @@ class Database:
                    AND subscription_type = 'group' AND schedule_id = ? AND schedule_id < 0""",
                 (subgroup, platform, user_id, schedule_id),
             )
+            if cursor.rowcount:
+                account = await AccountService.get_account_by_identity(db, platform, user_id)
+                if account and account.primary_subscription:
+                    await AccountService.update_subscription(
+                        db,
+                        account.id,
+                        account.primary_subscription.id,
+                        university_subgroup=subgroup or 0,
+                    )
             await db.commit()
         return bool(cursor.rowcount)
 
@@ -696,6 +745,17 @@ class Database:
                     user_id,
                 ),
             )
+            account = await AccountService.get_or_create_account(db, platform, user_id)
+            await AccountService.add_subscription(
+                db,
+                account.id,
+                subscription_type="audience",
+                subscription_key=audience_subscription_key,
+                subscription_title=audience_subscription_title,
+                subscription_url=audience_subscription_url,
+                group_name=audience_subscription_title,
+                is_primary=False,
+            )
             await db.commit()
 
     async def clear_user_audience_subscription(self, platform: str, user_id: int) -> None:
@@ -711,6 +771,11 @@ class Database:
                 """,
                 (platform, user_id),
             )
+            account = await AccountService.get_account_by_identity(db, platform, user_id)
+            if account:
+                for sub in account.subscriptions:
+                    if sub.subscription_type == "audience":
+                        await AccountService.remove_subscription(db, account.id, sub.id)
             await db.commit()
 
     async def clear_user_subscription(self, platform: str, user_id: int) -> None:
@@ -733,6 +798,11 @@ class Database:
                 """,
                 (platform, user_id),
             )
+            account = await AccountService.get_account_by_identity(db, platform, user_id)
+            if account:
+                for sub in account.subscriptions:
+                    if sub.is_primary:
+                        await AccountService.remove_subscription(db, account.id, sub.id)
             await db.commit()
 
     async def set_editor(self, platform: str, user_id: int, is_editor: bool) -> None:
@@ -759,6 +829,13 @@ class Database:
                 """,
                 (int(enabled), int(enabled), platform, user_id),
             )
+            account = await AccountService.get_account_by_identity(db, platform, user_id)
+            if account:
+                await AccountService.update_preferences(
+                    db,
+                    account.id,
+                    notifications_enabled=enabled,
+                )
             await db.commit()
 
     async def mark_delivery_auto_disabled(self, platform: str, user_id: int, disabled: bool) -> None:
@@ -830,13 +907,75 @@ class Database:
         subscription_key: str | None = None,
         target_audience: str = "all",
     ) -> list[UserRecord]:
-        users = await self.get_users_for_platform(
+        primary_users = await self.get_users_for_platform(
             platform,
             schedule_id=schedule_id,
             subscription_key=subscription_key,
             target_audience=target_audience,
         )
-        return [user for user in users if user.homework_notifications_enabled]
+        active_primary = [u for u in primary_users if u.homework_notifications_enabled and not u.delivery_disabled_auto]
+
+        # Дополнительные подписки из account_subscriptions
+        query = """
+            SELECT
+                u.platform,
+                u.user_id,
+                u.username,
+                u.full_name,
+                s.subscription_type,
+                s.subscription_key,
+                s.subscription_title,
+                s.subscription_url,
+                u.audience_subscription_key,
+                u.audience_subscription_title,
+                u.audience_subscription_url,
+                s.group_name,
+                s.schedule_id,
+                u.is_admin,
+                u.is_editor,
+                s.notifications_enabled,
+                u.delivery_disabled_auto,
+                u.created_at,
+                u.last_seen_at,
+                u.custom_sticker_file_id,
+                s.university_subgroup
+            FROM account_subscriptions s
+            JOIN account_identities ai ON ai.account_id = s.account_id
+            JOIN accounts a ON a.id = s.account_id
+            JOIN users u ON u.platform = ai.platform AND u.user_id = ai.user_id
+            WHERE ai.platform = ?
+              AND s.is_primary = 0
+              AND s.notifications_enabled = 1
+              AND a.notifications_enabled = 1
+              AND u.delivery_disabled_auto = 0
+        """
+        clauses = []
+        params: list[Any] = [platform]
+        if schedule_id is not None:
+            clauses.append("s.schedule_id = ?")
+            params.append(schedule_id)
+        if subscription_key is not None:
+            clauses.append("s.subscription_key = ?")
+            params.append(subscription_key)
+        if target_audience == "teachers":
+            clauses.append("s.subscription_type = 'teacher'")
+        elif target_audience == "students":
+            clauses.append("(COALESCE(s.subscription_type, 'group') != 'teacher')")
+        if clauses:
+            query += " AND " + " AND ".join(clauses)
+
+        async with self._connect() as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+
+        additional_users = [self._row_to_user_record(row) for row in rows]
+        seen_user_ids = {u.user_id for u in active_primary}
+        deduped = list(active_primary)
+        for u in additional_users:
+            if u.user_id not in seen_user_ids:
+                seen_user_ids.add(u.user_id)
+                deduped.append(u)
+        return deduped
 
     async def get_group_user_stats(self) -> list[dict[str, int | str]]:
         async with self._connect() as db:
@@ -925,6 +1064,20 @@ class Database:
                     FROM users
                     WHERE audience_subscription_key IS NOT NULL
                     GROUP BY audience_subscription_key, audience_subscription_title, audience_subscription_url
+
+                    UNION ALL
+
+                    SELECT
+                        subscription_type AS source_type,
+                        subscription_key AS source_key,
+                        subscription_title AS source_title,
+                        subscription_url AS source_url,
+                        schedule_id,
+                        group_name,
+                        COUNT(*) AS users_count
+                    FROM account_subscriptions
+                    WHERE is_primary = 0 AND subscription_key IS NOT NULL
+                    GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
                 )
                 GROUP BY source_type, source_key, source_title, source_url, schedule_id, group_name
                 ORDER BY source_title
@@ -1103,6 +1256,7 @@ class Database:
         (см. apply_snapshot: baseline is None -> тихо сохраняет, без рассылки).
         """
         async with self._connect() as db:
+            new_key = f"group:{schedule_id}"
             cursor = await db.execute(
                 """
                 UPDATE users
@@ -1110,9 +1264,22 @@ class Database:
                     group_name = ?, schedule_id = ?
                 WHERE subscription_key = ?
                 """,
-                (f"group:{schedule_id}", group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
+                (new_key, group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
             )
             moved = cursor.rowcount
+            if moved:
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_archive SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_references SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
+                await db.execute(
+                    "UPDATE OR IGNORE account_subscriptions SET subscription_key = ?, subscription_title = ?, subscription_url = ?, group_name = ?, schedule_id = ? WHERE subscription_key = ?",
+                    (new_key, group_name, f"rasp:{schedule_id}", group_name, schedule_id, pending_key),
+                )
             await db.commit()
         return moved
 
@@ -1155,6 +1322,14 @@ class Database:
             )
             moved = cursor.rowcount
             if moved:
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_archive SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
+                await db.execute(
+                    "UPDATE OR IGNORE schedule_day_references SET source_key = ? WHERE source_key = ?",
+                    (new_key, pending_key),
+                )
                 for snapshot_type in ("current", "daily_baseline"):
                     await db.execute(
                         """
@@ -1188,11 +1363,15 @@ class Database:
         source_key: str | None = None,
         source_title: str | None = None,
         source_url: str | None = None,
+        *,
+        archive_origin: str | None = None,
+        archive_dates: set[str] | None = None,
+        archive_projected: bool = False,
     ) -> None:
         content_json = json.dumps(self._snapshot_to_dict(snapshot), ensure_ascii=False)
         now = datetime.now().isoformat(timespec="seconds")
         async with self._connect() as db:
-            await db.execute(
+            cursor = await db.execute(
                 """
                 INSERT INTO schedule_snapshots (
                     snapshot_type, source_type, source_key, source_title, source_url, group_name, schedule_id, snapshot_hash, content_json, fetched_at, created_at
@@ -1213,6 +1392,16 @@ class Database:
                     now,
                 ),
             )
+            if archive_origin and source_key and source_type:
+                await archive_accepted_snapshot(
+                    db, snapshot, source_key=source_key, source_type=source_type,
+                    origin=archive_origin, timezone=os.getenv("APP_TIMEZONE", "Europe/Moscow"),
+                    snapshot_id=cursor.lastrowid, dates=archive_dates,
+                )
+            if archive_projected or archive_origin:
+                await db.execute(
+                    "INSERT INTO schedule_archive_projected_snapshots (snapshot_id) VALUES (?)", (cursor.lastrowid,),
+                )
             await db.commit()
 
     async def get_latest_snapshot(
@@ -1791,20 +1980,11 @@ class Database:
                 logger.warning("Failed to cleanup old change_events: %s", exc)
                 deleted_counts["change_events"] = 0
 
-            # 3. schedule_snapshots (preserve latest snapshot for each source_key)
-            try:
-                cursor = await db.execute(
-                    """
-                    DELETE FROM schedule_snapshots
-                    WHERE datetime(created_at) < datetime('now', ?)
-                      AND id NOT IN (SELECT MAX(id) FROM schedule_snapshots GROUP BY source_key)
-                    """,
-                    (cutoff_offset,),
-                )
-                deleted_counts["schedule_snapshots"] = cursor.rowcount if cursor.rowcount is not None else 0
-            except Exception as exc:
-                logger.warning("Failed to cleanup old schedule_snapshots: %s", exc)
-                deleted_counts["schedule_snapshots"] = 0
+            # До реализации и успешного завершения backfill нельзя удалять
+            # единственный источник исторических дней. Остальные журналы
+            # продолжают очищаться по обычной политике.
+            deleted_counts["schedule_snapshots"] = 0
+            logger.warning("Очистка снимков приостановлена до восстановления архива расписания.")
 
             # 4. system_errors
             try:

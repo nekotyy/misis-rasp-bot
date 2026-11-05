@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.config import Settings
 from src.db import Database
+from src.delivery_outbox import DeliveryOutbox
 from src.subscription_utils import make_group_subscription
 from src.vk_bot import USER_ERROR_TEXT, build_vk_bot, strip_vk_bot_mention
 
@@ -135,6 +137,128 @@ class VkBotUxTests(unittest.IsolatedAsyncioTestCase):
         await self.send("Назад в админку", user_id=ADMIN_ID)
         text, _ = self.last_screen()
         self.assertIn("Админ-панель", text)
+
+    async def test_admin_can_download_database_using_real_vk_uploader(self) -> None:
+        original = self.bot.api.request.side_effect
+
+        async def document_request(method, params, version=None):
+            if method == "docs.getMessagesUploadServer":
+                return {"response": {"upload_url": "https://upload.example.test/document"}}
+            if method == "docs.save":
+                return {"response": {"type": "doc", "doc": {"owner_id": ADMIN_ID, "id": 7, "access_key": "key"}}}
+            return await original(method, params, version)
+
+        self.bot.api.request.side_effect = document_request
+        uploaded_path = self.db_path.parent / "uploaded.db"
+
+        async def upload_file(url, *, method, data):
+            self.assertEqual(data["file"].name, "bot.db")
+            uploaded_path.write_bytes(data["file"].getvalue())
+            return '{"file":"uploaded"}'
+
+        async with self.db._connect() as keeper:
+            await (await keeper.execute("SELECT COUNT(*) FROM users")).fetchone()
+            await self.db.upsert_user("vk", 333, None, "Последняя запись в WAL")
+            self.assertGreater(Path(str(self.db_path) + "-wal").stat().st_size, 0)
+            with patch.object(self.bot.api.http_client, "request_text", AsyncMock(side_effect=upload_file)) as upload:
+                await self.send("Скачать БД", user_id=ADMIN_ID)
+                await self.bot.wait_admin_jobs()
+
+        upload.assert_awaited_once()
+        self.assertEqual((await Database(uploaded_path).get_user("vk", 333)).full_name, "Последняя запись в WAL")
+        self.assertEqual(self.sent()[-1]["attachment"], f"doc{ADMIN_ID}_7_key")
+        self.assertIn("Служебное", self.last_screen()[1])
+
+    async def test_non_admin_cannot_download_database_or_counters(self) -> None:
+        with patch("src.vk_bot.ResilientDocMessagesUploader.upload", AsyncMock()) as upload:
+            await self.send("Скачать БД")
+            await self.send("Скачать пары")
+            await self.bot.wait_admin_jobs()
+        upload.assert_not_awaited()
+        self.assertFalse(any("attachment" in params for params in self.sent()))
+
+    async def test_admin_database_download_through_outbox_contains_latest_data(self) -> None:
+        service = DeliveryOutbox(self.db, poll_interval=0.01)
+        service.bind_vk(self.bot.api)
+        delivered = []
+
+        async def send(row):
+            payload = service.files.decode(json.loads(row["payload_json"]))
+            if row["method"] == "outbox.sendDocument":
+                snapshot = Database(Path(payload["document"].path))
+                self.assertEqual((await snapshot.get_user("vk", 333)).full_name, "Последняя запись в WAL")
+                labels = [button["action"]["label"] for buttons in json.loads(payload["keyboard"])["buttons"] for button in buttons]
+                self.assertIn("Служебное", labels)
+            delivered.append(row["method"])
+            return {"response": 7}
+
+        service._senders["vk"] = send
+        async with self.db._connect() as keeper:
+            await (await keeper.execute("SELECT COUNT(*) FROM users")).fetchone()
+            await self.db.upsert_user("vk", 333, None, "Последняя запись в WAL")
+            await service.start()
+            try:
+                await self.send("Скачать БД", user_id=ADMIN_ID)
+                await self.bot.wait_admin_jobs(timeout=5)
+            finally:
+                await service.stop()
+        self.assertEqual(delivered, ["messages.send", "outbox.sendDocument"])
+        self.assertEqual(await service.store.counts(), {"sent": 2})
+
+    async def test_missing_counters_file_restores_admin_keyboard(self) -> None:
+        await self.send("Скачать пары", user_id=ADMIN_ID)
+        await self.bot.wait_admin_jobs()
+        text, labels = self.last_screen()
+        self.assertIn("lesson_counters.json не найден", text)
+        self.assertIn("Служебное", labels)
+
+    async def test_slow_download_does_not_block_admin_menu_or_start_duplicates(self) -> None:
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def upload_file(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return "doc1_7"
+
+        with patch("src.vk_bot.ResilientDocMessagesUploader.upload", AsyncMock(side_effect=upload_file)) as upload:
+            try:
+                await asyncio.wait_for(self.send("Скачать БД", user_id=ADMIN_ID), timeout=2)
+                await asyncio.wait_for(started.wait(), timeout=2)
+                await self.send("Скачать БД", user_id=ADMIN_ID)
+                self.assertIn("Выгрузка БД уже идёт", self.last_screen()[0])
+                await self.send("Назад в админку", user_id=ADMIN_ID)
+                self.assertIn("Админ-панель", self.last_screen()[0])
+                self.assertEqual(upload.await_count, 1)
+            finally:
+                release.set()
+                await self.bot.wait_admin_jobs()
+
+    async def test_outbox_menu_reply_is_delivered_while_document_is_uploading(self) -> None:
+        service = DeliveryOutbox(self.db, poll_interval=0.01)
+        service.bind_vk(self.bot.api)
+        started, release = asyncio.Event(), asyncio.Event()
+        delivered = []
+
+        async def send(row):
+            payload = json.loads(row["payload_json"])
+            if row["method"] == "outbox.sendDocument":
+                started.set()
+                await release.wait()
+            delivered.append(payload["message"])
+            return {"response": 7}
+
+        service._senders["vk"] = send
+        await service.start()
+        try:
+            await self.send("Скачать БД", user_id=ADMIN_ID)
+            await asyncio.wait_for(started.wait(), timeout=5)
+            await asyncio.wait_for(self.send("Назад в админку", user_id=ADMIN_ID), timeout=5)
+            self.assertIn("Админ-панель\n\nВыбери раздел.", delivered)
+            self.assertNotIn("bot.db", delivered)
+        finally:
+            release.set()
+            await self.bot.wait_admin_jobs(timeout=5)
+            await service.stop()
 
     async def _invite(self, member_id: int) -> None:
         await self.handler(

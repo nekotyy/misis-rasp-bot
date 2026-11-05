@@ -154,7 +154,9 @@ async def run(payload: dict, *, notify: bool, dry_run: bool) -> int:
         logger.info("Пробный запуск: ничего не сохранено.")
         return 0
 
-    change = await jobs.apply_manual_snapshot(source, merged.snapshot, notify=notify)
+    change = await jobs.apply_manual_snapshot(
+        source, merged.snapshot, notify=notify, observed_dates=set(merged.added_dates + merged.replaced_dates),
+    )
     await importer.register_pending_source(source)
     if change is None:
         logger.info("Снимок сохранён. Отличий от эталона нет, рассылки не было.")
