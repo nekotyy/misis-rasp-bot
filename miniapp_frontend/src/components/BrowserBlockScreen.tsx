@@ -10,7 +10,7 @@ interface BrowserBlockScreenProps {
 const DEFAULT_TG_URL =
   import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/misis_rasp_bot'
 const DEFAULT_VK_URL =
-  import.meta.env.VITE_VK_BOT_URL || 'https://vk.com/misis_rasp_bot'
+  import.meta.env.VITE_VK_BOT_URL || 'https://vk.ru/nekotyopk'
 
 export function BrowserBlockScreen({
   message,

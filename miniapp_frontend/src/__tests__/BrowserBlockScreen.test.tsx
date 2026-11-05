@@ -25,6 +25,12 @@ describe('BrowserBlockScreen', () => {
     expect(vkLink?.getAttribute('href')).toBe('https://vk.com/test_app')
   })
 
+  it('использует дефолтную ссылку на группу ВКонтакте', () => {
+    render(<BrowserBlockScreen />)
+    const vkLink = screen.getByText('Открыть ВКонтакте').closest('a')
+    expect(vkLink?.getAttribute('href')).toBe('https://vk.ru/nekotyopk')
+  })
+
   it('отображает кастомное сообщение если оно передано', () => {
     render(<BrowserBlockScreen message="Прямой доступ закрыт!" />)
     expect(screen.getByText('Прямой доступ закрыт!')).toBeDefined()

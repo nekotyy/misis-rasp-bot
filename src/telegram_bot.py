@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
+import re
 import tempfile
 import zipfile
 from collections import defaultdict
@@ -35,6 +38,7 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    WebAppInfo,
 )
 
 from src.config import Settings
@@ -54,6 +58,7 @@ from src.lesson_counters import (
     sync_lesson_counters_for_date,
     teacher_matches,
 )
+from src.message_broker import OutboundMessage
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
     OCR_STAGE_UPLOAD,
@@ -260,7 +265,7 @@ async def build_personalization_keyboard(user_id: int, db: Database) -> InlineKe
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.com/nekotyy"
+SUPPORT_CONTACT = "tg: t.me/nekoty или vk: vk.ru/nekotyopk"
 USER_ERROR_HTML = (
     "<b>Что-то пошло не так при обработке запроса.</b>\n\n"
     "Администратор уже получил отчёт об ошибке. Попробуй ещё раз через минуту.\n"
@@ -1121,6 +1126,9 @@ def build_dispatcher(
     album_tasks: set[asyncio.Task] = set()
     awaiting_custom_donate_stars: set[int] = set()
     awaiting_custom_sticker: set[int] = set()
+    awaiting_bugreport: set[int] = set()
+    awaiting_feedback: set[int] = set()
+    admin_reply_contexts: dict[int, tuple[str, int, int]] = {}
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
     message_rate_locks: dict[int, asyncio.Lock] = {}
@@ -2133,6 +2141,8 @@ def build_dispatcher(
             awaiting_admin_ocr_json,
             awaiting_custom_donate_stars,
             awaiting_custom_sticker,
+            awaiting_bugreport,
+            awaiting_feedback,
         ):
             waiting.discard(user_id)
         for drafts in (
@@ -2491,6 +2501,12 @@ def build_dispatcher(
                 rows.append([InlineKeyboardButton(text="Убрать кабинет", callback_data="settings:audience_clear")])
         if user and user.subscription_key:
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
+        app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
+        rows.append([InlineKeyboardButton(text="📱 Открыть Mini App", web_app=WebAppInfo(url=app_url))])
+        rows.append([
+            InlineKeyboardButton(text="💬 Обратная связь", callback_data="settings:feedback"),
+            InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="settings:bugreport"),
+        ])
         rows.append([InlineKeyboardButton(text="Персонализация", callback_data="settings:personalization")])
         rows.append([InlineKeyboardButton(text="Помощь", callback_data="settings:help")])
         rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:start")])
@@ -2938,6 +2954,225 @@ def build_dispatcher(
             reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
+    async def submit_user_report(msg: Message, report_type: str, report_text: str) -> None:
+        user_id = msg.from_user.id if msg.from_user else msg.chat.id
+        username = msg.from_user.username if msg.from_user else None
+        full_name = msg.from_user.full_name if msg.from_user else ""
+        user_display = f"{full_name} (@{username})" if username else (full_name or f"User {user_id}")
+        fb_id = await db.create_feedback_message(
+            platform="telegram",
+            user_id=user_id,
+            user_name=user_display,
+            message_type=report_type,
+            message_text=report_text,
+        )
+        if report_type == "bugreport":
+            await send_reply(
+                msg,
+                f"✅ <b>Баг-репорт #{fb_id} отправлен разработчикам!</b>\n\n"
+                "Спасибо за помощь в улучшении сервиса расписания. Мы изучим проблему в ближайшее время.",
+            )
+        else:
+            await send_reply(
+                msg,
+                f"✅ <b>Сообщение обратной связи #{fb_id} передано администратору!</b>\n\n"
+                "Как только поступит ответ, бот сразу пришлёт его вам в этот диалог.",
+            )
+        type_title = "🐛 <b>Новый баг-репорт</b>" if report_type == "bugreport" else "💬 <b>Новое сообщение обратной связи</b>"
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+        user_link = format_user_profile_link("telegram", user_id, username, html=True)
+        admin_msg = (
+            f"{type_title} [#{fb_id}]\n\n"
+            f"<b>От:</b> {user_link} (ID: <code>{user_id}</code>, Telegram)\n"
+            f"<b>Время:</b> {now_str}\n\n"
+            f"<b>Текст:</b>\n{escape(report_text)}\n\n"
+            "──────────────────\n"
+            "<b>Чтобы ответить:</b>\n"
+            "• Ответьте (Reply) на это сообщение\n"
+            f"• Или командой: <code>/reply tg {user_id} &lt;текст ответа&gt;</code>"
+        )
+        for a_id in settings.admin_telegram_ids:
+            try:
+                sent = await msg.bot.send_message(a_id, admin_msg)
+                admin_reply_contexts[sent.message_id] = ("telegram", user_id, fb_id)
+            except Exception as exc:
+                logger.warning("Не удалось уведомить админа TG %s: %s", a_id, exc)
+        if broadcaster is not None and settings.admin_vk_id:
+            vk_type = "Новый баг-репорт" if report_type == "bugreport" else "Новое сообщение обратной связи"
+            vk_note = (
+                f"[{vk_type} #{fb_id}]\n"
+                f"От: {user_display} (ID: {user_id}, Telegram)\n"
+                f"Время: {now_str}\n\n"
+                f"Текст:\n{report_text}\n\n"
+                f"Ответить: /reply tg {user_id} <текст>"
+            )
+            with contextlib.suppress(Exception):
+                await broadcaster.deliver(OutboundMessage(
+                    platform="vk",
+                    user_id=settings.admin_vk_id,
+                    text=vk_note,
+                    campaign_type="admin_notify",
+                ))
+
+    async def send_admin_reply_to_user(
+        msg: Message,
+        target_platform: str,
+        target_user_id: int,
+        reply_text: str,
+        feedback_id: int | None = None,
+    ) -> None:
+        delivered = False
+        if target_platform == "telegram":
+            try:
+                await msg.bot.send_message(
+                    target_user_id,
+                    f"💬 <b>Ответ от администратора:</b>\n\n{escape(reply_text)}"
+                )
+                delivered = True
+            except Exception as exc:
+                logger.warning("Не удалось отправить ответ пользователю TG %s: %s", target_user_id, exc)
+                await send_reply(msg, f"❌ Ошибка отправки пользователю Telegram {target_user_id}: {exc}")
+                return
+        elif target_platform == "vk":
+            if broadcaster is not None:
+                try:
+                    await broadcaster.deliver(OutboundMessage(
+                        platform="vk",
+                        user_id=target_user_id,
+                        text=f"💬 Ответ от администратора:\n\n{reply_text}",
+                        campaign_type="feedback_reply",
+                    ))
+                    delivered = True
+                except Exception as exc:
+                    logger.warning("Не удалось отправить ответ пользователю VK %s: %s", target_user_id, exc)
+                    await send_reply(msg, f"❌ Ошибка отправки пользователю VK {target_user_id}: {exc}")
+                    return
+            else:
+                await send_reply(msg, "❌ Доставка в VK недоступна (отсутствует broadcaster).")
+                return
+        if delivered:
+            if feedback_id:
+                await db.answer_feedback_message(feedback_id, reply_text)
+            else:
+                latest = await db.get_latest_open_feedback(target_platform, target_user_id)
+                if latest:
+                    await db.answer_feedback_message(latest["id"], reply_text)
+            await send_reply(msg, f"✅ Ответ успешно отправлен пользователю <code>{target_user_id}</code> ({target_platform})!")
+
+    @dispatcher.message(Command("app"))
+    async def handle_app_command(message: Message) -> None:
+        await register_message_user(message)
+        app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
+        text = (
+            "📱 <b>Расписание МИСИС — Mini App</b>\n\n"
+            "Интерактивное расписание пар, история изменений и единый профиль студента доступны прямо внутри Telegram.\n\n"
+            f"🔗 <b>Прямой адрес:</b> {app_url}"
+        )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🚀 Запустить Mini App", web_app=WebAppInfo(url=app_url))],
+                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=app_url)],
+            ]
+        )
+        await send_reply(message, text, reply_markup=keyboard)
+
+    @dispatcher.message(Command("bugreport"))
+    async def handle_bugreport_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None:
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        report_text = parts[1].strip() if len(parts) > 1 else ""
+        if report_text:
+            await submit_user_report(message, "bugreport", report_text)
+            return
+        awaiting_bugreport.add(message.from_user.id)
+        awaiting_feedback.discard(message.from_user.id)
+        await send_reply(
+            message,
+            "🐛 <b>Сообщение об ошибке (баг-репорт)</b>\n\n"
+            "Опишите проблему, с которой вы столкнулись (какая группа/преподаватель, что именно отображается неверно или не работает).\n\n"
+            "Отправьте ваш текст следующим сообщением (или напишите /cancel для отмены):",
+        )
+
+    @dispatcher.message(Command("feedback", "support"))
+    async def handle_feedback_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None:
+            return
+        parts = message.text.split(maxsplit=1) if message.text else []
+        fb_text = parts[1].strip() if len(parts) > 1 else ""
+        if fb_text:
+            await submit_user_report(message, "feedback", fb_text)
+            return
+        awaiting_feedback.add(message.from_user.id)
+        awaiting_bugreport.discard(message.from_user.id)
+        await send_reply(
+            message,
+            "💬 <b>Обратная связь разработчику</b>\n\n"
+            "Напишите ваше сообщение, отзыв или предложение. Вы сможете получить ответ от администратора прямо в этот чат от лица бота.\n\n"
+            "Отправьте текст следующим сообщением (или напишите /cancel для отмены):",
+        )
+
+    @dispatcher.message(Command("reply"))
+    async def handle_reply_command(message: Message) -> None:
+        await register_message_user(message)
+        if message.from_user is None or not user_is_admin(message.from_user.id):
+            return
+        parts = message.text.split(maxsplit=3) if message.text else []
+        if len(parts) < 3:
+            await send_reply(
+                message,
+                "<b>Использование команды ответа:</b>\n\n"
+                "• <code>/reply tg &lt;user_id&gt; &lt;текст ответа&gt;</code>\n"
+                "• <code>/reply vk &lt;user_id&gt; &lt;текст ответа&gt;</code>\n"
+                "• <code>/reply &lt;номер_обращения_id&gt; &lt;текст ответа&gt;</code>\n\n"
+                "<i>Либо просто ответьте (Reply) на сообщение уведомления от бота.</i>"
+            )
+            return
+        target_platform = "telegram"
+        target_user_id = None
+        feedback_id = None
+        reply_text = ""
+        arg1 = parts[1].lower().lstrip("#")
+        if arg1 in {"tg", "telegram"}:
+            target_platform = "telegram"
+            try:
+                target_user_id = int(parts[2])
+                reply_text = parts[3] if len(parts) > 3 else ""
+            except ValueError:
+                await send_reply(message, "Некорректный user_id.")
+                return
+        elif arg1 in {"vk"}:
+            target_platform = "vk"
+            try:
+                target_user_id = int(parts[2])
+                reply_text = parts[3] if len(parts) > 3 else ""
+            except ValueError:
+                await send_reply(message, "Некорректный user_id.")
+                return
+        elif arg1.isdigit():
+            feedback_id = int(arg1)
+            fb = await db.get_feedback_message(feedback_id)
+            if fb:
+                target_platform = fb["platform"]
+                target_user_id = fb["user_id"]
+                reply_text = message.text.split(maxsplit=2)[2] if len(parts) >= 3 else ""
+            else:
+                await send_reply(message, f"Обращение #{feedback_id} не найдено.")
+                return
+        else:
+            try:
+                target_user_id = int(arg1)
+                reply_text = message.text.split(maxsplit=2)[2] if len(parts) >= 3 else ""
+            except ValueError:
+                await send_reply(message, "Некорректный формат команды /reply.")
+                return
+        if not reply_text:
+            await send_reply(message, "Укажите текст ответа.")
+            return
+        await send_admin_reply_to_user(message, target_platform, target_user_id, reply_text, feedback_id)
+
     @dispatcher.message(Command("admin"))
     async def handle_admin_command(message: Message) -> None:
         await register_message_user(message)
@@ -3159,6 +3394,28 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
+        if action == "bugreport":
+            awaiting_bugreport.add(callback.from_user.id)
+            awaiting_feedback.discard(callback.from_user.id)
+            await send_reply(
+                callback.message,
+                "🐛 <b>Сообщение об ошибке (баг-репорт)</b>\n\n"
+                "Опишите проблему, с которой вы столкнулись (какая группа/преподаватель, что отображается неверно или не работает).\n\n"
+                "Отправьте ваш текст следующим сообщением (или напишите /cancel для отмены):",
+            )
+            await safe_callback_answer(callback)
+            return
+        if action == "feedback":
+            awaiting_feedback.add(callback.from_user.id)
+            awaiting_bugreport.discard(callback.from_user.id)
+            await send_reply(
+                callback.message,
+                "💬 <b>Обратная связь разработчику</b>\n\n"
+                "Напишите ваше сообщение, вопрос или предложение. Администратор сможет ответить вам прямо от лица бота сюда в чат.\n\n"
+                "Отправьте текст следующим сообщением (или напишите /cancel для отмены):",
+            )
+            await safe_callback_answer(callback)
+            return
         if action == "about":
             await safe_edit_message_text(
                 callback.message,
@@ -4751,6 +5008,40 @@ def build_dispatcher(
                     subscription_data.get("subscription_title"),
                 ),
             )
+            return
+
+        reply_to = getattr(message, "reply_to_message", None)
+        raw_text = getattr(message, "text", "") or ""
+        from_user = getattr(message, "from_user", None)
+        if reply_to and from_user and user_is_admin(from_user.id) and not raw_text.startswith("/"):
+            orig_msg_id = getattr(reply_to, "message_id", None)
+            context = admin_reply_contexts.get(orig_msg_id) if orig_msg_id is not None else None
+            if context:
+                t_plat, t_uid, fb_id = context
+                await send_admin_reply_to_user(message, t_plat, t_uid, raw_text.strip(), fb_id)
+                return
+            orig_text = getattr(reply_to, "text", "") or ""
+            id_match = re.search(r"\[#(\d+)\]", orig_text)
+            if id_match:
+                fb = await db.get_feedback_message(int(id_match.group(1)))
+                if fb:
+                    await send_admin_reply_to_user(message, fb["platform"], fb["user_id"], raw_text.strip(), fb["id"])
+                    return
+            user_match = re.search(r"ID:\s*<code>(\d+)</code>.*?(Telegram|VK|ВКонтакте)", orig_text, re.IGNORECASE)
+            if user_match:
+                t_uid = int(user_match.group(1))
+                t_plat = "vk" if "vk" in user_match.group(2).lower() or "вконтакте" in user_match.group(2).lower() else "telegram"
+                await send_admin_reply_to_user(message, t_plat, t_uid, raw_text.strip())
+                return
+
+        if from_user and from_user.id in awaiting_bugreport:
+            awaiting_bugreport.discard(from_user.id)
+            await submit_user_report(message, "bugreport", raw_text.strip())
+            return
+
+        if from_user and from_user.id in awaiting_feedback:
+            awaiting_feedback.discard(from_user.id)
+            await submit_user_report(message, "feedback", raw_text.strip())
             return
 
         if message.from_user.id in awaiting_audience_subscription_input:

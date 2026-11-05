@@ -5,7 +5,7 @@ import re
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -222,6 +222,21 @@ class Database:
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_search_targets_kind_url ON search_targets(kind, url);
+
+                CREATE TABLE IF NOT EXISTS feedback_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    user_name TEXT,
+                    message_type TEXT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    reply_text TEXT,
+                    replied_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_feedback_platform_user ON feedback_messages(platform, user_id);
                 """
             )
             await self._ensure_column(db, "users", "group_name", "TEXT")
@@ -2217,3 +2232,94 @@ class Database:
                 logger.warning("Failed to stat database file for first-created-at fallback: %s", exc)
         return None
 
+
+    async def create_feedback_message(
+        self,
+        platform: str,
+        user_id: int,
+        user_name: str | None,
+        message_type: str,
+        message_text: str,
+    ) -> int:
+        """Сохраняет баг-репорт или сообщение обратной связи и возвращает id записи."""
+        now_iso = datetime.now(UTC).isoformat()
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO feedback_messages (
+                    created_at, platform, user_id, user_name, message_type, message_text, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+                """,
+                (now_iso, platform, user_id, user_name, message_type, message_text),
+            )
+            await db.commit()
+            return cursor.lastrowid or 0
+
+    async def get_feedback_message(self, feedback_id: int) -> dict | None:
+        """Возвращает запись обращения по его id."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT id, created_at, platform, user_id, user_name, message_type, message_text, status, reply_text, replied_at
+                FROM feedback_messages WHERE id = ?
+                """,
+                (feedback_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "created_at": row[1],
+                "platform": row[2],
+                "user_id": row[3],
+                "user_name": row[4],
+                "message_type": row[5],
+                "message_text": row[6],
+                "status": row[7],
+                "reply_text": row[8],
+                "replied_at": row[9],
+            }
+
+    async def answer_feedback_message(self, feedback_id: int, reply_text: str) -> bool:
+        """Помечает обращение отвеченным и сохраняет текст ответа."""
+        now_iso = datetime.now(UTC).isoformat()
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                UPDATE feedback_messages
+                SET status = 'answered', reply_text = ?, replied_at = ?
+                WHERE id = ?
+                """,
+                (reply_text, now_iso, feedback_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_latest_open_feedback(self, platform: str, user_id: int) -> dict | None:
+        """Возвращает последнее открытое обращение от указанного пользователя."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT id, created_at, platform, user_id, user_name, message_type, message_text, status, reply_text, replied_at
+                FROM feedback_messages
+                WHERE platform = ? AND user_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (platform, user_id),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "created_at": row[1],
+                "platform": row[2],
+                "user_id": row[3],
+                "user_name": row[4],
+                "message_type": row[5],
+                "message_text": row[6],
+                "status": row[7],
+                "reply_text": row[8],
+                "replied_at": row[9],
+            }

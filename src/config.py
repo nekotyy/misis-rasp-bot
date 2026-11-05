@@ -62,6 +62,7 @@ class Settings:
     ocr_warmup_on_start: bool
     ocr_ready_notice_hours: float
     university_schedule_url: str = UNIVERSITY_SCHEDULE_URL
+    miniapp_url: str = "https://miniapp.opk.nekoty.ru"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -116,6 +117,7 @@ class Settings:
             ocr_fuzzy_threshold=_clamp_float(os.getenv("OCR_FUZZY_THRESHOLD", "0.78"), 0.5, 1.0, 0.78),
             ocr_warmup_on_start=_env_bool("OCR_WARMUP_ON_START", default=True),
             ocr_ready_notice_hours=_clamp_float(os.getenv("OCR_READY_NOTICE_HOURS", "12"), 0, 720, 12),
+            miniapp_url=os.getenv("MINIAPP_URL", "https://miniapp.opk.nekoty.ru").strip(),
         )
 
 
