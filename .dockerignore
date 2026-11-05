@@ -31,5 +31,6 @@ photo_*.jpg
 tests
 docs
 deploy
+miniapp_frontend
 *.md
 !README.md

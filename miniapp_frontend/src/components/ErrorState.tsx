@@ -13,6 +13,8 @@ interface ErrorStateProps {
   type?: ErrorType
   message?: string
   onRetry?: () => void
+  actionLabel?: string
+  onAction?: () => void
 }
 
 const errorConfig: Record<ErrorType, { icon: typeof WifiOff; title: string; description: string }> = {
@@ -43,7 +45,7 @@ const errorConfig: Record<ErrorType, { icon: typeof WifiOff; title: string; desc
   },
 }
 
-export function ErrorState({ type = 'unknown', message, onRetry }: ErrorStateProps) {
+export function ErrorState({ type = 'unknown', message, onRetry, actionLabel, onAction }: ErrorStateProps) {
   const config = errorConfig[type] || errorConfig.unknown
   const Icon = config.icon
 
@@ -58,15 +60,25 @@ export function ErrorState({ type = 'unknown', message, onRetry }: ErrorStatePro
           {message ?? config.description}
         </p>
       </div>
-      {onRetry && (
-        <button
-          onClick={onRetry}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white font-heading font-semibold text-xs tracking-wide hover:bg-primary-hover shadow-lg shadow-primary/25 transition-all active:scale-95 cursor-pointer"
-        >
-          <RefreshCcw className="w-3.5 h-3.5" />
-          <span>Повторить</span>
-        </button>
-      )}
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white font-heading font-semibold text-xs tracking-wide hover:bg-primary-hover shadow-lg shadow-primary/25 transition-all active:scale-95 cursor-pointer"
+          >
+            <RefreshCcw className="w-3.5 h-3.5" />
+            <span>Повторить</span>
+          </button>
+        )}
+        {actionLabel && onAction && (
+          <button
+            onClick={onAction}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white font-heading font-semibold text-xs tracking-wide hover:bg-primary-hover shadow-lg shadow-primary/25 transition-all active:scale-95 cursor-pointer"
+          >
+            <span>{actionLabel}</span>
+          </button>
+        )}
+      </div>
     </div>
   )
 }

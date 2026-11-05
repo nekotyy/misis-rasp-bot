@@ -88,6 +88,12 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 async def get_db():
     path = get_db_path()
     async with aiosqlite.connect(path, timeout=30.0) as db:

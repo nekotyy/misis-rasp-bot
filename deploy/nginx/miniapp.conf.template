@@ -1,0 +1,57 @@
+server {
+    listen 80;
+    server_name ${MINIAPP_SERVER_NAME};
+
+    client_max_body_size 10m;
+    return 301 https://$host:${MINIAPP_HTTPS_PORT}$request_uri;
+}
+
+server {
+    listen ${MINIAPP_HTTPS_PORT} ssl;
+    server_name ${MINIAPP_SERVER_NAME};
+
+    ssl_certificate ${MINIAPP_SSL_CERT_PATH};
+    ssl_certificate_key ${MINIAPP_SSL_KEY_PATH};
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL_MINIAPP:10m;
+    ssl_session_tickets off;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # Безопасность и интеграция с Telegram WebApp и VK Mini App
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org https://vk.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self' https://*.nekoty.ru https://*.telegram.org https://*.vk.com; frame-ancestors 'self' https://*.telegram.org https://web.telegram.org https://*.vk.com https://vk.com https://*.vk.me;" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+
+    client_max_body_size 10m;
+
+    # API бэкенда
+    location /api/ {
+        proxy_pass http://${MINIAPP_API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 60s;
+    }
+
+    # Frontend SPA
+    location / {
+        proxy_pass http://${MINIAPP_FRONTEND_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 60s;
+    }
+}

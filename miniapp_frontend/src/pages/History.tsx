@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react'
+import { CalendarRange, ChevronDown, ChevronLeft, ChevronRight, Layers } from 'lucide-react'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { fetchHistory } from '../api/history'
+import type { SubscriptionDto } from '../api/profile'
 import type { DayScheduleDto } from '../api/schedule'
 import { DayView } from '../components/DayView'
 import { ErrorState } from '../components/ErrorState'
@@ -11,6 +13,9 @@ import { cn } from '../lib/utils'
 
 interface HistoryPageProps {
   subscriptionId?: number
+  subscriptionTitle?: string
+  subscriptions?: SubscriptionDto[]
+  onSelectSubscription?: (id: number) => void
   reducedMotion?: boolean
 }
 
@@ -92,8 +97,16 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many
 }
 
-export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPageProps) {
+export function HistoryPage({
+  subscriptionId,
+  subscriptionTitle,
+  subscriptions = [],
+  onSelectSubscription,
+  reducedMotion = false,
+}: HistoryPageProps) {
   const [weekStart, setWeekStart] = useState<string | undefined>(undefined)
+  const [showGroupPicker, setShowGroupPicker] = useState(false)
+  const navigate = useNavigate()
   const platform = usePlatform()
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -106,7 +119,11 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
   if (!subscriptionId) {
     return (
       <div className="flex-1 flex flex-col justify-center">
-        <ErrorState type="no_subscription" />
+        <ErrorState
+          type="no_subscription"
+          actionLabel="Выбрать группу"
+          onAction={() => navigate('/profile')}
+        />
       </div>
     )
   }
@@ -131,13 +148,100 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
     <div className="flex-1 flex flex-col min-h-0">
       {/* Заголовок */}
       <div className="px-4 pt-2 pb-2.5">
-        <h1 className="font-heading font-extrabold text-2xl text-foreground tracking-tight">
-          Архив расписания
-        </h1>
-        <p className="text-sm text-neutral mt-1 font-medium">
-          История проведённых пар за последние 3 месяца
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            {subscriptions.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  platform.hapticFeedback('light')
+                  setShowGroupPicker(true)
+                }}
+                className="inline-flex items-center gap-2 group cursor-pointer text-left"
+              >
+                <h1 className="font-heading font-extrabold text-2xl text-foreground tracking-tight group-hover:text-primary transition-colors">
+                  Архив: {subscriptionTitle ?? 'Группа'}
+                </h1>
+                <span className="p-1 rounded-lg bg-neutral-surface text-neutral group-hover:text-primary group-hover:bg-primary-surface transition-colors">
+                  <ChevronDown className="w-4 h-4" />
+                </span>
+              </button>
+            ) : (
+              <h1 className="font-heading font-extrabold text-2xl text-foreground tracking-tight">
+                Архив расписания
+              </h1>
+            )}
+            <p className="text-sm text-neutral mt-1 font-medium">
+              История проведённых пар за последние 3 месяца
+            </p>
+          </div>
+        </div>
       </div>
+
+      {/* Модальное окно выбора группы */}
+      {showGroupPicker && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => setShowGroupPicker(false)}
+        >
+          <div
+            className="w-full max-w-sm glass-card rounded-2xl p-4 space-y-3 shadow-2xl border border-primary/30"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-heading text-sm font-bold text-foreground flex items-center gap-2">
+                <Layers className="w-4 h-4 text-primary" />
+                Выберите группу для архива
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowGroupPicker(false)}
+                className="text-xs text-neutral hover:text-foreground cursor-pointer font-bold"
+              >
+                Закрыть
+              </button>
+            </div>
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {subscriptions.map((sub) => {
+                const isSelected = sub.id === subscriptionId
+                return (
+                  <button
+                    key={sub.id}
+                    type="button"
+                    onClick={() => {
+                      platform.hapticFeedback('light')
+                      onSelectSubscription?.(sub.id)
+                      setShowGroupPicker(false)
+                    }}
+                    className={cn(
+                      'w-full flex items-center justify-between p-3 rounded-xl border text-left transition-all cursor-pointer',
+                      isSelected
+                        ? 'bg-primary text-white border-primary shadow-sm font-bold'
+                        : 'bg-card border-border text-foreground hover:bg-neutral-surface',
+                    )}
+                  >
+                    <span className="font-heading text-base font-bold">
+                      {sub.group_name || sub.subscription_title || 'Группа'}
+                    </span>
+                    {sub.is_primary && (
+                      <span
+                        className={cn(
+                          'text-xs px-2 py-0.5 rounded-full font-semibold',
+                          isSelected
+                            ? 'bg-white/20 text-white'
+                            : 'bg-primary-surface text-primary border border-primary/20',
+                        )}
+                      >
+                        Основная
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Навигация по неделям */}
       <div className="px-4 pb-3.5 flex items-center justify-between gap-2.5">

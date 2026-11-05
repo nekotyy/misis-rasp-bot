@@ -30,6 +30,19 @@ vi.mock('../api/profile', () => ({
   updatePreferences: vi.fn(),
 }))
 
+vi.mock('../api/groups', () => ({
+  searchGroups: vi.fn().mockResolvedValue([
+    { name: 'БПИ22-1', display_name: 'БПИ22-1' },
+    { name: 'БПИ22-2', display_name: 'БПИ22-2' },
+  ]),
+}))
+
+vi.mock('../api/subscriptions', () => ({
+  addSubscription: vi.fn().mockResolvedValue({ id: 10, group_name: 'БПИ22-2', is_primary: false }),
+  updateSubscription: vi.fn().mockResolvedValue({ id: 1, is_primary: true }),
+  deleteSubscription: vi.fn().mockResolvedValue(undefined),
+}))
+
 function renderProfile(props: Partial<React.ComponentProps<typeof ProfilePage>> = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -110,5 +123,28 @@ describe('ProfilePage - Масштаб интерфейса', () => {
     expect(resetBtn).toBeDefined()
     fireEvent.click(resetBtn)
     expect(onScaleChange).toHaveBeenCalledWith(110)
+  })
+})
+
+describe('ProfilePage - Добавление групп', () => {
+  it('открывает форму поиска группы по кнопке Добавить группу', async () => {
+    renderProfile()
+    const addBtn = await screen.findByText('Добавить группу')
+    fireEvent.click(addBtn)
+
+    expect(await screen.findByText('Поиск и добавление группы')).toBeDefined()
+    expect(screen.getByPlaceholderText('Введите название группы (напр. БПИ22-1)...')).toBeDefined()
+  })
+
+  it('выполняет поиск и отображает результаты', async () => {
+    renderProfile()
+    const addBtn = await screen.findByText('Добавить группу')
+    fireEvent.click(addBtn)
+
+    const input = screen.getByPlaceholderText('Введите название группы (напр. БПИ22-1)...')
+    fireEvent.change(input, { target: { value: 'БПИ' } })
+
+    expect(await screen.findByText('БПИ22-1')).toBeDefined()
+    expect(screen.getByText('БПИ22-2')).toBeDefined()
   })
 })

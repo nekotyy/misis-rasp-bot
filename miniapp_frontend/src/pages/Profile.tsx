@@ -6,17 +6,22 @@ import {
   Copy,
   Laptop,
   Link2,
+  Loader2,
   Moon,
+  Plus,
   RotateCcw,
+  Search,
   ShieldCheck,
   Star,
   Sun,
   Trash2,
   Unlink,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
 import { useState } from 'react'
+import { searchGroups } from '../api/groups'
 import {
   confirmLinkRequest,
   createLinkRequest,
@@ -24,7 +29,7 @@ import {
   unlinkIdentity,
   updatePreferences,
 } from '../api/profile'
-import { deleteSubscription, updateSubscription } from '../api/subscriptions'
+import { addSubscription, deleteSubscription, updateSubscription } from '../api/subscriptions'
 import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { TelegramIcon, VkIcon } from '../components/PlatformIcons'
@@ -60,11 +65,38 @@ export function ProfilePage({
   const [linkError, setLinkError] = useState<string | null>(null)
   const [linkSuccess, setLinkSuccess] = useState<string | null>(null)
   const [showLinkSection, setShowLinkSection] = useState(false)
+  const [showAddGroup, setShowAddGroup] = useState(false)
+  const [groupSearchQuery, setGroupSearchQuery] = useState('')
+  const [addGroupError, setAddGroupError] = useState<string | null>(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['profile'],
     queryFn: fetchProfile,
     staleTime: 60 * 1000,
+  })
+
+  const { data: searchResults, isFetching: isSearchingGroups } = useQuery({
+    queryKey: ['groupsSearch', groupSearchQuery],
+    queryFn: () => searchGroups(groupSearchQuery.trim()),
+    enabled: groupSearchQuery.trim().length >= 1,
+    staleTime: 30 * 1000,
+  })
+
+  const addSubMutation = useMutation({
+    mutationFn: (groupName: string) =>
+      addSubscription({
+        group_name: groupName,
+        is_primary: (data?.subscriptions.length ?? 0) === 0,
+      }),
+    onSuccess: () => {
+      setShowAddGroup(false)
+      setGroupSearchQuery('')
+      setAddGroupError(null)
+      queryClient.invalidateQueries({ queryKey: ['profile'] })
+    },
+    onError: (err: Error) => {
+      setAddGroupError(err.message || 'Ошибка добавления группы')
+    },
   })
 
   const updateSubMutation = useMutation({
@@ -457,6 +489,112 @@ export function ProfilePage({
                 })}
               </div>
             )}
+
+            {/* Кнопка добавления группы / Форма поиска группы */}
+            <div className="pt-1">
+              {!showAddGroup ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAddGroup(true)}
+                  className="font-heading w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-primary/30 bg-primary-surface text-primary text-sm font-bold hover:bg-primary hover:text-white transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Добавить группу</span>
+                </button>
+              ) : (
+                <div className="p-4 rounded-2xl bg-card border border-border space-y-3.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-heading text-sm font-bold text-foreground flex items-center gap-2">
+                      <Search className="w-4 h-4 text-primary" />
+                      Поиск и добавление группы
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddGroup(false)
+                        setGroupSearchQuery('')
+                        setAddGroupError(null)
+                      }}
+                      className="p-1 rounded-lg text-neutral hover:text-foreground cursor-pointer"
+                      aria-label="Закрыть"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={groupSearchQuery}
+                      onChange={(e) => setGroupSearchQuery(e.target.value)}
+                      placeholder="Введите название группы (напр. БПИ22-1)..."
+                      className="w-full px-3.5 py-2.5 pr-9 rounded-xl bg-base border border-border text-sm text-foreground placeholder:text-neutral/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
+                    />
+                    {groupSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setGroupSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral hover:text-foreground"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {isSearchingGroups && (
+                    <div className="flex items-center justify-center py-3 text-neutral gap-2 text-xs">
+                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                      <span>Поиск по каталогу...</span>
+                    </div>
+                  )}
+
+                  {addGroupError && (
+                    <p className="font-heading text-xs text-destructive font-semibold">{addGroupError}</p>
+                  )}
+
+                  {groupSearchQuery.trim().length >= 1 && !isSearchingGroups && (
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pt-1">
+                      {searchResults && searchResults.length > 0 ? (
+                        searchResults.map((group) => {
+                          const alreadySubscribed = data.subscriptions.some(
+                            (s) => (s.group_name || '').toLowerCase() === group.name.toLowerCase(),
+                          )
+                          return (
+                            <div
+                              key={group.name}
+                              className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-surface/60 border border-border hover:border-primary/40 transition-all"
+                            >
+                              <span className="font-heading font-bold text-sm text-foreground">
+                                {group.display_name || group.name}
+                              </span>
+                              {alreadySubscribed ? (
+                                <span className="font-heading text-xs text-neutral font-semibold px-2 py-1 rounded-lg bg-base border border-border">
+                                  Уже добавлена
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => addSubMutation.mutate(group.name)}
+                                  disabled={addSubMutation.isPending}
+                                  className="font-heading inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-primary text-white text-xs font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  <span>Добавить</span>
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <p className="text-center py-3 text-xs text-neutral">
+                          Ничего не найдено по запросу «{groupSearchQuery}»
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </section>
 
           {/* Настройки уведомлений */}

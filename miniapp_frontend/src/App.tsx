@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
+import { useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { fetchProfile } from './api/profile'
 import { BottomNav } from './components/BottomNav'
@@ -32,6 +33,8 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
   const { scale, setScale } = useScale()
   const safeAreaInsets = adapter.getSafeAreaInsets()
 
+  const [selectedSubId, setSelectedSubId] = useState<number | null>(null)
+
   const { data: profile } = useQuery({
     queryKey: ['profile'],
     queryFn: fetchProfile,
@@ -39,9 +42,13 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
     staleTime: 60 * 1000,
   })
 
-  const primarySubscription = profile?.subscriptions.find((s) => s.is_primary)
-  const subscriptionId = primarySubscription?.id
-  const subscriptionTitle = primarySubscription?.group_name ?? undefined
+  const subscriptions = profile?.subscriptions ?? []
+  const activeSub =
+    subscriptions.find((s) => s.id === selectedSubId) ||
+    subscriptions.find((s) => s.is_primary) ||
+    subscriptions[0]
+  const subscriptionId = activeSub?.id
+  const subscriptionTitle = activeSub?.group_name || activeSub?.subscription_title || undefined
 
   if (authState === 'loading' || authState === 'idle') {
     return (
@@ -106,6 +113,8 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
               <SchedulePage
                 subscriptionId={subscriptionId}
                 subscriptionTitle={subscriptionTitle}
+                subscriptions={subscriptions}
+                onSelectSubscription={setSelectedSubId}
                 reducedMotion={reducedMotion}
               />
             }
@@ -115,6 +124,9 @@ function AppShell({ authState, error, onRetry }: AppShellProps) {
             element={
               <HistoryPage
                 subscriptionId={subscriptionId}
+                subscriptionTitle={subscriptionTitle}
+                subscriptions={subscriptions}
+                onSelectSubscription={setSelectedSubId}
                 reducedMotion={reducedMotion}
               />
             }

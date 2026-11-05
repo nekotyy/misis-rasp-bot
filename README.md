@@ -405,6 +405,8 @@ docker compose up -d --build
 - `bot`
 - `rabbitmq`
 - `web`
+- `miniapp-api`
+- `miniapp-frontend`
 - `nginx`
 
 Можно включить профиль и без `.env`:
@@ -415,13 +417,15 @@ docker compose --profile nginx up -d --build
 
 Пример публичной схемы:
 
-- `http://dashboard.example.com`
-- `https://dashboard.example.com`
+- `https://miniapp.opk.nekoty.ru` (Mini App: Telegram WebApp / VK Mini App, порт 443 HTTPS)
+- `https://dashboard.example.com` (Админ-панель)
 
 Внутри Docker трафик идет так:
 
 ```text
-internet -> nginx -> web:8080
+internet (port 443) -> nginx -> miniapp-frontend:80 (SPA)
+                             -> miniapp-api:8000 (/api/*)
+internet (port 2443) -> nginx -> web:8080 (Админка)
 ```
 
 ### Сертификаты
@@ -429,6 +433,8 @@ internet -> nginx -> web:8080
 Если используется `nginx`, контейнер ожидает сертификаты в смонтированной директории:
 
 ```text
+deploy/certs/live/miniapp.opk.nekoty.ru/fullchain.pem
+deploy/certs/live/miniapp.opk.nekoty.ru/privkey.pem
 deploy/certs/live/dashboard.example.com/fullchain.pem
 deploy/certs/live/dashboard.example.com/privkey.pem
 ```

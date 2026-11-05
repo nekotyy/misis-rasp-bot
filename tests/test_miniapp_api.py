@@ -435,6 +435,16 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
         resp = client.delete("/api/miniapp/v1/me/identities/telegram", headers=headers)
         self.assertEqual(resp.status_code, 400)
 
+    def test_health_endpoints(self):
+        client = TestClient(app)
+        resp1 = client.get("/health")
+        self.assertEqual(resp1.status_code, 200)
+        self.assertEqual(resp1.json(), {"status": "ok"})
+
+        resp2 = client.get("/api/health")
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(resp2.json(), {"status": "ok"})
+
 
 if __name__ == "__main__":
     unittest.main()

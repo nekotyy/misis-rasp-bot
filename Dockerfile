@@ -36,6 +36,7 @@ COPY src ./src
 COPY scripts ./scripts
 COPY storage ./storage
 COPY web_configurator ./web_configurator
+COPY miniapp_api ./miniapp_api
 COPY README.md ./
 
 RUN mkdir -p /app/runtime
