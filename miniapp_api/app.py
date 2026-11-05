@@ -763,12 +763,12 @@ async def telemetry_session(req: TelemetrySessionRequest, db: aiosqlite.Connecti
         db,
         session_id=req.session_id,
         platform=req.platform,
-        user_id=req.user_id,
+        user_id=req.user_id or 0,
         account_id=req.account_id,
         theme=req.theme,
         scale=req.scale,
         active_group=req.active_group,
-        last_page=req.initial_page,
+        last_page=req.last_page or req.initial_page or "/schedule",
     )
     await db.commit()
     return {"ok": True}

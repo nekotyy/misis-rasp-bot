@@ -156,13 +156,14 @@ class GroupItemDto(BaseModel):
 
 class TelemetrySessionRequest(BaseModel):
     session_id: str
-    platform: str
-    user_id: int
+    platform: str = "unknown"
+    user_id: int | None = None
     account_id: str | None = None
     theme: str = "system"
     scale: int = 100
     active_group: str | None = None
-    initial_page: str = "/schedule"
+    initial_page: str | None = None
+    last_page: str | None = None
 
 
 class TelemetryPingRequest(BaseModel):
