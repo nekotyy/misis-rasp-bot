@@ -31,6 +31,12 @@ describe('BrowserBlockScreen', () => {
     expect(vkLink?.getAttribute('href')).toBe('https://vk.ru/nekotyopk')
   })
 
+  it('использует дефолтную ссылку на Telegram бота @raspnekotybot', () => {
+    render(<BrowserBlockScreen />)
+    const tgLink = screen.getByText('Открыть в Telegram').closest('a')
+    expect(tgLink?.getAttribute('href')).toBe('https://t.me/raspnekotybot')
+  })
+
   it('отображает кастомное сообщение если оно передано', () => {
     render(<BrowserBlockScreen message="Прямой доступ закрыт!" />)
     expect(screen.getByText('Прямой доступ закрыт!')).toBeDefined()

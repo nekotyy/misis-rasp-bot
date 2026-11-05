@@ -3071,7 +3071,6 @@ def build_dispatcher(
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🚀 Запустить Mini App", web_app=WebAppInfo(url=app_url))],
-                [InlineKeyboardButton(text="🌐 Открыть в браузере", url=app_url)],
             ]
         )
         await send_reply(message, text, reply_markup=keyboard)

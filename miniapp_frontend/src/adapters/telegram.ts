@@ -3,12 +3,39 @@ import type { PlatformAdapter } from './platform'
 /** Адаптер Telegram Mini App (window.Telegram.WebApp) */
 export class TelegramAdapter implements PlatformAdapter {
   readonly platform = 'telegram' as const
-  private tg = (window as typeof window & { Telegram?: { WebApp?: Record<string, unknown> } }).Telegram?.WebApp as
-    | Record<string, unknown>
-    | undefined
+
+  private get tg(): Record<string, unknown> | undefined {
+    return (window as typeof window & { Telegram?: { WebApp?: Record<string, unknown> } }).Telegram?.WebApp
+  }
 
   getInitData(): string {
-    return (this.tg?.initData as string | undefined) ?? ''
+    const fromTg = (this.tg?.initData as string | undefined)?.trim()
+    if (fromTg) return fromTg
+
+    if (typeof window !== 'undefined') {
+      if (window.location.hash) {
+        const hash = window.location.hash.replace(/^#/, '')
+        if (hash.includes('tgWebAppData=')) {
+          const hashParams = new URLSearchParams(hash)
+          const fromHash = hashParams.get('tgWebAppData')
+          if (fromHash && fromHash.trim()) return fromHash.trim()
+        } else if (hash.includes('hash=') && (hash.includes('user=') || hash.includes('query_id='))) {
+          return hash.trim()
+        }
+      }
+      if (window.location.search) {
+        const search = window.location.search.replace(/^\?/, '')
+        if (search.includes('tgWebAppData=')) {
+          const searchParams = new URLSearchParams(search)
+          const fromSearch = searchParams.get('tgWebAppData')
+          if (fromSearch && fromSearch.trim()) return fromSearch.trim()
+        } else if (search.includes('hash=') && (search.includes('user=') || search.includes('query_id='))) {
+          return search.trim()
+        }
+      }
+    }
+
+    return ''
   }
 
   getTheme(): 'light' | 'dark' | 'system' {
@@ -64,7 +91,8 @@ export class TelegramAdapter implements PlatformAdapter {
   }
 
   ready(): void {
-    const tg = this.tg as { ready?: () => void } | undefined
+    const tg = this.tg as { ready?: () => void; expand?: () => void } | undefined
     tg?.ready?.()
+    tg?.expand?.()
   }
 }

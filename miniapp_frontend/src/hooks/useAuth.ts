@@ -15,12 +15,21 @@ export function useAuth(adapter: PlatformAdapter) {
     setAuthState('loading')
     setError(null)
 
-    const initData = adapter.getInitData()
+    let initData = adapter.getInitData()
     const isDevExplicit =
       Boolean(import.meta.env.DEV) &&
       (import.meta.env.VITE_MOCK_PLATFORM === 'true' ||
         (typeof window !== 'undefined' &&
           new URLSearchParams(window.location.search).get('dev') === '1'))
+
+    // Защита от race condition: Telegram WebApp API может инициализироваться с задержкой в несколько миллисекунд
+    if (adapter.platform === 'telegram' && (!initData || initData.trim() === '')) {
+      for (let i = 0; i < 8; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        initData = adapter.getInitData()
+        if (initData && initData.trim() !== '') break
+      }
+    }
 
     // Запрет входа через обычный браузер:
     // 1. В обычном браузере TelegramAdapter.getInitData() возвращает пустую строку
