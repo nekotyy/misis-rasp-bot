@@ -87,14 +87,14 @@ export function SchedulePage({
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Заголовок группы и кнопка обновления */}
-      <div className="px-4 pt-1 pb-2 flex items-center justify-between">
+      <div className="px-4 pt-2 pb-2.5 flex items-center justify-between">
         <div>
-          <h1 className="font-heading font-extrabold text-xl text-foreground tracking-tight">
+          <h1 className="font-heading font-extrabold text-2xl text-foreground tracking-tight">
             {subscriptionTitle ?? 'Расписание занятий'}
           </h1>
           {currentFormatted && (
-            <p className="text-xs text-neutral capitalize mt-0.5 flex items-center gap-1.5 font-medium">
-              <Calendar className="w-3.5 h-3.5 text-primary stroke-[2]" />
+            <p className="text-sm text-neutral capitalize mt-1 flex items-center gap-2 font-medium">
+              <Calendar className="w-4 h-4 text-primary stroke-[2]" />
               <span>{currentFormatted.fullDate}</span>
             </p>
           )}
@@ -106,21 +106,21 @@ export function SchedulePage({
             refetch()
           }}
           className={cn(
-            'p-2 rounded-xl glass-pill hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground cursor-pointer',
+            'p-2.5 rounded-xl glass-pill hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground cursor-pointer',
             isRefetching && 'animate-spin text-primary',
           )}
           aria-label="Обновить расписание"
         >
-          <RefreshCw className="w-4 h-4 stroke-[2]" />
+          <RefreshCw className="w-4.5 h-4.5 stroke-[2]" />
         </button>
       </div>
 
       {/* Переключатель дней (Стекло + пилюли) */}
-      <div className="px-4 pb-3">
-        <div className="grid grid-cols-3 gap-2">
+      <div className="px-4 pb-3.5">
+        <div className="grid grid-cols-3 gap-2.5">
           {isLoading
             ? [0, 1, 2].map((i) => (
-                <div key={i} className="h-16 rounded-2xl glass-card animate-pulse" />
+                <div key={i} className="h-18 rounded-2xl glass-card animate-pulse" />
               ))
             : days.map((day, idx) => {
                 const { dayNum, dayName } = formatDate(day.date)
@@ -133,19 +133,19 @@ export function SchedulePage({
                       setSelectedIndex(idx)
                     }}
                     className={cn(
-                      'flex flex-col items-center justify-center py-2.5 px-1 rounded-2xl transition-all duration-200 cursor-pointer border',
+                      'flex flex-col items-center justify-center py-3 px-1.5 rounded-2xl transition-all duration-200 cursor-pointer border',
                       isSelected
                         ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.02] font-bold'
                         : 'glass-card border-border text-neutral hover:text-foreground hover:bg-neutral-hover/10',
                     )}
                   >
-                    <span className="font-heading text-[10px] font-bold uppercase tracking-wider opacity-90 leading-none">
+                    <span className="font-heading text-xs font-bold uppercase tracking-wider opacity-90 leading-none">
                       {getDayLabel(day.date)}
                     </span>
-                    <span className="font-heading font-extrabold text-sm tracking-tight my-0.5">
+                    <span className="font-heading font-extrabold text-base tracking-tight my-1">
                       {dayNum}
                     </span>
-                    <span className="font-heading text-[10px] font-semibold capitalize opacity-80 leading-none">
+                    <span className="font-heading text-xs font-semibold capitalize opacity-80 leading-none">
                       {dayName}
                     </span>
                   </button>

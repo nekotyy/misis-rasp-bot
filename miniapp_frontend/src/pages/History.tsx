@@ -47,10 +47,10 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
         className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/5 transition-colors"
       >
         <div className="min-w-0 pr-2">
-          <p className="font-heading font-bold text-sm text-foreground capitalize tracking-tight truncate">
+          <p className="font-heading font-bold text-base text-foreground capitalize tracking-tight truncate">
             {formatDayHeader(day.date, day.day_name)}
           </p>
-          <p className="text-xs text-neutral mt-0.5">
+          <p className="text-sm text-neutral mt-0.5">
             {day.status === 'unpublished'
               ? 'Не опубликовано'
               : day.status === 'not_archived'
@@ -62,13 +62,13 @@ function AccordionDay({ day, reducedMotion }: { day: DayScheduleDto; reducedMoti
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {hasData && (
-            <span className="font-heading glass-pill rounded-full px-2 py-0.5 text-[10px] font-bold text-primary bg-primary-surface border border-primary/20">
+            <span className="font-heading glass-pill rounded-full px-2.5 py-0.5 text-xs font-bold text-primary bg-primary-surface border border-primary/20">
               {day.lessons.length}
             </span>
           )}
           <ChevronRight
             className={cn(
-              'w-4 h-4 text-neutral transition-transform duration-200',
+              'w-4.5 h-4.5 text-neutral transition-transform duration-200',
               open ? 'rotate-90 text-primary' : '',
               reducedMotion && 'transition-none',
             )}
@@ -130,17 +130,17 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Заголовок */}
-      <div className="px-4 pt-1 pb-2">
-        <h1 className="font-heading font-extrabold text-xl text-foreground tracking-tight">
+      <div className="px-4 pt-2 pb-2.5">
+        <h1 className="font-heading font-extrabold text-2xl text-foreground tracking-tight">
           Архив расписания
         </h1>
-        <p className="text-xs text-neutral mt-0.5 font-medium">
+        <p className="text-sm text-neutral mt-1 font-medium">
           История проведённых пар за последние 3 месяца
         </p>
       </div>
 
       {/* Навигация по неделям */}
-      <div className="px-4 pb-3 flex items-center justify-between gap-2">
+      <div className="px-4 pb-3.5 flex items-center justify-between gap-2.5">
         <button
           onClick={() => {
             if (data?.has_previous_week) {
@@ -154,10 +154,10 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
           className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground active:scale-95 cursor-pointer"
           aria-label="Предыдущая неделя"
         >
-          <ChevronLeft className="w-4 h-4 stroke-[2]" />
+          <ChevronLeft className="w-4.5 h-4.5 stroke-[2]" />
         </button>
 
-        <div className="glass-pill rounded-xl px-4 py-2 flex-1 text-center font-heading font-semibold text-xs tracking-tight text-foreground shadow-sm bg-neutral-surface border border-border">
+        <div className="glass-pill rounded-xl px-4 py-2.5 flex-1 text-center font-heading font-bold text-sm tracking-tight text-foreground shadow-sm bg-neutral-surface border border-border">
           {isLoading
             ? 'Загрузка недели...'
             : data
@@ -178,7 +178,7 @@ export function HistoryPage({ subscriptionId, reducedMotion = false }: HistoryPa
           className="p-2.5 rounded-xl glass-card disabled:opacity-30 hover:bg-neutral-surface transition-colors text-neutral hover:text-foreground active:scale-95 cursor-pointer"
           aria-label="Следующая неделя"
         >
-          <ChevronRight className="w-4 h-4 stroke-[2]" />
+          <ChevronRight className="w-4.5 h-4.5 stroke-[2]" />
         </button>
       </div>
 
