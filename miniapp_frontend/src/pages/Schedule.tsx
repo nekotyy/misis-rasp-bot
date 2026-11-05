@@ -18,12 +18,11 @@ interface SchedulePageProps {
 }
 
 /** Форматировать дату по-русски */
-function formatDate(dateStr: string): { dayNum: string; dayName: string; monthName: string; fullDate: string } {
+function formatDate(dateStr: string): { dayNum: string; dayName: string; fullDate: string } {
   const [y, m, d] = dateStr.split('-').map(Number)
   const date = new Date(y, m - 1, d)
-  const dayNum = String(d)
+  const dayNum = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'short' }).format(date)
   const dayName = new Intl.DateTimeFormat('ru', { weekday: 'short' }).format(date)
-  const monthName = new Intl.DateTimeFormat('ru', { month: 'short' }).format(date)
   const fullDate = new Intl.DateTimeFormat('ru', {
     weekday: 'long',
     day: 'numeric',
@@ -31,10 +30,18 @@ function formatDate(dateStr: string): { dayNum: string; dayName: string; monthNa
   }).format(date)
   return {
     dayNum,
-    dayName: dayName.toUpperCase(),
-    monthName,
+    dayName: dayName.charAt(0).toUpperCase() + dayName.slice(1),
     fullDate: fullDate.charAt(0).toUpperCase() + fullDate.slice(1),
   }
+}
+
+/** Определить подпись для 3-х дневного переключателя (Сегодня / Завтра / Послезавтра) */
+function getDayLabel(dateStr: string, index: number): string {
+  if (index === 0) return 'Сегодня'
+  if (index === 1) return 'Завтра'
+  if (index === 2) return 'Послезавтра'
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return new Intl.DateTimeFormat('ru', { weekday: 'short' }).format(new Date(y, m - 1, d))
 }
 
 export function SchedulePage({
@@ -44,7 +51,7 @@ export function SchedulePage({
   onSelectSubscription,
   reducedMotion = false,
 }: SchedulePageProps) {
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [selectedIndex, setSelectedIndex] = useState(0)
   const [showGroupPicker, setShowGroupPicker] = useState(false)
   const navigate = useNavigate()
   const platform = usePlatform()
@@ -86,27 +93,8 @@ export function SchedulePage({
     )
   }
 
-  const todayStr = (() => {
-    const now = new Date()
-    const y = now.getFullYear()
-    const m = String(now.getMonth() + 1).padStart(2, '0')
-    const d = String(now.getDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
-  })()
-
   const days = data?.days ?? []
-
-  const effectiveIndex = (() => {
-    if (days.length === 0) return 0
-    if (selectedDate) {
-      const idx = days.findIndex((d) => d.date === selectedDate)
-      if (idx !== -1) return idx
-    }
-    const todayIdx = days.findIndex((d) => d.date === todayStr)
-    return todayIdx !== -1 ? todayIdx : 0
-  })()
-
-  const selectedDay = days[effectiveIndex]
+  const selectedDay = days[selectedIndex]
   const currentFormatted = selectedDay ? formatDate(selectedDay.date) : null
 
   return (
@@ -225,42 +213,41 @@ export function SchedulePage({
         </div>
       )}
 
-      {/* Переключатель дней: неделя с понедельника по субботу (6 колонок) */}
+      {/* Переключатель на 3 дня (Сегодня / Завтра / Послезавтра) */}
       <div className="px-4 pb-3.5">
-        <div className="grid grid-cols-6 gap-1 sm:gap-2">
+        <div className="grid grid-cols-3 gap-2.5">
           {isLoading
-            ? [0, 1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="h-16 rounded-2xl glass-card animate-pulse" />
+            ? [0, 1, 2].map((i) => (
+                <div key={i} className="h-18 rounded-2xl glass-card animate-pulse" />
               ))
             : days.map((day, idx) => {
-                const { dayNum, dayName, monthName } = formatDate(day.date)
-                const isSelected = idx === effectiveIndex
-                const isToday = day.date === todayStr
+                const { dayNum, dayName } = formatDate(day.date)
+                const isSelected = idx === selectedIndex
                 return (
                   <button
                     key={day.date}
                     onClick={() => {
                       platform.hapticFeedback('light')
-                      setSelectedDate(day.date)
+                      setSelectedIndex(idx)
                     }}
                     className={cn(
-                      'flex flex-col items-center justify-center py-2 px-1 rounded-2xl transition-all duration-200 cursor-pointer border',
+                      'flex flex-col items-center justify-center py-3 px-1.5 rounded-2xl transition-all duration-200 cursor-pointer border',
                       isSelected
-                        ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.03] font-bold'
+                        ? 'bg-primary text-white border-primary shadow-lg shadow-primary/30 scale-[1.02] font-bold'
                         : 'glass-card border-border hover:bg-neutral-hover/10 text-gray-800 [data-theme=dark]:text-white dark:text-white',
                     )}
                   >
                     <span
                       className={cn(
-                        'font-heading text-[10px] sm:text-xs font-bold uppercase tracking-wider leading-none',
+                        'font-heading text-xs font-bold uppercase tracking-wider leading-none',
                         isSelected ? 'text-white' : 'text-gray-500 [data-theme=dark]:text-white/70 dark:text-white/70',
                       )}
                     >
-                      {dayName}
+                      {getDayLabel(day.date, idx)}
                     </span>
                     <span
                       className={cn(
-                        'font-heading font-extrabold text-sm sm:text-base tracking-tight my-0.5',
+                        'font-heading font-extrabold text-base tracking-tight my-1',
                         isSelected ? 'text-white' : 'text-gray-900 [data-theme=dark]:text-white dark:text-white',
                       )}
                     >
@@ -268,15 +255,11 @@ export function SchedulePage({
                     </span>
                     <span
                       className={cn(
-                        'font-heading text-[9px] sm:text-[10px] font-semibold leading-none truncate max-w-full px-0.5',
-                        isSelected
-                          ? 'text-white/90'
-                          : isToday
-                            ? 'text-primary font-bold'
-                            : 'text-gray-400 [data-theme=dark]:text-white/50 dark:text-white/50',
+                        'font-heading text-xs font-semibold capitalize opacity-80 leading-none',
+                        isSelected ? 'text-white' : 'text-gray-500 [data-theme=dark]:text-white/70 dark:text-white/70',
                       )}
                     >
-                      {isToday ? 'Сегодня' : monthName}
+                      {dayName}
                     </span>
                   </button>
                 )

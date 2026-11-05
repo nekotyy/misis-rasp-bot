@@ -289,7 +289,7 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
         sched_resp = client.get(f"/api/miniapp/v1/schedule?subscription_id={sub_id}", headers=headers)
         self.assertEqual(sched_resp.status_code, 200)
         sched_data = sched_resp.json()
-        self.assertEqual(len(sched_data["days"]), 6)
+        self.assertEqual(len(sched_data["days"]), 3)
         today_entry = next(d for d in sched_data["days"] if d["date"] == today_iso)
         self.assertEqual(today_entry["status"], "available")
         self.assertEqual(len(today_entry["lessons"]), 1)

@@ -20,25 +20,15 @@ class MiniappCalendarTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             subtract_calendar_months(date(2026, 1, 1), -1)
 
-    def test_schedule_returns_monday_to_saturday_and_next_week_on_sunday(self):
-        # Обычный день (пятница 06.11.2026) -> текущая неделя с понедельника по субботу (02.11 - 07.11)
-        expected_current_week = tuple(date(2026, 11, d) for d in range(2, 8))
-        self.assertEqual(schedule_dates(date(2026, 11, 6)), expected_current_week)
-
-        # Воскресенье (08.11.2026) -> следующая учебная неделя с понедельника по субботу (09.11 - 14.11)
-        expected_next_week = tuple(date(2026, 11, d) for d in range(9, 15))
-        self.assertEqual(schedule_dates(date(2026, 11, 8)), expected_next_week)
-
-        # Конец года (четверг 31.12.2026) -> неделя с 28.12.2026 по 02.01.2027
-        expected_new_year = (
-            date(2026, 12, 28),
-            date(2026, 12, 29),
-            date(2026, 12, 30),
-            date(2026, 12, 31),
-            date(2027, 1, 1),
-            date(2027, 1, 2),
+    def test_schedule_returns_three_consecutive_days(self):
+        self.assertEqual(
+            schedule_dates(date(2026, 11, 5)),
+            (date(2026, 11, 5), date(2026, 11, 6), date(2026, 11, 7)),
         )
-        self.assertEqual(schedule_dates(date(2026, 12, 31)), expected_new_year)
+        self.assertEqual(
+            schedule_dates(date(2026, 12, 31)),
+            (date(2026, 12, 31), date(2027, 1, 1), date(2027, 1, 2)),
+        )
 
     def test_history_uses_chronological_six_days_and_current_monday(self):
         self.assertEqual(
