@@ -454,16 +454,17 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                 type="button"
                 onClick={() => updatePrefsMutation.mutate(!notificationsActive)}
                 className={cn(
-                  'w-12 h-7 rounded-full p-0.5 relative focus:outline-none focus:ring-2 focus:ring-primary/40',
-                  reducedMotion ? '' : 'transition-colors duration-200',
-                  notificationsActive ? 'bg-primary' : 'bg-muted border border-border',
+                  'w-12 h-7 rounded-full p-0.5 relative cursor-pointer border transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary/40',
+                  notificationsActive
+                    ? 'bg-primary border-primary shadow-[0_2px_12px_rgba(79,133,235,0.45)]'
+                    : 'bg-white/10 dark:bg-white/10 border-white/20 dark:border-white/20',
                 )}
                 role="switch"
                 aria-checked={notificationsActive}
               >
                 <span
                   className={cn(
-                    'block w-6 h-6 rounded-full bg-white shadow-md transform',
+                    'block w-5 h-5 rounded-full bg-white shadow-md transform mt-0.5 ml-0.5',
                     reducedMotion ? '' : 'transition-transform duration-200',
                     notificationsActive ? 'translate-x-5' : 'translate-x-0',
                   )}
@@ -484,16 +485,17 @@ export function ProfilePage({ theme, onThemeChange, reducedMotion = false }: Pro
                 return (
                   <button
                     key={opt.value}
+                    type="button"
                     onClick={() => onThemeChange(opt.value)}
                     className={cn(
-                      'flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-xl text-xs font-semibold border transition-all duration-200',
+                      'flex flex-col items-center justify-center gap-1.5 py-3 px-2 rounded-xl text-xs font-semibold border transition-all duration-200 cursor-pointer',
                       isActive
-                        ? 'bg-primary text-primary-foreground border-primary shadow-[0_4px_16px_rgba(5,65,240,0.3)]'
+                        ? 'bg-primary text-white border-primary shadow-[0_4px_16px_rgba(79,133,235,0.45)] ring-2 ring-primary/40 scale-[1.02]'
                         : 'bg-card/40 border-border/50 text-muted-foreground hover:bg-card/70 hover:text-foreground',
                     )}
                   >
-                    <Icon className="w-4 h-4" />
-                    <span>{opt.label}</span>
+                    <Icon className={cn('w-4 h-4', isActive ? 'text-white' : 'text-muted-foreground')} />
+                    <span className={isActive ? 'text-white font-bold' : ''}>{opt.label}</span>
                   </button>
                 )
               })}

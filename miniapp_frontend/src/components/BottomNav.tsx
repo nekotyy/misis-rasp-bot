@@ -40,7 +40,7 @@ export function BottomNav({ safeAreaBottom = 0 }: BottomNavProps) {
                   cn(
                     'flex-1 flex flex-col items-center justify-center gap-1 py-2 px-3 rounded-xl transition-all duration-200',
                     isActive
-                      ? 'bg-primary text-primary-foreground font-semibold shadow-lg shadow-primary/30'
+                      ? 'bg-primary text-white font-semibold shadow-lg shadow-primary/30'
                       : 'text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5',
                   )
                 }
