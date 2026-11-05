@@ -244,9 +244,11 @@ class Deployer:
             backup = s.backups / f"{stamp}-{sha[:12]}"
             old_schema = ""
             activated = False
+            running_services = set(before["services"].keys())
+            stop_targets = [app for app in APPLICATIONS if app in running_services]
             print("Stopping application writers and creating a consistent backup", flush=True)
             try:
-                self.compose("stop", "--timeout", "60", *APPLICATIONS)
+                self.compose("stop", "--timeout", "60", *stop_targets)
                 old_schema = self.backup(backup)
                 (backup / "deployment.json").write_text(json.dumps({"previous": previous, "target": sha, "images": old_images}) + "\n")
                 self.git("switch", "--detach", sha)
@@ -266,7 +268,7 @@ class Deployer:
                     self.compose("up", "--detach", "--no-deps", "--no-build", "--force-recreate", *APPLICATIONS)
                     self.wait_healthy()
                     raise DeploymentError(f"Readiness failed; restored previous code and images, preserved current data. Backup: {backup}") from error
-                self.compose("start", *APPLICATIONS)
+                self.compose("start", *stop_targets)
                 raise
             (s.state / "current-sha").write_text(sha + "\n")
             print(f"DEPLOYED {sha}; readiness OK; backup: {backup}", flush=True)

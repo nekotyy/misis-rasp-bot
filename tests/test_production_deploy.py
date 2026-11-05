@@ -197,7 +197,7 @@ class ProductionDeployTests(unittest.TestCase):
                 deployer.failure = failure
                 with self.assertRaises(DeploymentError):
                     deployer.deploy(NEW)
-                self.assertIn(("compose", "start", "bot", "web", "miniapp-api", "miniapp-frontend"), deployer.events)
+                self.assertIn(("compose", "start", "bot", "web"), deployer.events)
                 self.assertEqual(deployer.head, OLD)
 
     def test_unhealthy_release_rolls_back_code_but_keeps_new_messages(self):
