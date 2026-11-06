@@ -69,9 +69,16 @@ class TestVkSettingsKeyboard(unittest.TestCase):
         labels = self._extract_labels(kb_json)
         self.assertIn("Помощь", labels)
         self.assertIn("Пройденные пары", labels)
+        self.assertIn("Мини-приложение", labels)
+        self.assertIn("Обратная связь", labels)
+        self.assertIn("Поддержка", labels)
+        self.assertIn("Сообщить о баге", labels)
         self.assertIn("Персонализация", labels)
         self.assertIn("О проекте", labels)
         self.assertIn("Назад в меню", labels)
+        for label in labels:
+            for emoji in ("💬", "🐛", "📱", "✅", "⭐"):
+                self.assertNotIn(emoji, label)
 
     def test_help_button_in_settings_keyboard_student(self) -> None:
         user = SimpleNamespace(

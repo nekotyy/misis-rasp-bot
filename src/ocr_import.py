@@ -984,7 +984,7 @@ def format_admin_gemini_status(ocr_service: OcrScheduleImporter | None, *, html:
     diag = ocr_service.diagnostics()
     live = ocr_service.engine.live_status()
 
-    lines.append(f"Готовность: {'🟢 готов' if diag.get('ready') else '🔴 не готов'}")
+    lines.append(f"Готовность: {'готов' if diag.get('ready') else 'не готов'}")
     lines.append(f"Модель: {bold(esc(live.get('model_configured') or 'по умолчанию'))}")
     account_status = live.get("account_status")
     if account_status:

@@ -300,5 +300,64 @@ class VkBotUxTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.sent(), "бот должен ответить, даже если профиль не обновился")
 
 
+    async def test_app_command_sends_button_with_vk_miniapp_url(self) -> None:
+        await self.send("/app")
+        params = self.sent()[-1]
+        self.assertIn("Расписание пар ОПК", params["message"])
+        self.assertIn("Интерактивное мини-приложение", params["message"])
+        self.assertIn("keyboard", params)
+        kb = json.loads(params["keyboard"])
+        self.assertTrue(kb.get("inline"))
+        btn = kb["buttons"][0][0]
+        self.assertEqual(btn["action"]["type"], "open_link")
+        self.assertEqual(btn["action"]["link"], "https://vk.ru/app54881149")
+        self.assertEqual(btn["action"]["label"], "Открыть расписание")
+        self.assertNotIn("miniapp.opk.nekoty.ru", params["message"])
+
+    async def test_interactive_bugreport_and_support_flow_with_gui(self) -> None:
+        # 1. Trigger /support
+        await self.send("/support")
+        msg, buttons = self.last_screen()
+        self.assertIn("Служба поддержки", msg)
+        self.assertIn("Отмена", buttons)
+
+        # 2. User types issue
+        await self.send("Не работает кнопка обновления")
+        msg, buttons = self.last_screen()
+        self.assertIn("Подтверждение отправки", msg)
+        self.assertIn("Не работает кнопка обновления", msg)
+        self.assertIn("Отправить обращение", buttons)
+        self.assertIn("Отмена", buttons)
+
+        # 3. User confirms
+        await self.send("Отправить обращение")
+        msg, _ = self.last_screen()
+        self.assertIn("Запрос в службу поддержки", msg)
+        self.assertIn("отправлен", msg)
+        self.assertNotIn("✅", msg)
+
+        # 4. Check DB
+        latest = await self.db.get_latest_open_feedback("vk", USER_ID)
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["message_type"], "support")
+        self.assertEqual(latest["message_text"], "Не работает кнопка обновления")
+
+    async def test_interactive_report_cancel_flow(self) -> None:
+        await self.send("Сообщить о баге")
+        msg, buttons = self.last_screen()
+        self.assertIn("Сообщение об ошибке (баг-репорт)", msg)
+        self.assertIn("Отмена", buttons)
+
+        await self.send("Ошибочный текст")
+        msg, buttons = self.last_screen()
+        self.assertIn("Подтверждение отправки", msg)
+
+        await self.send("Отмена")
+        msg, _ = self.last_screen()
+        self.assertIn("Отправка обращения отменена", msg)
+
+        latest = await self.db.get_latest_open_feedback("vk", USER_ID)
+        self.assertIsNone(latest)
+
 if __name__ == "__main__":
     unittest.main()

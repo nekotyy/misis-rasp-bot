@@ -272,7 +272,7 @@ USER_ERROR_HTML = (
     "Администратор уже получил отчёт об ошибке. Попробуй ещё раз через минуту.\n"
     f"Если повторится — напиши: {SUPPORT_CONTACT}"
 )
-STAR_ICON = '<tg-emoji emoji-id="5465453857578888257">⭐</tg-emoji>'
+STAR_ICON = ""
 GROUP_CHAT_TYPES = {"group", "supergroup"}
 TELEGRAM_MESSAGE_LIMIT = 4096
 # Через сколько секунд бот сам подтверждает нажатие кнопки, если обработчик ещё работает.
@@ -670,13 +670,13 @@ def build_admin_broadcast_preview_keyboard(
     target_platform: str = "all",
     target_audience: str = "all",
 ) -> InlineKeyboardMarkup:
-    plat_all = "✅ Везде" if target_platform == "all" else "Везде"
-    plat_tg = "✅ В ТГ" if target_platform == "telegram" else "В ТГ"
-    plat_vk = "✅ В ВК" if target_platform == "vk" else "В ВК"
+    plat_all = "[x] Везде" if target_platform == "all" else "Везде"
+    plat_tg = "[x] В ТГ" if target_platform == "telegram" else "В ТГ"
+    plat_vk = "[x] В ВК" if target_platform == "vk" else "В ВК"
 
-    aud_all = "✅ Всем" if target_audience == "all" else "Всем"
-    aud_students = "✅ Студентам" if target_audience == "students" else "Студентам"
-    aud_teachers = "✅ Преподавателям" if target_audience == "teachers" else "Преподавателям"
+    aud_all = "[x] Всем" if target_audience == "all" else "Всем"
+    aud_students = "[x] Студентам" if target_audience == "students" else "Студентам"
+    aud_teachers = "[x] Преподавателям" if target_audience == "teachers" else "Преподавателям"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -855,12 +855,12 @@ def format_admin_ocr_json_prompt(error: str = "") -> str:
 DONATE_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(text="⭐ 15", callback_data="donate:stars:15"),
-            InlineKeyboardButton(text="⭐ 25", callback_data="donate:stars:25"),
+            InlineKeyboardButton(text="15 звезд", callback_data="donate:stars:15"),
+            InlineKeyboardButton(text="25 звезд", callback_data="donate:stars:25"),
         ],
         [
-            InlineKeyboardButton(text="⭐ 50", callback_data="donate:stars:50"),
-            InlineKeyboardButton(text="⭐ 100", callback_data="donate:stars:100"),
+            InlineKeyboardButton(text="50 звезд", callback_data="donate:stars:50"),
+            InlineKeyboardButton(text="100 звезд", callback_data="donate:stars:100"),
         ],
         [
             InlineKeyboardButton(text="Отправить свое количество", callback_data="donate:stars:custom"),
@@ -978,8 +978,8 @@ async def build_admin_status_text(
     ram_mb = get_memory_usage_mb()
     db_size_str = db_status.get("size_formatted", "0 Б")
 
-    site_status_label = f"🟢 Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"🔴 Недоступен ({escape(str(site_status.get('error') or 'Ошибка'))})"
-    rmq_label = "🟢 Подключен" if rabbitmq_url else "🟡 Direct Fallback (не настроен)"
+    site_status_label = f"Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"Недоступен ({escape(str(site_status.get('error') or 'Ошибка'))})"
+    rmq_label = "Подключен" if rabbitmq_url else "Direct Fallback (не настроен)"
 
     return "\n".join([
         "<b>Статус бота</b>",
@@ -994,10 +994,10 @@ async def build_admin_status_text(
         "<b>Сайт расписания и службы:</b>",
         f"• Сайт МИСИС: <b>{site_status_label}</b>.",
         f"• RabbitMQ: <b>{rmq_label}</b>.",
-        "• Telegram Bot API: <b>🟢 Работает</b>.",
-        "• VK Bot API: <b>🟢 Работает</b>.",
-        f"• База данных SQLite: <b>🟢 OK</b> ({db_size_str}).",
-        "• Фоновый планировщик: <b>🟢 Активен</b>.",
+        "• Telegram Bot API: <b>Работает</b>.",
+        "• VK Bot API: <b>Работает</b>.",
+        f"• База данных SQLite: <b>OK</b> ({db_size_str}).",
+        "• Фоновый планировщик: <b>Активен</b>.",
         "• " + (ocr_importer.status_line(html=True) if ocr_importer is not None else "<b>Распознавание с фото</b>: не настроено") + ".",
         f"• Ошибок за сегодня: <b>{daily_errors_summary['total_errors']}</b> (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
@@ -1129,6 +1129,8 @@ def build_dispatcher(
     awaiting_custom_sticker: set[int] = set()
     awaiting_bugreport: set[int] = set()
     awaiting_feedback: set[int] = set()
+    awaiting_user_report: dict[int, str] = {}
+    user_report_drafts: dict[int, dict[str, str]] = {}
     admin_reply_contexts: dict[int, tuple[str, int, int]] = {}
     message_rate_limit: dict[int, float] = {}
     callback_rate_limit: dict[int, float] = {}
@@ -1872,7 +1874,7 @@ def build_dispatcher(
             label = getattr(user, "full_name", None) or (f"@{user.username}" if user.username else str(user.user_id))
             if len(label) > 32:
                 label = f"{label[:29]}..."
-            prefix = "✅" if getattr(user, "is_editor", False) else "➕"
+            prefix = "[x]" if getattr(user, "is_editor", False) else "[+]"
             rows.append([InlineKeyboardButton(text=f"{prefix} {label}", callback_data=f"editor:toggle:{user.user_id}")])
         rows.append([InlineKeyboardButton(text="Назад в админку", callback_data="admin:back")])
         return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -2154,6 +2156,8 @@ def build_dispatcher(
             admin_lesson_delete_one_drafts,
             admin_import_lessons_drafts,
             admin_user_search_state,
+            user_report_drafts,
+            awaiting_user_report,
         ):
             drafts.pop(user_id, None)
         for key in [key for key in teacher_choices if key[1] == user_id]:
@@ -2472,7 +2476,7 @@ def build_dispatcher(
                 "Профиль: <a href=\"https://github.com/nekotyy\">тык</a>",
                 "Проект: <a href=\"https://github.com/nekotyy/misis-rasp-bot\">тык</a>",
                 "",
-                "Если понравилось, поставь звездочку на GitHub ⭐",
+                "Если понравилось, поставь звездочку на GitHub",
             ]
         )
 
@@ -2503,10 +2507,11 @@ def build_dispatcher(
         if user and user.subscription_key:
             rows.append([InlineKeyboardButton(text="Отписаться", callback_data="settings:clear_group")])
         app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
-        rows.append([InlineKeyboardButton(text="📱 Открыть Mini App", web_app=WebAppInfo(url=app_url))])
+        rows.append([InlineKeyboardButton(text="Открыть Mini App", web_app=WebAppInfo(url=app_url))])
         rows.append([
-            InlineKeyboardButton(text="💬 Обратная связь", callback_data="settings:feedback"),
-            InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="settings:bugreport"),
+            InlineKeyboardButton(text="Обратная связь", callback_data="settings:feedback"),
+            InlineKeyboardButton(text="Поддержка", callback_data="settings:support"),
+            InlineKeyboardButton(text="Сообщить о баге", callback_data="settings:bugreport"),
         ])
         rows.append([InlineKeyboardButton(text="Персонализация", callback_data="settings:personalization")])
         rows.append([InlineKeyboardButton(text="Помощь", callback_data="settings:help")])
@@ -2712,7 +2717,7 @@ def build_dispatcher(
         await bot_inst.send_invoice(
             chat_id=chat_id,
             title="Поддержка проекта",
-            description=f"Пожертвование {stars} ⭐ на развитие и поддержку работы бота.",
+            description=f"Пожертвование {stars} звезд на развитие и поддержку работы бота.",
             payload=f"star_donate:{user_id}:{stars}",
             provider_token="",
             currency="XTR",
@@ -2955,6 +2960,56 @@ def build_dispatcher(
             reply_markup=await build_start_keyboard(message.from_user.id if message.from_user else None),
         )
 
+    def build_report_confirm_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Отправить", callback_data="report:confirm"),
+                    InlineKeyboardButton(text="Отмена", callback_data="report:cancel"),
+                ]
+            ]
+        )
+
+    async def prompt_user_report(bot: Bot, chat_id: int, user_id: int, report_type: str) -> None:
+        awaiting_user_report[user_id] = report_type
+        awaiting_bugreport.discard(user_id)
+        awaiting_feedback.discard(user_id)
+        type_titles = {
+            "bugreport": "Сообщение об ошибке (баг-репорт)",
+            "feedback": "Обратная связь разработчику",
+            "support": "Запрос в службу поддержки",
+        }
+        type_prompts = {
+            "bugreport": "Опишите проблему, с которой вы столкнулись (какая группа/преподаватель, что отображается неверно или не работает).\n\nОтправьте текст сообщения следующим сообщением:",
+            "feedback": "Напишите ваше сообщение, отзыв или предложение разработчикам.\n\nОтправьте текст сообщения следующим сообщением:",
+            "support": "Опишите ваш вопрос или сложность в работе с ботом. Администратор ответит вам прямо в этот диалог.\n\nОтправьте текст сообщения следующим сообщением:",
+        }
+        cancel_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="report:cancel")]
+        ])
+        title = type_titles.get(report_type, "Обращение")
+        prompt = type_prompts.get(report_type, "Отправьте текст сообщения следующим сообщением:")
+        await bot.send_message(chat_id, f"<b>{title}</b>\n\n{prompt}", reply_markup=cancel_kb)
+
+    async def show_report_draft_confirmation(msg: Message, user_id: int, report_type: str, text: str) -> None:
+        user_report_drafts[user_id] = {"type": report_type, "text": text}
+        awaiting_user_report.pop(user_id, None)
+        awaiting_bugreport.discard(user_id)
+        awaiting_feedback.discard(user_id)
+        type_titles = {
+            "bugreport": "Сообщение об ошибке (баг-репорт)",
+            "feedback": "Обратная связь разработчику",
+            "support": "Запрос в службу поддержки",
+        }
+        title = type_titles.get(report_type, "Обращение")
+        preview = (
+            "<b>Подтверждение отправки обращения</b>\n\n"
+            f"<b>Тип:</b> {title}\n\n"
+            f"<b>Текст обращения:</b>\n{escape(text)}\n\n"
+            "Пожалуйста, проверьте текст и подтвердите отправку нажатием кнопки:"
+        )
+        await send_reply(msg, preview, reply_markup=build_report_confirm_keyboard())
+
     async def submit_user_report(msg: Message, report_type: str, report_text: str) -> None:
         user_id = msg.from_user.id if msg.from_user else msg.chat.id
         username = msg.from_user.username if msg.from_user else None
@@ -2970,16 +3025,25 @@ def build_dispatcher(
         if report_type == "bugreport":
             await send_reply(
                 msg,
-                f"✅ <b>Баг-репорт #{fb_id} отправлен разработчикам!</b>\n\n"
+                f"<b>Баг-репорт #{fb_id} отправлен разработчикам!</b>\n\n"
                 "Спасибо за помощь в улучшении сервиса расписания. Мы изучим проблему в ближайшее время.",
+            )
+        elif report_type == "support":
+            await send_reply(
+                msg,
+                f"<b>Запрос в службу поддержки #{fb_id} отправлен!</b>\n\n"
+                "Администратор ответит вам прямо в этот диалог.",
             )
         else:
             await send_reply(
                 msg,
-                f"✅ <b>Сообщение обратной связи #{fb_id} передано администратору!</b>\n\n"
+                f"<b>Сообщение обратной связи #{fb_id} передано администратору!</b>\n\n"
                 "Как только поступит ответ, бот сразу пришлёт его вам в этот диалог.",
             )
-        type_title = "🐛 <b>Новый баг-репорт</b>" if report_type == "bugreport" else "💬 <b>Новое сообщение обратной связи</b>"
+        type_title = (
+            "<b>Новый баг-репорт</b>" if report_type == "bugreport"
+            else ("<b>Запрос в службу поддержки</b>" if report_type == "support" else "<b>Новое сообщение обратной связи</b>")
+        )
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         user_link = format_user_profile_link("telegram", user_id, username, html=True)
         admin_msg = (
@@ -2999,7 +3063,10 @@ def build_dispatcher(
             except Exception as exc:
                 logger.warning("Не удалось уведомить админа TG %s: %s", a_id, exc)
         if broadcaster is not None and settings.admin_vk_id:
-            vk_type = "Новый баг-репорт" if report_type == "bugreport" else "Новое сообщение обратной связи"
+            vk_type = (
+                "Новый баг-репорт" if report_type == "bugreport"
+                else ("Запрос в поддержку" if report_type == "support" else "Новое сообщение обратной связи")
+            )
             vk_note = (
                 f"[{vk_type} #{fb_id}]\n"
                 f"От: {user_display} (ID: {user_id}, Telegram)\n"
@@ -3027,12 +3094,12 @@ def build_dispatcher(
             try:
                 await msg.bot.send_message(
                     target_user_id,
-                    f"💬 <b>Ответ от администратора:</b>\n\n{escape(reply_text)}"
+                    f"<b>Ответ от администратора:</b>\n\n{escape(reply_text)}"
                 )
                 delivered = True
             except Exception as exc:
                 logger.warning("Не удалось отправить ответ пользователю TG %s: %s", target_user_id, exc)
-                await send_reply(msg, f"❌ Ошибка отправки пользователю Telegram {target_user_id}: {exc}")
+                await send_reply(msg, f"Ошибка отправки пользователю Telegram {target_user_id}: {exc}")
                 return
         elif target_platform == "vk":
             if broadcaster is not None:
@@ -3040,16 +3107,16 @@ def build_dispatcher(
                     await broadcaster.deliver(OutboundMessage(
                         platform="vk",
                         user_id=target_user_id,
-                        text=f"💬 Ответ от администратора:\n\n{reply_text}",
+                        text=f"Ответ от администратора:\n\n{reply_text}",
                         campaign_type="feedback_reply",
                     ))
                     delivered = True
                 except Exception as exc:
                     logger.warning("Не удалось отправить ответ пользователю VK %s: %s", target_user_id, exc)
-                    await send_reply(msg, f"❌ Ошибка отправки пользователю VK {target_user_id}: {exc}")
+                    await send_reply(msg, f"Ошибка отправки пользователю VK {target_user_id}: {exc}")
                     return
             else:
-                await send_reply(msg, "❌ Доставка в VK недоступна (отсутствует broadcaster).")
+                await send_reply(msg, "Доставка в VK недоступна (отсутствует broadcaster).")
                 return
         if delivered:
             if feedback_id:
@@ -3058,7 +3125,7 @@ def build_dispatcher(
                 latest = await db.get_latest_open_feedback(target_platform, target_user_id)
                 if latest:
                     await db.answer_feedback_message(latest["id"], reply_text)
-            await send_reply(msg, f"✅ Ответ успешно отправлен пользователю <code>{target_user_id}</code> ({target_platform})!")
+            await send_reply(msg, f"Ответ успешно отправлен пользователю <code>{target_user_id}</code> ({target_platform})!")
 
     @dispatcher.message(Command("miniapp_stats"))
     @dispatcher.message(Command("app_stats"))
@@ -3092,16 +3159,9 @@ def build_dispatcher(
         parts = message.text.split(maxsplit=1) if message.text else []
         report_text = parts[1].strip() if len(parts) > 1 else ""
         if report_text:
-            await submit_user_report(message, "bugreport", report_text)
+            await show_report_draft_confirmation(message, message.from_user.id, "bugreport", report_text)
             return
-        awaiting_bugreport.add(message.from_user.id)
-        awaiting_feedback.discard(message.from_user.id)
-        await send_reply(
-            message,
-            "🐛 <b>Сообщение об ошибке (баг-репорт)</b>\n\n"
-            "Опишите проблему, с которой вы столкнулись (какая группа/преподаватель, что именно отображается неверно или не работает).\n\n"
-            "Отправьте ваш текст следующим сообщением (или напишите /cancel для отмены):",
-        )
+        await prompt_user_report(message.bot, message.chat.id, message.from_user.id, "bugreport")
 
     @dispatcher.message(Command("feedback", "support"))
     async def handle_feedback_command(message: Message) -> None:
@@ -3109,18 +3169,13 @@ def build_dispatcher(
         if message.from_user is None:
             return
         parts = message.text.split(maxsplit=1) if message.text else []
+        cmd = parts[0].lstrip("/").split("@")[0].lower() if parts else "feedback"
+        report_type = "support" if cmd == "support" else "feedback"
         fb_text = parts[1].strip() if len(parts) > 1 else ""
         if fb_text:
-            await submit_user_report(message, "feedback", fb_text)
+            await show_report_draft_confirmation(message, message.from_user.id, report_type, fb_text)
             return
-        awaiting_feedback.add(message.from_user.id)
-        awaiting_bugreport.discard(message.from_user.id)
-        await send_reply(
-            message,
-            "💬 <b>Обратная связь разработчику</b>\n\n"
-            "Напишите ваше сообщение, отзыв или предложение. Вы сможете получить ответ от администратора прямо в этот чат от лица бота.\n\n"
-            "Отправьте текст следующим сообщением (или напишите /cancel для отмены):",
-        )
+        await prompt_user_report(message.bot, message.chat.id, message.from_user.id, report_type)
 
     @dispatcher.message(Command("reply"))
     async def handle_reply_command(message: Message) -> None:
@@ -3394,6 +3449,44 @@ def build_dispatcher(
             action,
         )
         await safe_callback_answer(callback)
+    @dispatcher.callback_query(F.data.startswith("report:"))
+    async def handle_report_callback(callback: CallbackQuery) -> None:
+        await wait_callback_rate_limit(callback)
+        await register_callback_user(callback)
+        if callback.message is None or callback.from_user is None:
+            await safe_callback_answer(callback)
+            return
+        action = callback.data.split(":", 1)[1]
+        user_id = callback.from_user.id
+        if action == "cancel":
+            user_report_drafts.pop(user_id, None)
+            awaiting_user_report.pop(user_id, None)
+            awaiting_bugreport.discard(user_id)
+            awaiting_feedback.discard(user_id)
+            await safe_edit_message_text(
+                callback.message,
+                "Отправка обращения отменена.",
+            )
+            await safe_callback_answer(callback, "Отменено")
+            return
+        if action == "confirm":
+            draft = user_report_drafts.pop(user_id, None)
+            if not draft:
+                await safe_callback_answer(callback, "Черновик обращения не найден", show_alert=True)
+                return
+            await submit_user_report(callback.message, draft["type"], draft["text"])
+            type_title = (
+                "Баг-репорт" if draft["type"] == "bugreport"
+                else ("Запрос в службу поддержки" if draft["type"] == "support" else "Сообщение обратной связи")
+            )
+            await safe_edit_message_text(
+                callback.message,
+                f"<b>{type_title} успешно отправлен!</b>\n\nСпасибо за помощь в улучшении сервиса расписания.",
+            )
+            await safe_callback_answer(callback, "Отправлено!")
+            return
+        await safe_callback_answer(callback)
+
     @dispatcher.callback_query(F.data.startswith("settings:"))
     async def handle_settings_callback(callback: CallbackQuery) -> None:
         await wait_callback_rate_limit(callback)
@@ -3402,26 +3495,8 @@ def build_dispatcher(
             await safe_callback_answer(callback)
             return
         action = callback.data.split(":", 1)[1]
-        if action == "bugreport":
-            awaiting_bugreport.add(callback.from_user.id)
-            awaiting_feedback.discard(callback.from_user.id)
-            await send_reply(
-                callback.message,
-                "🐛 <b>Сообщение об ошибке (баг-репорт)</b>\n\n"
-                "Опишите проблему, с которой вы столкнулись (какая группа/преподаватель, что отображается неверно или не работает).\n\n"
-                "Отправьте ваш текст следующим сообщением (или напишите /cancel для отмены):",
-            )
-            await safe_callback_answer(callback)
-            return
-        if action == "feedback":
-            awaiting_feedback.add(callback.from_user.id)
-            awaiting_bugreport.discard(callback.from_user.id)
-            await send_reply(
-                callback.message,
-                "💬 <b>Обратная связь разработчику</b>\n\n"
-                "Напишите ваше сообщение, вопрос или предложение. Администратор сможет ответить вам прямо от лица бота сюда в чат.\n\n"
-                "Отправьте текст следующим сообщением (или напишите /cancel для отмены):",
-            )
+        if action in {"bugreport", "feedback", "support"}:
+            await prompt_user_report(callback.bot, callback.message.chat.id, callback.from_user.id, action)
             await safe_callback_answer(callback)
             return
         if action == "about":
@@ -5045,14 +5120,22 @@ def build_dispatcher(
                 await send_admin_reply_to_user(message, t_plat, t_uid, raw_text.strip())
                 return
 
-        if from_user and from_user.id in awaiting_bugreport:
+        if from_user and (from_user.id in awaiting_user_report or from_user.id in awaiting_bugreport or from_user.id in awaiting_feedback):
+            if raw_text.startswith("/") and raw_text != "/cancel":
+                return
+            if raw_text == "/cancel" or raw_text.lower() == "отмена":
+                awaiting_user_report.pop(from_user.id, None)
+                awaiting_bugreport.discard(from_user.id)
+                awaiting_feedback.discard(from_user.id)
+                user_report_drafts.pop(from_user.id, None)
+                await send_reply(message, "Отправка обращения отменена.")
+                return
+            r_type = awaiting_user_report.pop(from_user.id, None)
+            if not r_type:
+                r_type = "bugreport" if from_user.id in awaiting_bugreport else "feedback"
             awaiting_bugreport.discard(from_user.id)
-            await submit_user_report(message, "bugreport", raw_text.strip())
-            return
-
-        if from_user and from_user.id in awaiting_feedback:
             awaiting_feedback.discard(from_user.id)
-            await submit_user_report(message, "feedback", raw_text.strip())
+            await show_report_draft_confirmation(message, from_user.id, r_type, raw_text.strip())
             return
 
         if message.from_user.id in awaiting_audience_subscription_input:

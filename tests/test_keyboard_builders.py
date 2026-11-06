@@ -45,18 +45,18 @@ class TestBuildAdminBroadcastPreviewKeyboard(unittest.TestCase):
         kb = build_admin_broadcast_preview_keyboard()
         all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
         # По умолчанию "Везде" должна быть с галочкой
-        self.assertTrue(any("✅" in t and "Везде" in t for t in all_texts),
+        self.assertTrue(any("[x]" in t and "Везде" in t for t in all_texts),
                         f"Не найдена активная кнопка 'Везде': {all_texts}")
 
     def test_platform_telegram(self) -> None:
         kb = build_admin_broadcast_preview_keyboard(target_platform="telegram")
         all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        self.assertTrue(any("✅" in t and "ТГ" in t for t in all_texts))
+        self.assertTrue(any("[x]" in t and "ТГ" in t for t in all_texts))
 
     def test_platform_vk(self) -> None:
         kb = build_admin_broadcast_preview_keyboard(target_platform="vk")
         all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-        self.assertTrue(any("✅" in t and "ВК" in t for t in all_texts))
+        self.assertTrue(any("[x]" in t and "ВК" in t for t in all_texts))
 
     def test_all_buttons_have_callback_data(self) -> None:
         kb = build_admin_broadcast_preview_keyboard()

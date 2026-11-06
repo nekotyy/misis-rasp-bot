@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from collections import defaultdict
 from collections.abc import Awaitable
@@ -15,7 +14,7 @@ from time import monotonic
 from typing import Any
 
 import httpx
-from vkbottle import Keyboard, Text
+from vkbottle import Keyboard, OpenLink, Text
 from vkbottle.bot import Bot, Message
 from vkbottle.exception_factory import ErrorHandler
 
@@ -261,7 +260,7 @@ def build_vk_subscription_settings_keyboard(user=None) -> str:
     rows: list[list[str]] = [
         ["Пройденные пары"],
         ["Мини-приложение"],
-        ["Обратная связь", "Сообщить о баге"],
+        ["Обратная связь", "Поддержка", "Сообщить о баге"],
         ["Персонализация"],
         ["О проекте"],
         ["Помощь"],
@@ -506,8 +505,8 @@ async def build_vk_admin_status_text(
     ram_mb = get_memory_usage_mb()
     db_size_str = db_status.get("size_formatted", "0 Б")
 
-    site_status_label = f"🟢 Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"🔴 Недоступен ({str(site_status.get('error') or 'Ошибка')})"
-    rmq_label = "🟢 Подключен" if rabbitmq_url else "🟡 Direct Fallback (не настроен)"
+    site_status_label = f"Доступен ({site_status.get('status_code', 200)} OK, {site_status.get('latency_ms', 0)} мс)" if site_status["ok"] else f"Недоступен ({str(site_status.get('error') or 'Ошибка')})"
+    rmq_label = "Подключен" if rabbitmq_url else "Direct Fallback (не настроен)"
 
     return "\n".join([
         "Статус бота",
@@ -522,10 +521,10 @@ async def build_vk_admin_status_text(
         "Сайт расписания и службы:",
         f"• Сайт МИСИС: {site_status_label}.",
         f"• RabbitMQ: {rmq_label}.",
-        "• Telegram Bot API: 🟢 Работает.",
-        "• VK Bot API: 🟢 Работает.",
-        f"• База данных SQLite: 🟢 OK ({db_size_str}).",
-        "• Фоновый планировщик: 🟢 Активен.",
+        "• Telegram Bot API: Работает.",
+        "• VK Bot API: Работает.",
+        f"• База данных SQLite: OK ({db_size_str}).",
+        "• Фоновый планировщик: Активен.",
         "• " + (ocr_importer.status_line(html=False) if ocr_importer is not None else "Распознавание с фото: не настроено") + ".",
         f"• Ошибок за сегодня: {daily_errors_summary['total_errors']} (Службы: {daily_errors_summary['system_errors_total']}, Доставка: {daily_errors_summary['delivery_errors_total']}).",
         "───────────────────────────",
@@ -767,6 +766,7 @@ def build_vk_bot(
     peer_modes: dict[int, str] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     admin_user_search_state: dict[int, dict[str, str]] = {}
+    vk_report_drafts: dict[int, dict[str, str]] = {}
     editor_option_map: dict[int, dict[str, int]] = defaultdict(dict)
     admin_broadcast_drafts: dict[int, dict] = {}
     admin_lesson_drafts: dict[int, dict[str, object]] = {}
@@ -1258,13 +1258,13 @@ def build_vk_bot(
         target_platform: str = "all",
         target_audience: str = "all",
     ) -> str:
-        plat_all = "Платформа: ✅ Везде" if target_platform == "all" else "Платформа: Везде"
-        plat_tg = "Платформа: ✅ В ТГ" if target_platform == "telegram" else "Платформа: В ТГ"
-        plat_vk = "Платформа: ✅ В ВК" if target_platform == "vk" else "Платформа: В ВК"
+        plat_all = "Платформа: [x] Везде" if target_platform == "all" else "Платформа: Везде"
+        plat_tg = "Платформа: [x] В ТГ" if target_platform == "telegram" else "Платформа: В ТГ"
+        plat_vk = "Платформа: [x] В ВК" if target_platform == "vk" else "Платформа: В ВК"
 
-        aud_all = "Кому: ✅ Всем" if target_audience == "all" else "Кому: Всем"
-        aud_students = "Кому: ✅ Студентам" if target_audience == "students" else "Кому: Студентам"
-        aud_teachers = "Кому: ✅ Преподавателям" if target_audience == "teachers" else "Кому: Преподавателям"
+        aud_all = "Кому: [x] Всем" if target_audience == "all" else "Кому: Всем"
+        aud_students = "Кому: [x] Студентам" if target_audience == "students" else "Кому: Студентам"
+        aud_teachers = "Кому: [x] Преподавателям" if target_audience == "teachers" else "Кому: Преподавателям"
 
         return make_keyboard([
             [plat_all, plat_tg, plat_vk],
@@ -1317,7 +1317,7 @@ def build_vk_bot(
                 "Профиль: github.com/nekotyy",
                 "Проект: github.com/nekotyy/misis-rasp-bot",
                 "",
-                "Если понравилось, поставь звездочку на GitHub ⭐",
+                "Если понравилось, поставь звездочку на GitHub",
             ]
         )
 
@@ -1990,20 +1990,33 @@ def build_vk_bot(
         if report_type == "bugreport":
             await show_screen(
                 peer_id,
-                f"✅ Баг-репорт #{fb_id} отправлен разработчикам!\n\n"
+                f"Баг-репорт #{fb_id} отправлен разработчикам!\n\n"
                 "Спасибо за помощь в улучшении сервиса расписания. Мы изучим проблему в ближайшее время.",
+                keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)),
+            )
+        elif report_type == "support":
+            await show_screen(
+                peer_id,
+                f"Запрос в службу поддержки #{fb_id} отправлен!\n\n"
+                "Администратор ответит вам прямо в этот диалог.",
                 keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)),
             )
         else:
             await show_screen(
                 peer_id,
-                f"✅ Сообщение обратной связи #{fb_id} передано администратору!\n\n"
+                f"Сообщение обратной связи #{fb_id} передано администратору!\n\n"
                 "Как только администратор ответит, бот сразу пришлёт ответ в этот диалог.",
                 keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)),
             )
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        tg_type = "🐛 <b>Новый баг-репорт</b>" if report_type == "bugreport" else "💬 <b>Новое сообщение обратной связи</b>"
-        vk_type = "Новый баг-репорт" if report_type == "bugreport" else "Новое сообщение обратной связи"
+        tg_type = (
+            "<b>Новый баг-репорт</b>" if report_type == "bugreport"
+            else ("<b>Запрос в службу поддержки</b>" if report_type == "support" else "<b>Новое сообщение обратной связи</b>")
+        )
+        vk_type = (
+            "Новый баг-репорт" if report_type == "bugreport"
+            else ("Запрос в службу поддержки" if report_type == "support" else "Новое сообщение обратной связи")
+        )
         tg_notify = (
             f"{tg_type} [#{fb_id}]\n\n"
             f"<b>От:</b> {user_display} (ID: <code>{user_id}</code>, ВКонтакте)\n"
@@ -2086,6 +2099,7 @@ def build_vk_bot(
         if normalized in {"/start", "start", "начать"}:
             teacher_choices.pop(peer_id, None)
             admin_broadcast_drafts.pop(peer_id, None)
+            vk_report_drafts.pop(user_id, None)
             user = await db.get_user("vk", user_id)
             if user is None or not user.subscription_key or not user.subscription_title:
                 await prompt_group_selection(peer_id)
@@ -2120,7 +2134,7 @@ def build_vk_bot(
                 draft = {"text": str(draft or ""), "target_platform": "all", "target_audience": "all"}
                 admin_broadcast_drafts[peer_id] = draft
 
-            if text in {"Платформа: Везде", "Платформа: ✅ Везде"}:
+            if text in {"Платформа: Везде", "Платформа: [x] Везде"}:
                 draft["target_platform"] = "all"
                 target_aud = draft.get("target_audience", "all")
                 await show_screen(
@@ -2130,7 +2144,7 @@ def build_vk_bot(
                 )
                 return
 
-            if text in {"Платформа: В ТГ", "Платформа: ✅ В ТГ"}:
+            if text in {"Платформа: В ТГ", "Платформа: [x] В ТГ"}:
                 draft["target_platform"] = "telegram"
                 target_aud = draft.get("target_audience", "all")
                 await show_screen(
@@ -2140,7 +2154,7 @@ def build_vk_bot(
                 )
                 return
 
-            if text in {"Платформа: В ВК", "Платформа: ✅ В ВК"}:
+            if text in {"Платформа: В ВК", "Платформа: [x] В ВК"}:
                 draft["target_platform"] = "vk"
                 target_aud = draft.get("target_audience", "all")
                 await show_screen(
@@ -2150,7 +2164,7 @@ def build_vk_bot(
                 )
                 return
 
-            if text in {"Кому: Всем", "Кому: ✅ Всем", "Всем"}:
+            if text in {"Кому: Всем", "Кому: [x] Всем", "Всем"}:
                 draft["target_audience"] = "all"
                 target_plat = draft.get("target_platform", "all")
                 await show_screen(
@@ -2160,7 +2174,7 @@ def build_vk_bot(
                 )
                 return
 
-            if text in {"Кому: Студентам", "Кому: ✅ Студентам", "Студентам"}:
+            if text in {"Кому: Студентам", "Кому: [x] Студентам", "Студентам"}:
                 draft["target_audience"] = "students"
                 target_plat = draft.get("target_platform", "all")
                 await show_screen(
@@ -2170,7 +2184,7 @@ def build_vk_bot(
                 )
                 return
 
-            if text in {"Кому: Преподавателям", "Кому: ✅ Преподавателям", "Преподавателям"}:
+            if text in {"Кому: Преподавателям", "Кому: [x] Преподавателям", "Преподавателям"}:
                 draft["target_audience"] = "teachers"
                 target_plat = draft.get("target_platform", "all")
                 await show_screen(
@@ -3261,57 +3275,121 @@ def build_vk_bot(
             return
 
         if text == "/app" or text.startswith("/app ") or text in {"Приложение", "Мини-приложение", "Mini App"}:
-            app_url = os.getenv("MINIAPP_URL", getattr(settings, "miniapp_url", "https://miniapp.opk.nekoty.ru")).strip()
+            app_kb = Keyboard(inline=True)
+            app_kb.add(OpenLink("https://vk.ru/app54881149", "Открыть расписание"))
             msg_out = (
                 "Расписание пар ОПК\n\n"
-                "Интерактивное приложение с расписанием пар и историей изменений доступно прямо внутри ВКонтакте:\n"
-                f"{app_url}\n\n"
+                "Интерактивное мини-приложение с расписанием пар и историей изменений доступно прямо внутри ВКонтакте по кнопке ниже:\n\n"
                 "Официальное сообщество: https://vk.ru/nekotyopk"
             )
-            await show_screen(peer_id, msg_out, keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)))
+            await show_screen(peer_id, msg_out, keyboard=app_kb.get_json())
             return
 
-        if text == "/bugreport" or text.startswith("/bugreport ") or text in {"Сообщить о баге", "Баг-репорт"}:
+        is_bugreport = text in {"/bugreport", "Сообщить о баге", "Баг-репорт"} or text.startswith("/bugreport ")
+        is_feedback = text in {"/feedback", "Обратная связь", "Написать разработчику"} or text.startswith("/feedback ")
+        is_support = text in {"/support", "Поддержка", "Служба поддержки"} or text.startswith("/support ")
+
+        if is_bugreport or is_feedback or is_support:
+            r_type = "bugreport" if is_bugreport else ("support" if is_support else "feedback")
             parts = text.split(maxsplit=1)
-            report_text = parts[1].strip() if len(parts) > 1 else ""
+            report_text = parts[1].strip() if len(parts) > 1 and parts[0].startswith("/") else ""
             if report_text:
-                await submit_vk_report(peer_id, user_id, "bugreport", report_text)
+                vk_report_drafts[user_id] = {"type": r_type, "text": report_text}
+                peer_modes[peer_id] = "report_confirm"
+                title = {
+                    "bugreport": "Сообщение об ошибке (баг-репорт)",
+                    "feedback": "Обратная связь разработчику",
+                    "support": "Запрос в службу поддержки",
+                }.get(r_type, "Обращение")
+                confirm_kb = make_keyboard([
+                    ["Отправить обращение"],
+                    ["Отмена"],
+                ])
+                await show_screen(
+                    peer_id,
+                    f"Подтверждение отправки обращения\n\n"
+                    f"Тип: {title}\n\n"
+                    f"Текст обращения:\n{report_text}\n\n"
+                    "Пожалуйста, проверьте текст и подтвердите отправку нажатием кнопки:",
+                    keyboard=confirm_kb,
+                )
                 return
-            peer_modes[peer_id] = "bugreport_input"
+
+            peer_modes[peer_id] = f"{r_type}_input"
+            prompts = {
+                "bugreport": (
+                    "Сообщение об ошибке (баг-репорт)\n\n"
+                    "Опишите проблему, с которой вы столкнулись (какая группа, что именно не работает).\n\n"
+                    "Отправьте ваш текст сообщением ниже (или нажмите «Отмена»):"
+                ),
+                "feedback": (
+                    "Обратная связь разработчику\n\n"
+                    "Напишите ваше сообщение, отзыв или предложение разработчикам.\n\n"
+                    "Отправьте ваш текст сообщением ниже (или нажмите «Отмена»):"
+                ),
+                "support": (
+                    "Служба поддержки\n\n"
+                    "Опишите ваш вопрос или сложность в работе с ботом. Администратор ответит вам в этот диалог.\n\n"
+                    "Отправьте ваш текст сообщением ниже (или нажмите «Отмена»):"
+                ),
+            }
             await show_screen(
                 peer_id,
-                "🐛 Сообщение об ошибке (баг-репорт)\n\n"
-                "Опишите проблему, с которой вы столкнулись (какая группа, что именно не работает).\n\n"
-                "Отправьте ваш текст сообщением ниже (или напишите Отменить):",
-                keyboard=make_keyboard([["Отменить"]]),
+                prompts[r_type],
+                keyboard=make_keyboard([["Отмена"]]),
             )
             return
 
-        if text in {"/feedback", "/support", "Обратная связь", "Написать разработчику"} or text.startswith(("/feedback ", "/support ")):
-            parts = text.split(maxsplit=1)
-            fb_text = parts[1].strip() if len(parts) > 1 else ""
-            if fb_text:
-                await submit_vk_report(peer_id, user_id, "feedback", fb_text)
-                return
-            peer_modes[peer_id] = "feedback_input"
-            await show_screen(
-                peer_id,
-                "💬 Обратная связь разработчику\n\n"
-                "Напишите ваше сообщение, отзыв или вопрос. Администратор сможет ответить вам прямо от лица бота сюда в диалог.\n\n"
-                "Отправьте ваш текст сообщением ниже (или напишите Отменить):",
-                keyboard=make_keyboard([["Отменить"]]),
-            )
-            return
-
-        if mode in {"bugreport_input", "feedback_input"}:
-            if text == "Отменить":
+        if mode in {"bugreport_input", "feedback_input", "support_input"}:
+            if text in {"Отмена", "Отменить", "/cancel"}:
                 peer_modes.pop(peer_id, None)
-                await show_main_menu(peer_id, user_id)
+                vk_report_drafts.pop(user_id, None)
+                await show_screen(
+                    peer_id,
+                    "Отправка обращения отменена.",
+                    keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)),
+                )
                 return
-            r_type = "bugreport" if mode == "bugreport_input" else "feedback"
-            peer_modes.pop(peer_id, None)
-            await submit_vk_report(peer_id, user_id, r_type, text)
+            r_type = mode.replace("_input", "")
+            vk_report_drafts[user_id] = {"type": r_type, "text": text}
+            peer_modes[peer_id] = "report_confirm"
+            title = {
+                "bugreport": "Сообщение об ошибке (баг-репорт)",
+                "feedback": "Обратная связь разработчику",
+                "support": "Запрос в службу поддержки",
+            }.get(r_type, "Обращение")
+            confirm_kb = make_keyboard([
+                ["Отправить обращение"],
+                ["Отмена"],
+            ])
+            await show_screen(
+                peer_id,
+                f"Подтверждение отправки обращения\n\n"
+                f"Тип: {title}\n\n"
+                f"Текст обращения:\n{text}\n\n"
+                "Пожалуйста, проверьте текст и подтвердите отправку нажатием кнопки:",
+                keyboard=confirm_kb,
+            )
             return
+
+        if mode == "report_confirm":
+            if text in {"Отправить обращение", "Отправить"}:
+                draft = vk_report_drafts.pop(user_id, None)
+                peer_modes.pop(peer_id, None)
+                if not draft:
+                    await show_main_menu(peer_id, user_id)
+                    return
+                await submit_vk_report(peer_id, user_id, draft["type"], draft["text"])
+                return
+            if text in {"Отмена", "Отменить", "/cancel"}:
+                vk_report_drafts.pop(user_id, None)
+                peer_modes.pop(peer_id, None)
+                await show_screen(
+                    peer_id,
+                    "Отправка обращения отменена.",
+                    keyboard=menu_keyboard(user, await user_is_editor(user_id), user_is_admin(user_id)),
+                )
+                return
 
         if text.startswith("/reply ") and user_is_admin(user_id):
             parts = text.split(maxsplit=3)
@@ -3352,7 +3430,7 @@ def build_vk_bot(
                     delivered = False
                     if target_platform == "vk":
                         try:
-                            await show_screen(target_user_id, f"💬 Ответ от администратора:\n\n{reply_text}")
+                            await show_screen(target_user_id, f"Ответ от администратора:\n\n{reply_text}")
                             delivered = True
                         except Exception as exc:
                             await show_screen(peer_id, f"Ошибка отправки пользователю VK {target_user_id}: {exc}")
@@ -3361,7 +3439,7 @@ def build_vk_bot(
                             await broadcaster.deliver(OutboundMessage(
                                 platform="telegram",
                                 user_id=target_user_id,
-                                text=f"💬 <b>Ответ от администратора:</b>\n\n{escape(reply_text)}",
+                                text=f"<b>Ответ от администратора:</b>\n\n{escape(reply_text)}",
                                 campaign_type="feedback_reply",
                             ))
                             delivered = True
@@ -3374,7 +3452,7 @@ def build_vk_bot(
                             latest = await db.get_latest_open_feedback(target_platform, target_user_id)
                             if latest:
                                 await db.answer_feedback_message(latest["id"], reply_text)
-                        await show_screen(peer_id, f"✅ Ответ успешно отправлен пользователю {target_user_id} ({target_platform})!")
+                        await show_screen(peer_id, f"Ответ успешно отправлен пользователю {target_user_id} ({target_platform})!")
                         return
 
         if text == "Найти расписание":
