@@ -133,6 +133,19 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json()["user_id"], 203)
 
+    def test_vk_auth_with_leading_question_mark_and_hash(self):
+        client = TestClient(app)
+        launch_params = make_vk_launch_params(204, 55555, self.vk_secret)
+        # Параметры со знаком вопроса в начале (из window.location.search)
+        resp_q = client.post("/api/miniapp/v1/auth/vk", json={"launch_params": f"?{launch_params}"})
+        self.assertEqual(resp_q.status_code, 200)
+        self.assertEqual(resp_q.json()["user_id"], 204)
+
+        # Параметры с решеткой в начале (из window.location.hash)
+        resp_h = client.post("/api/miniapp/v1/auth/vk", json={"launch_params": f"#{launch_params}"})
+        self.assertEqual(resp_h.status_code, 200)
+        self.assertEqual(resp_h.json()["user_id"], 204)
+
 
     def test_dev_mode_auth(self):
         with patch.dict(os.environ, {"MINIAPP_DEV_MODE": "1"}):

@@ -74,7 +74,8 @@ def verify_vk_launch_params(
     if not launch_params_raw or not client_secret:
         return None
     try:
-        parsed = dict(urllib.parse.parse_qsl(launch_params_raw, keep_blank_values=True))
+        normalized = launch_params_raw.strip().lstrip("?#")
+        parsed = dict(urllib.parse.parse_qsl(normalized, keep_blank_values=True))
     except Exception:
         return None
 
@@ -90,7 +91,8 @@ def verify_vk_launch_params(
     hash_bytes = hmac.new(client_secret.encode("utf-8"), sorted_query.encode("utf-8"), hashlib.sha256).digest()
     expected_sign = base64.b64encode(hash_bytes).decode("utf-8").rstrip("=").replace("+", "-").replace("/", "_")
 
-    if not hmac.compare_digest(received_sign, expected_sign):
+    received_sign_clean = received_sign.rstrip("=").replace("+", "-").replace("/", "_")
+    if not hmac.compare_digest(received_sign_clean, expected_sign):
         return None
 
     try:

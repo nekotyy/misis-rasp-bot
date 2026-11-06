@@ -5,23 +5,29 @@ import type { PlatformAdapter } from './platform'
 export class VkAdapter implements PlatformAdapter {
   readonly platform = 'vk' as const
   private launchParams: URLSearchParams
+  private rawInitData: string
   private safeArea = { top: 0, bottom: 0, left: 0, right: 0 }
   private currentTheme: 'light' | 'dark' | 'system' = 'system'
 
   constructor() {
+    this.rawInitData = this.extractRawInitData()
     this.launchParams = this.extractParams()
     this.initBridgeListeners()
   }
 
-  private extractParams(): URLSearchParams {
-    if (typeof window === 'undefined') return new URLSearchParams()
+  private extractRawInitData(): string {
+    if (typeof window === 'undefined') return ''
     if (window.location.search && (window.location.search.includes('vk_app_id') || window.location.search.includes('sign='))) {
-      return new URLSearchParams(window.location.search.replace(/^\?/, ''))
+      return window.location.search.replace(/^\?/, '')
     }
     if (window.location.hash && (window.location.hash.includes('vk_app_id') || window.location.hash.includes('sign='))) {
-      return new URLSearchParams(window.location.hash.replace(/^#/, ''))
+      return window.location.hash.replace(/^#/, '')
     }
-    return new URLSearchParams(window.location.search.replace(/^\?/, ''))
+    return window.location.search.replace(/^\?/, '')
+  }
+
+  private extractParams(): URLSearchParams {
+    return new URLSearchParams(this.rawInitData)
   }
 
   private initBridgeListeners(): void {
@@ -54,17 +60,10 @@ export class VkAdapter implements PlatformAdapter {
   }
 
   getInitData(): string {
-    if (typeof window === 'undefined') return ''
-    if (window.location.search) {
-      const search = window.location.search.replace(/^\?/, '')
-      if (search.includes('vk_app_id=') || search.includes('sign=')) return search
-    }
-    if (window.location.hash) {
-      const hash = window.location.hash.replace(/^#/, '')
-      if (hash.includes('vk_app_id=') || hash.includes('sign=')) return hash
-    }
-    return window.location.search.slice(1)
+    if (this.rawInitData) return this.rawInitData
+    return this.extractRawInitData()
   }
+
 
   getTheme(): 'light' | 'dark' | 'system' {
     if (this.currentTheme !== 'system') return this.currentTheme
