@@ -2,10 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Bell,
   BellOff,
-  Check,
-  Copy,
+  // Check,
+  // Copy,
   Laptop,
-  Link2,
+  // Link2,
   Loader2,
   Moon,
   Plus,
@@ -23,8 +23,8 @@ import {
 import { useState } from 'react'
 import { searchGroups, type GroupItemDto } from '../api/groups'
 import {
-  confirmLinkRequest,
-  createLinkRequest,
+  // confirmLinkRequest,
+  // createLinkRequest,
   fetchProfile,
   unlinkIdentity,
   updatePreferences,
@@ -35,7 +35,7 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE, SCALE_STEP } from '../hooks/useScale'
 import type { Theme } from '../hooks/useTheme'
 import { usePlatform } from '../hooks/usePlatform'
-import { copyTextToClipboard } from '../lib/clipboard'
+// import { copyTextToClipboard } from '../lib/clipboard'
 import { cn } from '../lib/utils'
 
 interface ProfilePageProps {
@@ -61,12 +61,14 @@ export function ProfilePage({
 }: ProfilePageProps) {
   const queryClient = useQueryClient()
   const adapter = usePlatform()
+  /* Связывание аккаунтов временно отключено
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [inputToken, setInputToken] = useState('')
   const [linkError, setLinkError] = useState<string | null>(null)
   const [linkSuccess, setLinkSuccess] = useState<string | null>(null)
   const [showLinkSection, setShowLinkSection] = useState(false)
+  */
   const [showAddGroup, setShowAddGroup] = useState(false)
   const [groupSearchQuery, setGroupSearchQuery] = useState('')
   const [addGroupError, setAddGroupError] = useState<string | null>(null)
@@ -128,6 +130,7 @@ export function ProfilePage({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profile'] }),
   })
 
+  /* Мутации связывания аккаунтов временно отключены
   const createTokenMutation = useMutation({
     mutationFn: createLinkRequest,
     onSuccess: (res) => {
@@ -152,19 +155,20 @@ export function ProfilePage({
     },
   })
 
-  const unlinkMutation = useMutation({
-    mutationFn: (platform: string) => unlinkIdentity(platform),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile'] })
-    },
-  })
-
   const handleCopyToken = async () => {
     if (!createdToken) return
     await copyTextToClipboard(createdToken)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+  */
+
+  const unlinkMutation = useMutation({
+    mutationFn: (platform: string) => unlinkIdentity(platform),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile'] })
+    },
+  })
 
   if (error) {
     return (
@@ -318,116 +322,12 @@ export function ProfilePage({
               )}
             </div>
 
-            {/* Кнопка / блок связывания аккаунтов */}
+            {/* Блок связывания аккаунтов временно скрыт по запросу */}
+            {/*
             <div className="pt-1">
-              {!showLinkSection ? (
-                <button
-                  onClick={() => setShowLinkSection(true)}
-                  className="font-heading w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border border-primary/30 bg-primary-surface text-primary text-sm font-bold hover:bg-primary hover:text-white transition-all cursor-pointer"
-                >
-                  <Link2 className="w-4 h-4" />
-                  Связать с другим мессенджером
-                </button>
-              ) : (
-                <div className="p-4 rounded-2xl bg-card border border-border space-y-3.5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-heading text-sm font-bold text-foreground flex items-center gap-2">
-                      <Link2 className="w-4 h-4 text-primary" />
-                      Связывание аккаунтов
-                    </span>
-                    <button
-                      onClick={() => setShowLinkSection(false)}
-                      className="font-heading text-sm text-neutral hover:text-foreground cursor-pointer font-semibold"
-                    >
-                      Скрыть
-                    </button>
-                  </div>
-                  <p className="text-sm text-neutral leading-relaxed">
-                    Сгенерируйте код в одном клиенте и введите его в другом, чтобы синхронизировать ваши подписки и расписание.
-                  </p>
-
-                  {/* Генерация кода */}
-                  <div className="space-y-3">
-                    <button
-                      type="button"
-                      onClick={() => createTokenMutation.mutate()}
-                      disabled={createTokenMutation.isPending}
-                      className="font-heading w-full py-3 px-4 rounded-xl bg-primary hover:bg-primary-hover text-white text-sm font-bold shadow-md shadow-primary/25 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
-                    >
-                      {createTokenMutation.isPending ? 'Генерация кода...' : 'Получить код связывания'}
-                    </button>
-
-                    {createdToken && (
-                      <div className="p-3.5 rounded-xl bg-neutral-surface border border-primary/40 space-y-3 shadow-sm">
-                        <span className="font-heading text-xs font-bold text-neutral uppercase tracking-wider block">
-                          Код связывания (действует 5 мин)
-                        </span>
-                        <div className="p-3.5 rounded-xl bg-base border border-border select-all overflow-hidden shadow-inner">
-                          <p className="font-mono font-bold text-base text-primary tracking-wider break-all leading-relaxed select-all text-center">
-                            {createdToken}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleCopyToken}
-                          className={cn(
-                            'font-heading w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-bold transition-all cursor-pointer shadow-sm active:scale-[0.98]',
-                            copied
-                              ? 'bg-success-surface text-success border border-success/40'
-                              : 'bg-primary text-white hover:bg-primary-hover shadow-primary/20',
-                          )}
-                        >
-                          {copied ? (
-                            <>
-                              <Check className="w-4 h-4 text-success" />
-                              <span>Скопировано в буфер</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-4 h-4" />
-                              <span>Копировать код</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Ввод кода от другого клиента */}
-                  <div className="pt-2 border-t border-border space-y-2.5">
-                    <label className="font-heading text-sm font-bold text-foreground block">
-                      Или введите код, полученный в другом клиенте:
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={inputToken}
-                        onChange={(e) => setInputToken(e.target.value.trim().toUpperCase())}
-                        placeholder="Вставьте код..."
-                        className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-base border border-border text-sm font-mono uppercase tracking-wider text-foreground placeholder:text-neutral/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (inputToken) confirmLinkMutation.mutate(inputToken)
-                        }}
-                        disabled={!inputToken || confirmLinkMutation.isPending}
-                        className="font-heading px-4 py-2.5 rounded-xl bg-primary text-white text-sm font-bold hover:bg-primary-hover active:scale-95 transition-all disabled:opacity-40 cursor-pointer flex-shrink-0 shadow-md shadow-primary/25"
-                      >
-                        {confirmLinkMutation.isPending ? 'Проверка...' : 'Связать'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {linkSuccess && (
-                    <p className="font-heading text-sm text-success font-semibold">{linkSuccess}</p>
-                  )}
-                  {linkError && (
-                    <p className="font-heading text-sm text-destructive font-semibold">{linkError}</p>
-                  )}
-                </div>
-              )}
+              ...
             </div>
+            */}
           </section>
 
           {/* Подписки на группы */}
