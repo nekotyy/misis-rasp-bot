@@ -34,6 +34,7 @@ import { ErrorState } from '../components/ErrorState'
 import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE, SCALE_STEP } from '../hooks/useScale'
 import type { Theme } from '../hooks/useTheme'
+import { usePlatform } from '../hooks/usePlatform'
 import { cn } from '../lib/utils'
 
 interface ProfilePageProps {
@@ -58,6 +59,7 @@ export function ProfilePage({
   reducedMotion = false,
 }: ProfilePageProps) {
   const queryClient = useQueryClient()
+  const adapter = usePlatform()
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [inputToken, setInputToken] = useState('')
@@ -217,6 +219,7 @@ export function ProfilePage({
                     data.current_identity.platform === ident.platform &&
                     data.current_identity.user_id === ident.user_id
                   const isTg = ident.platform === 'telegram'
+                  const isVk = ident.platform === 'vk'
                   const title =
                     ident.full_name ||
                     ident.username ||
@@ -225,7 +228,12 @@ export function ProfilePage({
                   const tgAvatar = typeof window !== 'undefined'
                     ? ((window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { photo_url?: string } } } } }).Telegram?.WebApp?.initDataUnsafe?.user?.photo_url)
                     : undefined
-                  const avatarUrl = ident.photo_url || ((isTg && isCurrent && tgAvatar) ? tgAvatar : undefined)
+                  const vkAvatar = isVk && isCurrent && adapter.platform === 'vk' && 'getUserPhoto' in adapter
+                    ? (adapter as { getUserPhoto: () => string | undefined }).getUserPhoto()
+                    : undefined
+                  const avatarUrl = (isCurrent && isVk && vkAvatar)
+                    ? vkAvatar
+                    : (ident.photo_url || ((isTg && isCurrent && tgAvatar) ? tgAvatar : undefined))
                   const initial = (title || 'U').charAt(0).toUpperCase()
 
                   return (

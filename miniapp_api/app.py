@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
@@ -178,10 +179,46 @@ async def auth_vk(req: AuthVkRequest, db: aiosqlite.Connection = Depends(get_db)
                 detail="Недействительные параметры запуска VK",
             )
 
+    full_name = None
+    if req.first_name or req.last_name:
+        full_name = f"{req.first_name or ''} {req.last_name or ''}".strip() or None
+
+    vk_token = os.getenv("VK_BOT_TOKEN", "").strip() or Settings.from_env().vk_bot_token
+    if vk_token and verified["user_id"] > 0:
+        with suppress(Exception):
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                vk_resp = await client.get(
+                    "https://api.vk.com/method/users.get",
+                    params={
+                        "user_ids": str(verified["user_id"]),
+                        "fields": "photo_200,photo_100,first_name,last_name,has_photo",
+                        "access_token": vk_token,
+                        "v": "5.199",
+                    },
+                )
+                if vk_resp.status_code == 200:
+                    vk_users = vk_resp.json().get("response", [])
+                    if vk_users and isinstance(vk_users, list):
+                        u_info = vk_users[0]
+                        if not full_name:
+                            fn = u_info.get("first_name", "")
+                            ln = u_info.get("last_name", "")
+                            full_name = f"{fn} {ln}".strip() or None
+                        photo_url = u_info.get("photo_200") or u_info.get("photo_100")
+                        if photo_url and u_info.get("has_photo", 1) and "camera_" not in photo_url:
+                            ck = f"vk:{verified['user_id']}"
+                            unique_id = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:16]
+                            if ck not in _AVATAR_CACHE or _AVATAR_CACHE[ck][1] != unique_id:
+                                img_resp = await client.get(photo_url)
+                                if img_resp.status_code == 200:
+                                    ctype = img_resp.headers.get("content-type", "image/jpeg")
+                                    _AVATAR_CACHE[ck] = (datetime.now(UTC).timestamp(), unique_id, img_resp.content, ctype)
+
     account = await AccountService.get_or_create_account(
         db,
         platform="vk",
         user_id=verified["user_id"],
+        full_name=full_name,
     )
     token = await SessionManager.create_session(db, account.id, "vk", verified["user_id"])
     await db.commit()
@@ -793,6 +830,65 @@ async def get_user_avatar(
                         _AVATAR_CACHE.pop(cache_key, None)
         except Exception as e:
             logging.getLogger(__name__).warning("Failed to fetch Telegram avatar for %s: %s", user_id, e)
+
+    vk_token = os.getenv("VK_BOT_TOKEN", "").strip() or Settings.from_env().vk_bot_token
+    if platform == "vk" and vk_token:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.get(
+                    "https://api.vk.com/method/users.get",
+                    params={
+                        "user_ids": str(user_id),
+                        "fields": "photo_200,photo_100,photo_max_orig,has_photo",
+                        "access_token": vk_token,
+                        "v": "5.199",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json().get("response", [])
+                    if data and isinstance(data, list):
+                        user_info = data[0]
+                        has_photo = user_info.get("has_photo", 1)
+                        photo_url = (
+                            user_info.get("photo_200")
+                            or user_info.get("photo_max_orig")
+                            or user_info.get("photo_100")
+                        )
+                        if photo_url and has_photo and "camera_" not in photo_url:
+                            unique_id = hashlib.sha256(photo_url.encode("utf-8")).hexdigest()[:16]
+
+                            if cache_key in _AVATAR_CACHE and _AVATAR_CACHE[cache_key][1] == unique_id:
+                                _, _, data_bytes, ctype = _AVATAR_CACHE[cache_key]
+                                _AVATAR_CACHE[cache_key] = (now_ts, unique_id, data_bytes, ctype)
+                                headers = {
+                                    "Cache-Control": "no-cache, must-revalidate",
+                                    "ETag": f'"{unique_id}"',
+                                }
+                                if request.headers.get("if-none-match") == f'"{unique_id}"':
+                                    return Response(status_code=304, headers=headers)
+                                return Response(content=data_bytes, media_type=ctype, headers=headers)
+
+                            img_resp = await client.get(photo_url)
+                            if img_resp.status_code == 200:
+                                ctype = img_resp.headers.get("content-type", "image/jpeg")
+                                _AVATAR_CACHE[cache_key] = (now_ts, unique_id, img_resp.content, ctype)
+                                headers = {
+                                    "Cache-Control": "no-cache, must-revalidate",
+                                    "ETag": f'"{unique_id}"',
+                                }
+                                if request.headers.get("if-none-match") == f'"{unique_id}"':
+                                    return Response(status_code=304, headers=headers)
+                                return Response(content=img_resp.content, media_type=ctype, headers=headers)
+                        else:
+                            _AVATAR_CACHE.pop(cache_key, None)
+        except Exception as e:
+            logging.getLogger(__name__).warning("Failed to fetch VK avatar for %s: %s", user_id, e)
+            if cache_key in _AVATAR_CACHE:
+                _, unique_id, data_bytes, ctype = _AVATAR_CACHE[cache_key]
+                headers = {"Cache-Control": "no-cache, must-revalidate", "ETag": f'"{unique_id}"'}
+                if request.headers.get("if-none-match") == f'"{unique_id}"':
+                    return Response(status_code=304, headers=headers)
+                return Response(content=data_bytes, media_type=ctype, headers=headers)
 
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">'

@@ -14,6 +14,10 @@ class AuthTelegramRequest(BaseModel):
 class AuthVkRequest(BaseModel):
     launch_params: str
 
+    first_name: str | None = None
+    last_name: str | None = None
+    photo_url: str | None = None
+
 
 class AuthResponse(BaseModel):
     token: str

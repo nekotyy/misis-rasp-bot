@@ -63,7 +63,17 @@ export function useAuth(adapter: PlatformAdapter) {
       if (adapter.platform === 'telegram') {
         result = await authTelegram(initData)
       } else if (adapter.platform === 'vk') {
-        result = await authVk(initData)
+        const vkAdapter = adapter as {
+          getUserName?: () => { firstName?: string; lastName?: string } | undefined
+          getUserPhoto?: () => string | undefined
+        }
+        const userName = vkAdapter.getUserName?.()
+        const userPhoto = vkAdapter.getUserPhoto?.()
+        result = await authVk(initData, {
+          firstName: userName?.firstName,
+          lastName: userName?.lastName,
+          photoUrl: userPhoto,
+        })
       } else if (isDevExplicit) {
         // Mock режим разработки с явным флагом
         try {

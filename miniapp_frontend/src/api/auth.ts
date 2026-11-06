@@ -14,10 +14,18 @@ export async function authTelegram(initData: string): Promise<AuthResponse> {
   return data
 }
 
-export async function authVk(launchParams: string): Promise<AuthResponse> {
+export async function authVk(
+  launchParams: string,
+  extra?: { firstName?: string; lastName?: string; photoUrl?: string },
+): Promise<AuthResponse> {
   const data = await apiFetch<AuthResponse>('/auth/vk', {
     method: 'POST',
-    body: JSON.stringify({ launch_params: launchParams }),
+    body: JSON.stringify({
+      launch_params: launchParams,
+      first_name: extra?.firstName,
+      last_name: extra?.lastName,
+      photo_url: extra?.photoUrl,
+    }),
   })
   setToken(data.token)
   return data

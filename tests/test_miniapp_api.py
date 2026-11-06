@@ -535,6 +535,44 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
         # Очистка кэша
         _AVATAR_CACHE.pop(cache_key, None)
 
+    def test_vk_avatar_endpoint_and_cache_validation(self):
+        client = TestClient(app)
+        from datetime import UTC, datetime
+
+        from miniapp_api.app import _AVATAR_CACHE, _get_avatar_url
+
+        test_vk_uid = 504200420
+        cache_key = f"vk:{test_vk_uid}"
+        now_ts = datetime.now(UTC).timestamp()
+
+        # 1. Если аватар есть в кэше — возвращается 200 с ETag и no-cache
+        _AVATAR_CACHE[cache_key] = (now_ts, "vk_avatar_hash_1", b"fake_vk_jpeg", "image/jpeg")
+        resp = client.get(f"/api/miniapp/v1/avatar/vk/{test_vk_uid}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b"fake_vk_jpeg")
+        self.assertEqual(resp.headers.get("etag"), '"vk_avatar_hash_1"')
+        self.assertIn("no-cache", resp.headers.get("cache-control", ""))
+
+        # 2. Повторный запрос с If-None-Match возвращает 304 Not Modified
+        resp_304 = client.get(
+            f"/api/miniapp/v1/avatar/vk/{test_vk_uid}",
+            headers={"if-none-match": '"vk_avatar_hash_1"'},
+        )
+        self.assertEqual(resp_304.status_code, 304)
+        self.assertEqual(len(resp_304.content), 0)
+
+        # 3. URL аватара VK содержит версию ?v=vk_avatar_hash_1 для сброса жесткого кэша
+        avatar_url = _get_avatar_url("vk", test_vk_uid)
+        self.assertIn("?v=vk_avatar_hash_1", avatar_url)
+
+        _AVATAR_CACHE.pop(cache_key, None)
+
+        # 4. При отсутствии аватара возвращается SVG заглушка с no-cache
+        resp_svg = client.get("/api/miniapp/v1/avatar/vk/99999999")
+        self.assertEqual(resp_svg.status_code, 200)
+        self.assertIn("image/svg+xml", resp_svg.headers.get("content-type", ""))
+        self.assertIn("no-cache", resp_svg.headers.get("cache-control", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

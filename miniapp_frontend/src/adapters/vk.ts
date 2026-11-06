@@ -8,6 +8,8 @@ export class VkAdapter implements PlatformAdapter {
   private rawInitData: string
   private safeArea = { top: 0, bottom: 0, left: 0, right: 0 }
   private currentTheme: 'light' | 'dark' | 'system' = 'system'
+  private userPhoto?: string
+  private userName?: { firstName?: string; lastName?: string }
 
   constructor() {
     this.rawInitData = this.extractRawInitData()
@@ -110,9 +112,36 @@ export class VkAdapter implements PlatformAdapter {
     bridge.send('VKWebAppTapticImpactOccurred', { style: styleMap[type] || 'light' }).catch(() => {})
   }
 
+  getUserPhoto(): string | undefined {
+    return this.userPhoto
+  }
+
+  getUserName(): { firstName?: string; lastName?: string } | undefined {
+    return this.userName
+  }
+
+  async fetchUserInfo(): Promise<{ photoUrl?: string; firstName?: string; lastName?: string } | null> {
+    try {
+      const data = await bridge.send('VKWebAppGetUserInfo')
+      if (data) {
+        this.userPhoto = data.photo_200 || data.photo_100 || data.photo_max_orig
+        this.userName = { firstName: data.first_name, lastName: data.last_name }
+        return {
+          photoUrl: this.userPhoto,
+          firstName: data.first_name,
+          lastName: data.last_name,
+        }
+      }
+    } catch {
+      // Игнорируем в тестовом или автономном режиме
+    }
+    return null
+  }
+
   ready(): void {
     bridge.send('VKWebAppInit').catch((err) => {
       console.warn('VKWebAppInit failed:', err)
     })
+    this.fetchUserInfo().catch(() => {})
   }
 }
