@@ -46,7 +46,18 @@ export async function apiFetch<T>(
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
-    throw new Error(`HTTP ${response.status}: ${text}`)
+    let userMsg = ''
+    try {
+      const parsed = JSON.parse(text)
+      if (typeof parsed?.detail === 'string') {
+        userMsg = parsed.detail
+      } else if (Array.isArray(parsed?.detail) && parsed.detail[0]?.msg) {
+        userMsg = parsed.detail[0].msg
+      }
+    } catch {
+      // ignore
+    }
+    throw new Error(userMsg || `HTTP ${response.status}: ${text}`)
   }
 
   if (response.status === 204) {

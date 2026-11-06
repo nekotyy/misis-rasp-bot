@@ -134,7 +134,7 @@ describe('ProfilePage - Добавление групп', () => {
     fireEvent.click(addBtn)
 
     expect(await screen.findByText('Поиск и добавление группы')).toBeDefined()
-    expect(screen.getByPlaceholderText('Введите название группы (напр. БПИ22-1)...')).toBeDefined()
+    expect(screen.getByPlaceholderText('Введите название группы (напр. ИСП-25-1)...')).toBeDefined()
   })
 
   it('выполняет поиск и отображает результаты', async () => {
@@ -142,7 +142,7 @@ describe('ProfilePage - Добавление групп', () => {
     const addBtn = await screen.findByText('Добавить группу')
     fireEvent.click(addBtn)
 
-    const input = screen.getByPlaceholderText('Введите название группы (напр. БПИ22-1)...')
+    const input = screen.getByPlaceholderText('Введите название группы (напр. ИСП-25-1)...')
     fireEvent.change(input, { target: { value: 'БПИ' } })
 
     expect(await screen.findByText('БПИ22-1')).toBeDefined()

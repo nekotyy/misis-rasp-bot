@@ -70,10 +70,13 @@ export async function createLinkRequest(): Promise<{ token: string; expires_at: 
   })
 }
 
-export async function confirmLinkRequest(token: string): Promise<{ success: boolean }> {
+export async function confirmLinkRequest(
+  token: string,
+  primary_choice: 'initiator' | 'target' = 'initiator',
+): Promise<{ success: boolean }> {
   return apiFetch<{ success: boolean }>('/account-links/confirm', {
     method: 'POST',
-    body: JSON.stringify({ token, primary_choice: 'caller' }),
+    body: JSON.stringify({ token, primary_choice }),
   })
 }
 

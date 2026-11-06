@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AuthTelegramRequest(BaseModel):
@@ -140,6 +140,13 @@ class CreateLinkRequestResponse(BaseModel):
 class ConfirmLinkRequest(BaseModel):
     token: str
     primary_choice: Literal["initiator", "target"] = "initiator"
+
+    @field_validator("primary_choice", mode="before")
+    @classmethod
+    def normalize_choice(cls, v: Any) -> str:
+        if v == "caller":
+            return "target"
+        return v
 
 
 class GroupItemDto(BaseModel):

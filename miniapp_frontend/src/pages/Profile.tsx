@@ -35,6 +35,7 @@ import { LoadingSkeleton } from '../components/LoadingSkeleton'
 import { DEFAULT_SCALE, MAX_SCALE, MIN_SCALE, SCALE_STEP } from '../hooks/useScale'
 import type { Theme } from '../hooks/useTheme'
 import { usePlatform } from '../hooks/usePlatform'
+import { copyTextToClipboard } from '../lib/clipboard'
 import { cn } from '../lib/utils'
 
 interface ProfilePageProps {
@@ -158,12 +159,11 @@ export function ProfilePage({
     },
   })
 
-  const handleCopyToken = () => {
+  const handleCopyToken = async () => {
     if (!createdToken) return
-    navigator.clipboard.writeText(createdToken).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
+    await copyTextToClipboard(createdToken)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   if (error) {
@@ -558,7 +558,7 @@ export function ProfilePage({
                       type="text"
                       value={groupSearchQuery}
                       onChange={(e) => setGroupSearchQuery(e.target.value)}
-                      placeholder="Введите название группы (напр. БПИ22-1)..."
+                      placeholder="Введите название группы (напр. ИСП-25-1)..."
                       className="w-full px-3.5 py-2.5 pr-9 rounded-xl bg-base border border-border text-sm text-foreground placeholder:text-neutral/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                     />
                     {groupSearchQuery && (
