@@ -13,11 +13,19 @@ import './index.css'
 async function bootstrap() {
   let adapter: PlatformAdapter
 
-  const isVk = new URLSearchParams(window.location.search).has('vk_app_id')
+  const search = typeof window !== 'undefined' ? window.location.search : ''
+  const hash = typeof window !== 'undefined' ? window.location.hash : ''
+
+  const isVk =
+    search.includes('vk_app_id=') ||
+    search.includes('vk_user_id=') ||
+    hash.includes('vk_app_id=') ||
+    hash.includes('vk_user_id=')
+
   const isDevExplicit =
     Boolean(import.meta.env.DEV) &&
     (import.meta.env.VITE_MOCK_PLATFORM === 'true' ||
-      new URLSearchParams(window.location.search).get('dev') === '1')
+      new URLSearchParams(search).get('dev') === '1')
 
   if (isDevExplicit) {
     adapter = new MockAdapter()

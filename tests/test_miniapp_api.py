@@ -124,6 +124,16 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
         resp_tampered = client.post("/api/miniapp/v1/auth/vk", json={"launch_params": tampered})
         self.assertEqual(resp_tampered.status_code, 401)
 
+    def test_vk_auth_with_vk_miniapp_secret_env(self):
+        miniapp_secret = "custom_miniapp_secret_777"
+        with patch.dict(os.environ, {"VK_MINIAPP_SECRET": miniapp_secret, "VK_APP_SECRET": ""}):
+            client = TestClient(app)
+            params = make_vk_launch_params(203, 55555, miniapp_secret)
+            resp = client.post("/api/miniapp/v1/auth/vk", json={"launch_params": params})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["user_id"], 203)
+
+
     def test_dev_mode_auth(self):
         with patch.dict(os.environ, {"MINIAPP_DEV_MODE": "1"}):
             client = TestClient(app)

@@ -159,7 +159,11 @@ async def auth_telegram(req: AuthTelegramRequest, db: aiosqlite.Connection = Dep
 
 @app.post("/api/miniapp/v1/auth/vk", response_model=AuthResponse)
 async def auth_vk(req: AuthVkRequest, db: aiosqlite.Connection = Depends(get_db)):
-    client_secret = os.getenv("VK_APP_SECRET", "")
+    client_secret = (
+        os.getenv("VK_MINIAPP_SECRET", "").strip()
+        or os.getenv("VK_APP_SECRET", "").strip()
+        or os.getenv("VK_CLIENT_SECRET", "").strip()
+    )
     dev_mode = os.getenv("MINIAPP_DEV_MODE", "0") == "1"
 
     verified = verify_vk_launch_params(req.launch_params, client_secret)

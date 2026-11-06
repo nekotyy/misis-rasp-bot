@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import bridge from '@vkontakte/vk-bridge'
 import { MockAdapter } from '../adapters/mock'
+import { VkAdapter } from '../adapters/vk'
 
 describe('MockAdapter', () => {
   const adapter = new MockAdapter()
@@ -49,5 +51,36 @@ describe('MockAdapter', () => {
 
   it('ready() вызывается без ошибок', () => {
     expect(() => adapter.ready()).not.toThrow()
+  })
+})
+
+describe('VkAdapter', () => {
+  it('платформа — vk', () => {
+    const vk = new VkAdapter()
+    expect(vk.platform).toBe('vk')
+  })
+
+  it('ready() вызывает bridge.send(VKWebAppInit)', () => {
+    const sendSpy = vi.spyOn(bridge, 'send').mockResolvedValue({} as any)
+    const vk = new VkAdapter()
+    vk.ready()
+    expect(sendSpy).toHaveBeenCalledWith('VKWebAppInit')
+    sendSpy.mockRestore()
+  })
+
+  it('hapticFeedback() вызывает VKWebAppTapticImpactOccurred', () => {
+    const sendSpy = vi.spyOn(bridge, 'send').mockResolvedValue({} as any)
+    const vk = new VkAdapter()
+    vk.hapticFeedback('medium')
+    expect(sendSpy).toHaveBeenCalledWith('VKWebAppTapticImpactOccurred', { style: 'medium' })
+    sendSpy.mockRestore()
+  })
+
+  it('disableBackButton() вызывает VKWebAppDisableSwipeBack', () => {
+    const sendSpy = vi.spyOn(bridge, 'send').mockResolvedValue({} as any)
+    const vk = new VkAdapter()
+    vk.disableBackButton()
+    expect(sendSpy).toHaveBeenCalledWith('VKWebAppDisableSwipeBack')
+    sendSpy.mockRestore()
   })
 })

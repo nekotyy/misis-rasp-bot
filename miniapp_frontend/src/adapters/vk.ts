@@ -1,51 +1,119 @@
+import bridge from '@vkontakte/vk-bridge'
 import type { PlatformAdapter } from './platform'
 
-/** Адаптер VK Mini Apps */
+/** Адаптер VK Mini Apps с интеграцией VK Bridge */
 export class VkAdapter implements PlatformAdapter {
   readonly platform = 'vk' as const
   private launchParams: URLSearchParams
+  private safeArea = { top: 0, bottom: 0, left: 0, right: 0 }
+  private currentTheme: 'light' | 'dark' | 'system' = 'system'
 
   constructor() {
-    this.launchParams = new URLSearchParams(window.location.search)
+    this.launchParams = this.extractParams()
+    this.initBridgeListeners()
+  }
+
+  private extractParams(): URLSearchParams {
+    if (typeof window === 'undefined') return new URLSearchParams()
+    if (window.location.search && (window.location.search.includes('vk_app_id') || window.location.search.includes('sign='))) {
+      return new URLSearchParams(window.location.search.replace(/^\?/, ''))
+    }
+    if (window.location.hash && (window.location.hash.includes('vk_app_id') || window.location.hash.includes('sign='))) {
+      return new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    }
+    return new URLSearchParams(window.location.search.replace(/^\?/, ''))
+  }
+
+  private initBridgeListeners(): void {
+    try {
+      bridge.subscribe((e) => {
+        if (!e || !e.detail) return
+        const detail = e.detail as { type: string; data?: any }
+        if (detail.type === 'VKWebAppUpdateConfig' && detail.data) {
+          if (detail.data.scheme) {
+            const s = String(detail.data.scheme).toLowerCase()
+            if (s.includes('dark') || s === 'space_gray') {
+              this.currentTheme = 'dark'
+            } else if (s.includes('light') || s === 'bright_light') {
+              this.currentTheme = 'light'
+            }
+          }
+          if (detail.data.insets) {
+            this.safeArea = {
+              top: Number(detail.data.insets.top) || 0,
+              bottom: Number(detail.data.insets.bottom) || 0,
+              left: Number(detail.data.insets.left) || 0,
+              right: Number(detail.data.insets.right) || 0,
+            }
+          }
+        }
+      })
+    } catch {
+      // Игнорируем в тестовых или автономных окружениях
+    }
   }
 
   getInitData(): string {
+    if (typeof window === 'undefined') return ''
+    if (window.location.search) {
+      const search = window.location.search.replace(/^\?/, '')
+      if (search.includes('vk_app_id=') || search.includes('sign=')) return search
+    }
+    if (window.location.hash) {
+      const hash = window.location.hash.replace(/^#/, '')
+      if (hash.includes('vk_app_id=') || hash.includes('sign=')) return hash
+    }
     return window.location.search.slice(1)
   }
 
   getTheme(): 'light' | 'dark' | 'system' {
-    const scheme = this.launchParams.get('vk_app_id') ? 'system' : 'system'
-    // VK передаёт vk_color_scheme в launch params
+    if (this.currentTheme !== 'system') return this.currentTheme
     const vkScheme = this.launchParams.get('vk_color_scheme')
-    if (vkScheme === 'space_gray') return 'dark'
-    if (vkScheme === 'bright_light') return 'light'
-    return scheme
+    if (vkScheme === 'space_gray' || vkScheme?.includes('dark')) return 'dark'
+    if (vkScheme === 'bright_light' || vkScheme?.includes('light')) return 'light'
+    return 'system'
   }
 
   getSafeAreaInsets() {
-    return { top: 0, bottom: 0, left: 0, right: 0 }
+    return this.safeArea
   }
 
   enableBackButton(callback: () => void): void {
-    // VK использует событие go_back
-    window.addEventListener('message', (e) => {
-      if (e.data === 'go_back') callback()
-    })
+    bridge.send('VKWebAppEnableSwipeBack').catch(() => {})
+    try {
+      bridge.subscribe((e) => {
+        const type = (e.detail as { type?: string })?.type
+        if (type === 'VKWebAppViewRestore' || type === 'VKWebAppGoBack') {
+          callback()
+        }
+      })
+    } catch {
+      // Игнорируем
+    }
   }
 
   disableBackButton(): void {
-    // VK не поддерживает programmatic disable — ничего не делаем
+    bridge.send('VKWebAppDisableSwipeBack').catch(() => {})
   }
 
   openLink(url: string): void {
-    window.open(url, '_blank')
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank')
+    }
   }
 
-  hapticFeedback(_type: 'light' | 'medium' | 'heavy'): void {
-    // VK не имеет haptic API в Mini Apps
+  hapticFeedback(type: 'light' | 'medium' | 'heavy'): void {
+    const styleMap = {
+      light: 'light' as const,
+      medium: 'medium' as const,
+      heavy: 'heavy' as const,
+    }
+    bridge.send('VKWebAppTapticImpactOccurred', { style: styleMap[type] || 'light' }).catch(() => {})
   }
 
   ready(): void {
-    // VK SDK инициализирует автоматически
+    bridge.send('VKWebAppInit').catch((err) => {
+      console.warn('VKWebAppInit failed:', err)
+    })
   }
 }
