@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramEntityTooLarge, TelegramForbiddenError, TelegramNetworkError, TelegramRetryAfter
 from aiogram.methods import AnswerCallbackQuery, SendDocument, SendMessage
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -442,6 +442,24 @@ class DeliveryOutboxTests(unittest.IsolatedAsyncioTestCase):
             await restarted.process(row["delivery_id"])
         self.assertEqual(request.await_args.args[2]["random_id"], 123)
         self.assertEqual((await restarted.store.get(row["delivery_id"]))["status"], "sent")
+
+    async def test_entity_too_large_is_marked_failed_and_unblocks_subsequent_messages(self):
+        service = self.make()
+        bot = self.telegram(service)
+        doc_method = SendDocument(chat_id=1, document=FSInputFile(__file__))
+        bot.session.direct_request.side_effect = TelegramEntityTooLarge(doc_method, "Request Entity Too Large")
+        first = await service.enqueue_telegram(bot, doc_method)
+        await service.process(first["delivery_id"])
+        self.assertEqual((await service.store.get(first["delivery_id"]))["status"], "failed")
+
+        next_method = SendMessage(chat_id=1, text="следующее сообщение")
+        bot.session.direct_request.side_effect = None
+        bot.session.direct_request.return_value = Message(
+            message_id=42, date=datetime.now(), chat={"id": 1, "type": "private"}, text="следующее сообщение",
+        )
+        second = await service.enqueue_telegram(bot, next_method)
+        reserved = await service.store.reserve_due("telegram")
+        self.assertIn(second["delivery_id"], reserved)
 
     async def test_cleanup_removes_old_rows_and_attachments_only(self):
         service = self.make()

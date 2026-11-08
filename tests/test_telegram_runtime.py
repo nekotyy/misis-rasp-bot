@@ -196,6 +196,14 @@ class TelegramTransportTests(unittest.IsolatedAsyncioTestCase):
                 await updates.aclose()
         self.assertEqual(requested_offsets, [None, 101, 101])
 
+    def test_permanent_delivery_error_identifies_entity_too_large(self) -> None:
+        from aiogram.exceptions import TelegramEntityTooLarge
+
+        from src.telegram_runtime import is_permanent_telegram_delivery_error
+        method = SendMessage(chat_id=1, text="x")
+        self.assertTrue(is_permanent_telegram_delivery_error(TelegramEntityTooLarge(method, "Request Entity Too Large")))
+        self.assertTrue(is_permanent_telegram_delivery_error(TelegramNetworkError(method, "413: request entity too large")))
+
     async def test_real_http_handles_html_bad_gateway_then_429_then_delivers_update(self) -> None:
         offsets = []
 

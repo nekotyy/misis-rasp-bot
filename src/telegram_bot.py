@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ChatMemberStatus
+from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramEntityTooLarge,
@@ -1326,7 +1326,7 @@ def build_dispatcher(
         ):
             return snapshot
         try:
-            async with asyncio.timeout(3.0 if cached_day is not None else None):
+            async with asyncio.timeout(3.0 if snapshot is not None else 6.0):
                 if user.subscription_type == "teacher" and user.subscription_title:
                     snapshot_obj = await resolve_teacher_snapshot(db, parser, user.subscription_title, user.subscription_url or "")
                     snapshot_hash = compute_snapshot_hash(snapshot_obj)
@@ -1339,13 +1339,13 @@ def build_dispatcher(
                     return None
         except (httpx.HTTPError, ValueError, TimeoutError) as exc:
             logger.log(
-                logging.DEBUG if cached_day is not None else logging.WARNING,
+                logging.DEBUG if snapshot is not None else logging.WARNING,
                 "Failed to fetch Telegram subscription snapshot for user %s (%s): %s",
                 user_id,
                 user.subscription_key,
                 exc,
             )
-            return snapshot if cached_day is not None else None
+            return snapshot
         return {
             "source_type": user.subscription_type,
             "source_key": user.subscription_key,
@@ -2042,9 +2042,10 @@ def build_dispatcher(
         context: str,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = ParseMode.HTML,
     ) -> None:
         await clear_context_messages(bot, chat_id, context)
-        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
+        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         context_messages[chat_id][context] = [sent.message_id] if sent is not None else []
 
     async def safe_send_message(
@@ -2052,11 +2053,12 @@ def build_dispatcher(
         chat_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = ParseMode.HTML,
     ) -> Message | None:
         retries = telegram_retry_attempts(bot)
         for attempt in range(1, retries + 1):
             try:
-                return await bot.send_message(chat_id, text, reply_markup=reply_markup)
+                return await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
             except TelegramBadRequest as exc:
                 logger.warning("Telegram send_message rejected for chat %s: %s", chat_id, exc)
                 return None
@@ -2197,13 +2199,14 @@ def build_dispatcher(
         message: Message | None,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = ParseMode.HTML,
     ) -> bool:
         if message is None:
             return False
         retries = telegram_retry_attempts(getattr(message, "bot", None))
         for attempt in range(1, retries + 1):
             try:
-                await message.edit_text(text, reply_markup=reply_markup)
+                await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
                 return True
             except TelegramBadRequest as exc:
                 return "message is not modified" in str(exc).lower()

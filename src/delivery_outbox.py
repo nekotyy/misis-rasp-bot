@@ -40,7 +40,11 @@ class DeliveryFailedError(ConnectionError):
 
 
 def retry_delay(error: BaseException, attempts: int) -> float | None:
-    if isinstance(error, FileNotFoundError):
+    if isinstance(error, (FileNotFoundError, telegram_errors.TelegramEntityTooLarge, telegram_errors.TelegramBadRequest)):
+        return None
+    if is_permanent_telegram_delivery_error(error):
+        return None
+    if attempts >= 10:
         return None
     if isinstance(error, TelegramRetryAfter):
         return max(0.0, float(error.retry_after)) + 0.5
