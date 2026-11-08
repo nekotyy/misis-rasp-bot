@@ -51,7 +51,8 @@ pub fn normalize_group(value: &str) -> String {
         .collect::<String>();
     let folded: String = mapped.as_str().case_fold().collect();
     let folded = crate::normalize_dashes(&folded.replace('ё', "е"));
-    let dash = regex::Regex::new(r"\s*-\s*").unwrap();
+    static DASH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let dash = DASH.get_or_init(|| regex::Regex::new(r"\s*-\s*").unwrap());
     dash.replace_all(&folded, "-")
         .split_whitespace()
         .collect::<Vec<_>>()

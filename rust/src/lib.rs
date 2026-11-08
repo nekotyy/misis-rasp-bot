@@ -107,7 +107,9 @@ mod tests {
     }
 }
 pub mod account;
+pub mod group_catalog;
 pub mod notification;
+pub mod search;
 pub mod sync;
 pub mod telegram_poll;
 pub mod telegram_ui;

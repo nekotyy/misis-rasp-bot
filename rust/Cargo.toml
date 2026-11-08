@@ -8,6 +8,8 @@ serde = { version = "1", features = ["derive"] }
 regex = "1"
 dotenvy = "0.15"
 unicode-casefold = "0.2"
+unicode-normalization = "0.1"
+difflib = "0.4"
 pbkdf2 = "0.12"
 base64 = "0.22"
 subtle = "2"

@@ -529,13 +529,23 @@ pub fn enqueue_broadcast(
     broadcast: &Broadcast<'_>,
     now: f64,
 ) -> rusqlite::Result<usize> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let count = enqueue_broadcast_in_transaction(&tx, broadcast, now)?;
+    tx.commit()?;
+    Ok(count)
+}
+pub fn enqueue_broadcast_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    broadcast: &Broadcast<'_>,
+    now: f64,
+) -> rusqlite::Result<usize> {
     let mut recipients = Vec::new();
     for platform in ["telegram", "vk"] {
         if broadcast.target_platform != "all" && broadcast.target_platform != platform {
             continue;
         }
         for user in crate::database::users_for_notifications(
-            db,
+            tx,
             platform,
             broadcast.schedule_id,
             broadcast.subscription_key,
@@ -550,7 +560,6 @@ pub fn enqueue_broadcast(
         }
     }
     let count = recipients.len();
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for user in recipients {
         let platform = user.platform.as_str();
         let body = if platform == "telegram" {
@@ -588,9 +597,8 @@ pub fn enqueue_broadcast(
                 ttl: 86400.0,
             })
             .collect::<Vec<_>>();
-        crate::outbox::enqueue_in_transaction(&tx, &items, now)?;
+        crate::outbox::enqueue_in_transaction(tx, &items, now)?;
     }
-    tx.commit()?;
     Ok(count)
 }
 

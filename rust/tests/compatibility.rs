@@ -282,3 +282,109 @@ async fn telegram_poll_reads_updates_without_advancing_before_ack() {
     assert_eq!(poll.next_offset(), Some(43));
     server.join().unwrap();
 }
+#[tokio::test]
+async fn catalog_keeps_cached_college_if_only_university_is_reachable() {
+    use std::{
+        io::{Read, Write},
+        time::Duration,
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut b = [0; 8192];
+            let _ = stream.read(&mut b).unwrap();
+            let (status, body) = if index == 0 {
+                ("503 Service Unavailable", "bad")
+            } else {
+                (
+                    "200 OK",
+                    r#"{"groups":[{"value":2,"content":"Университет"}]}"#,
+                )
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let parser = misis_rasp_core::parser::ScheduleParser::new(
+        &base,
+        &base,
+        Duration::from_secs(5),
+        1,
+        Duration::ZERO,
+    )
+    .unwrap();
+    let cached = vec![misis_rasp_core::group_catalog::GroupInfo {
+        department_id: 1,
+        department_code: "A".into(),
+        department_name: String::new(),
+        group_name: "Колледж".into(),
+        schedule_id: Some(1),
+        url: String::new(),
+    }];
+    let result = misis_rasp_core::group_catalog::fetch_catalog(&parser, &base, &base, &cached)
+        .await
+        .unwrap();
+    assert!(result.college_failed);
+    assert!(!result.university_failed);
+    assert_eq!(result.groups.len(), 2);
+    server.join().unwrap();
+}
+#[tokio::test]
+async fn retry_catalog_fetches_only_failed_departments() {
+    use std::{
+        io::{Read, Write},
+        time::Duration,
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut b = [0; 8192];
+            let n = stream.read(&mut b).unwrap();
+            let request = String::from_utf8_lossy(&b[..n]);
+            let (status, body) = if index == 0 {
+                assert!(request.starts_with("GET /group/1 "));
+                ("200 OK", "<a href='/rasp/10'>Группа</a>")
+            } else {
+                assert!(request.starts_with("GET /group/2 "));
+                ("503 Service Unavailable", "bad")
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let parser = misis_rasp_core::parser::ScheduleParser::new(
+        &base,
+        "",
+        Duration::from_secs(5),
+        1,
+        Duration::ZERO,
+    )
+    .unwrap();
+    let result = misis_rasp_core::group_catalog::retry_departments(
+        &parser,
+        &base,
+        &[(1, "A".into()), (2, "B".into())],
+        &[],
+    )
+    .await;
+    assert!(result.recovered);
+    assert_eq!(result.groups.len(), 1);
+    assert_eq!(result.remaining, vec![(2, "B".into())]);
+    server.join().unwrap();
+}

@@ -134,6 +134,14 @@ pub fn save_snapshot(
     input: &SnapshotInput<'_>,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let id = save_snapshot_in_transaction(&tx, input)?;
+    tx.commit()?;
+    Ok(id)
+}
+pub fn save_snapshot_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    input: &SnapshotInput<'_>,
+) -> Result<i64, Box<dyn std::error::Error>> {
     let title = input
         .source_title
         .filter(|s| !s.is_empty())
@@ -152,7 +160,7 @@ pub fn save_snapshot(
         input.source_type.filter(|s| !s.is_empty()),
     ) {
         crate::archive::archive_accepted_snapshot(
-            &tx,
+            tx,
             &crate::archive::ProjectionInput {
                 snapshot: input.snapshot,
                 source_key,
@@ -170,7 +178,6 @@ pub fn save_snapshot(
             [id],
         )?;
     }
-    tx.commit()?;
     Ok(id)
 }
 
@@ -369,6 +376,54 @@ pub fn university_notification_subgroups(
     rows.collect()
 }
 
+pub fn latest_group_snapshots(
+    db: &Connection,
+    snapshot_type: &str,
+) -> Result<Vec<StoredSnapshot>, Box<dyn std::error::Error>> {
+    let mut stmt=db.prepare("SELECT s.source_type,s.source_key,s.source_title,s.source_url,s.group_name,s.schedule_id,s.snapshot_hash,s.content_json,s.fetched_at,s.created_at FROM schedule_snapshots AS s INNER JOIN (SELECT source_key,MAX(id) AS max_id FROM schedule_snapshots WHERE snapshot_type=? AND source_type='group' AND source_key IS NOT NULL GROUP BY source_key) AS latest ON latest.max_id=s.id ORDER BY s.source_key")?;
+    let rows = stmt.query_map([snapshot_type], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<i64>>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+            r.get::<_, String>(8)?,
+            r.get::<_, String>(9)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (
+            source_type,
+            source_key,
+            source_title,
+            source_url,
+            group_name,
+            schedule_id,
+            hash,
+            content,
+            fetched_at,
+            created_at,
+        ) = row?;
+        Ok(StoredSnapshot {
+            source_type,
+            source_key,
+            source_title,
+            source_url,
+            group_name,
+            schedule_id,
+            hash,
+            content: serde_json::from_str(&content)?,
+            fetched_at,
+            created_at,
+        })
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +591,8 @@ mod snapshot_tests {
             .unwrap();
         assert_eq!(stored.hash, "hash");
         assert_eq!(stored.content, snapshot);
+        assert_eq!(latest_group_snapshots(&db, "current").unwrap().len(), 1);
+
         assert!(latest_snapshot(&db, "current", Some(999), None)
             .unwrap()
             .is_none());
