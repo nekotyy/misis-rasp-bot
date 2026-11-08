@@ -53,6 +53,17 @@ pub fn filter_snapshot(snapshot: &ScheduleSnapshot, subgroup: Option<u32>) -> Sc
     result
 }
 
+pub fn is_university_group(user: Option<&crate::UserRecord>) -> bool {
+    user.is_some_and(|user| {
+        user.subscription_type.as_deref() == Some("group")
+            && user.schedule_id.is_some_and(|id| id < 0)
+    })
+}
+pub fn personal_subgroup(user: Option<&crate::UserRecord>) -> Option<i64> {
+    user.filter(|user| is_university_group(Some(user)))
+        .and_then(|user| user.university_subgroup)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

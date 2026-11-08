@@ -34,3 +34,6 @@ deploy
 miniapp_frontend
 *.md
 !README.md
+
+# Локальные результаты сборки Rust не нужны в контексте Docker
+rust/target

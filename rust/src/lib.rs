@@ -39,6 +39,42 @@ pub fn normalize_dashes(text: &str) -> String {
         .collect()
 }
 
+pub mod archive;
+pub mod calendar;
+pub mod diff;
+pub mod format;
+pub mod parser;
+pub mod sources;
+pub mod subgroups;
+pub mod subscription;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRecord {
+    pub platform: String,
+    pub user_id: i64,
+    pub username: Option<String>,
+    pub full_name: Option<String>,
+    pub subscription_type: Option<String>,
+    pub subscription_key: Option<String>,
+    pub subscription_title: Option<String>,
+    pub subscription_url: Option<String>,
+    pub audience_subscription_key: Option<String>,
+    pub audience_subscription_title: Option<String>,
+    pub audience_subscription_url: Option<String>,
+    pub group_name: Option<String>,
+    pub schedule_id: Option<i64>,
+    pub is_admin: bool,
+    pub is_editor: bool,
+    pub homework_notifications_enabled: bool,
+    pub delivery_disabled_auto: bool,
+    pub created_at: String,
+    pub last_seen_at: String,
+    #[serde(default)]
+    pub custom_sticker_file_id: Option<String>,
+    #[serde(default)]
+    pub university_subgroup: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,10 +101,3 @@ mod tests {
         assert_eq!(normalize_dashes("А—Б–В‑Г−Д-Е"), "А-Б-В-Г-Д-Е");
     }
 }
-
-pub mod archive;
-pub mod calendar;
-pub mod diff;
-pub mod sources;
-pub mod subgroups;
-pub mod subscription;

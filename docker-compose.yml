@@ -1,8 +1,15 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   bot:
     build: .
     container_name: misis-rasp-bot
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 45s
     env_file:
       - .env
@@ -24,6 +31,7 @@ services:
     build: .
     container_name: misis-web-configurator
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 45s
     env_file:
       - .env
@@ -43,6 +51,7 @@ services:
     build: .
     container_name: misis-miniapp-api
     restart: unless-stopped
+    logging: *default-logging
     stop_grace_period: 45s
     env_file:
       - .env
@@ -64,6 +73,7 @@ services:
       dockerfile: Dockerfile
     container_name: misis-miniapp-frontend
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${MINIAPP_FRONTEND_BIND_IP:-127.0.0.1}:${MINIAPP_FRONTEND_PORT:-3000}:80"
 
@@ -71,6 +81,7 @@ services:
     image: nginx:1.27-alpine
     container_name: misis-nginx
     restart: unless-stopped
+    logging: *default-logging
     profiles:
       - nginx
     depends_on:
@@ -102,6 +113,7 @@ services:
     image: rabbitmq:3.13-management
     container_name: misis-rabbitmq
     restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
