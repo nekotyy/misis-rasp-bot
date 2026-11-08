@@ -2015,6 +2015,7 @@ def build_dispatcher(
         context: str,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
+        parse_mode: str | None = ParseMode.HTML,
     ) -> None:
         message_ids = context_messages[chat_id].get(context, [])
         if message_ids:
@@ -2024,6 +2025,7 @@ def build_dispatcher(
                     message_id=message_ids[0],
                     text=text,
                     reply_markup=reply_markup,
+                    parse_mode=parse_mode,
                 )
                 for extra_id in message_ids[1:]:
                     await safe_delete_message(bot, chat_id, extra_id)
@@ -2033,7 +2035,7 @@ def build_dispatcher(
                 return
             except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError):
                 pass
-        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup)
+        sent = await safe_send_message(bot, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
         context_messages[chat_id][context] = [sent.message_id] if sent is not None else message_ids
 
     async def send_new_context_message(
