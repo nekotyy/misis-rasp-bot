@@ -29,11 +29,21 @@ pub fn set_subscription(
     now: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    set_subscription_in_transaction(&tx, platform, user_id, sub, now)?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn set_subscription_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+    sub: &crate::subscription::Subscription,
+    now: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     tx.execute("UPDATE users SET subscription_type=?,subscription_key=?,subscription_title=?,subscription_url=?,group_name=?,schedule_id=?,university_subgroup=CASE WHEN subscription_key IS ? THEN university_subgroup ELSE NULL END WHERE platform=? AND user_id=?",params![sub.subscription_type,sub.subscription_key,sub.subscription_title,sub.subscription_url,sub.group_name,sub.schedule_id,sub.subscription_key,platform,user_id])?;
-    let account_id =
-        crate::account::get_or_create_account(&tx, platform, user_id, None, None, now)?;
+    let account_id = crate::account::get_or_create_account(tx, platform, user_id, None, None, now)?;
     crate::account::add_subscription(
-        &tx,
+        tx,
         &account_id,
         &crate::account::AccountSubscription {
             subscription_type: &sub.subscription_type,
@@ -48,7 +58,6 @@ pub fn set_subscription(
         },
         now,
     )?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -60,6 +69,17 @@ pub fn set_notifications_enabled(
     now: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    set_notifications_enabled_in_transaction(&tx, platform, user_id, enabled, now)?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn set_notifications_enabled_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+    enabled: bool,
+    now: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     tx.execute("UPDATE users SET homework_notifications_enabled=?,delivery_disabled_auto=CASE WHEN ?=1 THEN 0 ELSE delivery_disabled_auto END WHERE platform=? AND user_id=?",params![enabled,enabled,platform,user_id])?;
     let account: Option<String> = tx
         .query_row(
@@ -70,7 +90,7 @@ pub fn set_notifications_enabled(
         .optional()?;
     if let Some(account) = account {
         crate::account::update_preferences(
-            &tx,
+            tx,
             &account,
             &crate::account::Preferences {
                 notifications_enabled: Some(enabled),
@@ -79,7 +99,6 @@ pub fn set_notifications_enabled(
             now,
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 pub fn set_university_subgroup(
@@ -424,6 +443,202 @@ pub fn latest_group_snapshots(
     .collect()
 }
 
+pub fn set_audience_subscription(
+    db: &mut Connection,
+    platform: &str,
+    user_id: i64,
+    key: &str,
+    title: &str,
+    url: &str,
+    now: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute("UPDATE users SET audience_subscription_key=?,audience_subscription_title=?,audience_subscription_url=? WHERE platform=? AND user_id=?",params![key,title,url,platform,user_id])?;
+    let account = crate::account::get_or_create_account(&tx, platform, user_id, None, None, now)?;
+    crate::account::add_subscription(
+        &tx,
+        &account,
+        &crate::account::AccountSubscription {
+            subscription_type: "audience",
+            key,
+            title: Some(title),
+            url: Some(url),
+            group_name: Some(title),
+            schedule_id: None,
+            subgroup: 0,
+            primary: false,
+            notifications: true,
+        },
+        now,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn clear_audience_subscription(
+    db: &mut Connection,
+    platform: &str,
+    user_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    clear_audience_in_transaction(&tx, platform, user_id)?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn clear_audience_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tx.execute("UPDATE users SET audience_subscription_key=NULL,audience_subscription_title=NULL,audience_subscription_url=NULL WHERE platform=? AND user_id=?",params![platform,user_id])?;
+    let account: Option<String> = tx
+        .query_row(
+            "SELECT account_id FROM account_identities WHERE platform=? AND user_id=?",
+            params![platform, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(account) = account {
+        let ids = {
+            let mut stmt=tx.prepare("SELECT id FROM account_subscriptions WHERE account_id=? AND subscription_type='audience'")?;
+            let rows = stmt.query_map([&account], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for id in ids {
+            crate::account::remove_subscription(tx, &account, id)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn clear_user_subscription(
+    db: &mut Connection,
+    platform: &str,
+    user_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    clear_user_subscription_in_transaction(&tx, platform, user_id)?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn clear_user_subscription_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tx.execute("UPDATE users SET subscription_type=NULL,subscription_key=NULL,subscription_title=NULL,subscription_url=NULL,audience_subscription_key=NULL,audience_subscription_title=NULL,audience_subscription_url=NULL,group_name=NULL,schedule_id=NULL,university_subgroup=NULL WHERE platform=? AND user_id=?",params![platform,user_id])?;
+    let account: Option<String> = tx
+        .query_row(
+            "SELECT account_id FROM account_identities WHERE platform=? AND user_id=?",
+            params![platform, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(account) = account {
+        let ids = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM account_subscriptions WHERE account_id=? AND is_primary=1",
+            )?;
+            let rows = stmt.query_map([&account], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for id in ids {
+            crate::account::remove_subscription(tx, &account, id)?;
+        }
+    }
+    Ok(())
+}
+
+pub const SCHEMA_HEAD: &str = "20261105_0007";
+pub fn initialize(db: &mut Connection) -> Result<(), Box<dyn std::error::Error>> {
+    db.busy_timeout(Duration::from_secs(30))?;
+    let tables: i64 = db.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |r| r.get(0),
+    )?;
+    if tables == 0 {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(include_str!("../schema.sql"))?;
+        tx.execute(
+            "INSERT INTO alembic_version(version_num) VALUES (?)",
+            [SCHEMA_HEAD],
+        )?;
+        crate::telegram_engine::ensure_schema(&tx)?;
+        tx.commit()?;
+    } else {
+        let version: Option<String> = db
+            .query_row("SELECT version_num FROM alembic_version LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(|_| "Существующая база не содержит совместимой версии миграций")?;
+        if version.as_deref() != Some(SCHEMA_HEAD) {
+            return Err("Версия существующей базы требует миграции; данные не изменены".into());
+        }
+        verify_schema(db)?;
+        crate::telegram_engine::ensure_schema(db)?;
+    }
+    db.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(())
+}
+
+fn verify_schema(db: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(include_str!("../schema.sql"))?;
+    let mut tables=expected.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    let names = tables
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for table in names {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+            [&table],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(format!(
+                "В существующей базе отсутствует таблица {table}; данные не изменены"
+            )
+            .into());
+        }
+        let mut expected_columns = expected.prepare("SELECT name FROM pragma_table_info(?)")?;
+        let expected_columns = expected_columns
+            .query_map([&table], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut actual_columns = db.prepare("SELECT name FROM pragma_table_info(?)")?;
+        let actual_columns = actual_columns
+            .query_map([&table], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        if let Some(missing) = expected_columns
+            .iter()
+            .find(|column| !actual_columns.contains(*column))
+        {
+            return Err(format!(
+                "В таблице {table} отсутствует поле {missing}; данные не изменены"
+            )
+            .into());
+        }
+    }
+    let mut unique=expected.prepare("SELECT name FROM sqlite_master WHERE type='index' AND upper(sql) LIKE 'CREATE UNIQUE INDEX%'")?;
+    let unique = unique
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for index in unique {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?)",
+            [&index],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(format!(
+                "В существующей базе отсутствует индекс {index}; данные не изменены"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,6 +705,54 @@ mod tests {
         );
         let count:i64=db.query_row("SELECT count(*) FROM account_subscriptions WHERE subscription_key='group:-8' AND is_primary=1",[],|r|r.get(0)).unwrap();
         assert_eq!(count, 1);
+        set_audience_subscription(&mut db, "telegram", 1, "audience:10", "101", "url", "now")
+            .unwrap();
+        assert_eq!(
+            get_user(&db, "telegram", 1)
+                .unwrap()
+                .unwrap()
+                .audience_subscription_key
+                .as_deref(),
+            Some("audience:10")
+        );
+        clear_audience_subscription(&mut db, "telegram", 1).unwrap();
+        assert_eq!(
+            get_user(&db, "telegram", 1)
+                .unwrap()
+                .unwrap()
+                .audience_subscription_key,
+            None
+        );
+        let rooms: i64 = db
+            .query_row(
+                "SELECT count(*) FROM account_subscriptions WHERE subscription_type='audience'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rooms, 0);
+        set_audience_subscription(&mut db, "telegram", 1, "audience:10", "101", "url", "now")
+            .unwrap();
+        crate::telegram_ui::apply_selected_subscription(&mut db, "telegram", 1, &sub, "now")
+            .unwrap();
+        assert!(get_user(&db, "telegram", 1)
+            .unwrap()
+            .unwrap()
+            .audience_subscription_key
+            .is_none());
+        assert!(crate::telegram_ui::apply_selected_subscription(
+            &mut db, "telegram", 999, &sub, "now"
+        )
+        .is_err());
+        let missing: i64 = db
+            .query_row(
+                "SELECT count(*) FROM account_identities WHERE user_id=999",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(missing, 0);
+
         assert!(set_university_subgroup(&mut db, "telegram", 1, -8, Some(2), "then").unwrap());
         assert_eq!(
             get_user(&db, "telegram", 1)
@@ -536,6 +799,15 @@ mod tests {
                 .unwrap()
                 .university_subgroup,
             None
+        );
+        clear_user_subscription(&mut db, "telegram", 1).unwrap();
+        assert_eq!(
+            get_user(&db, "telegram", 1)
+                .unwrap()
+                .unwrap()
+                .subscription_key
+                .as_deref(),
+            Some("group:-9")
         );
     }
 }
@@ -626,5 +898,49 @@ mod change_tests {
         };
         assert!(record_change(&db, &input).unwrap());
         assert!(!record_change(&db, &input).unwrap());
+    }
+}
+#[cfg(test)]
+mod initialization_tests {
+    use super::*;
+    #[test]
+    fn fresh_schema_is_compatible_and_existing_rows_survive_restart() {
+        let mut db = Connection::open_in_memory().unwrap();
+        initialize(&mut db).unwrap();
+        let version: String = db
+            .query_row("SELECT version_num FROM alembic_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_HEAD);
+        db.execute("INSERT INTO users(platform,user_id,created_at,last_seen_at) VALUES ('telegram',1,'now','now')",[]).unwrap();
+        initialize(&mut db).unwrap();
+        let count: i64 = db
+            .query_row("SELECT count(*) FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(crate::outbox::status(&db, "missing").unwrap().is_none());
+    }
+    #[test]
+    fn missing_unique_index_is_rejected_before_marker_creation() {
+        let mut db = Connection::open_in_memory().unwrap();
+        initialize(&mut db).unwrap();
+        db.execute_batch("DROP INDEX idx_change_events_source_key_snapshot_hash_day; DROP TABLE telegram_processed_updates;").unwrap();
+        assert!(initialize(&mut db).is_err());
+        let marker:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='telegram_processed_updates')",[],|r|r.get(0)).unwrap();
+        assert!(!marker);
+    }
+    #[test]
+    fn unknown_database_is_rejected_without_mutation() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES (1);",
+        )
+        .unwrap();
+        assert!(initialize(&mut db).is_err());
+        let value: i64 = db
+            .query_row("SELECT id FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(value, 1);
+        let marker:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='telegram_processed_updates')",[],|r|r.get(0)).unwrap();
+        assert!(!marker);
     }
 }
