@@ -71,3 +71,6 @@ bot.db (3).zip
 
 # Фото для ручной проверки импорта расписания с фото
 photo_*.jpg
+
+# Rust build artifacts
+/rust/target/
