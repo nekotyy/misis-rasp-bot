@@ -76,7 +76,7 @@ pub fn human_date(value: &str, default_year: i32) -> String {
         value.into()
     }
 }
-fn escape(text: &str) -> String {
+pub fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -98,7 +98,7 @@ pub fn format_day(
         },
         today.year(),
     );
-    let label = if html { escape(&label) } else { label };
+    let label = if html { escape_html(&label) } else { label };
     let mut result = String::new();
     if matches!(day.week_variant, Some(1 | 2)) {
         let selected = week_name(day.week_variant);
@@ -136,9 +136,9 @@ pub fn format_day(
                     format!(
                         "<b>{}.</b> в <b>{}</b> по <b>{}</b> у <b>{}</b>",
                         lesson.number,
-                        escape(&lesson.classroom),
-                        escape(&lesson.subject),
-                        escape(&lesson.teacher)
+                        escape_html(&lesson.classroom),
+                        escape_html(&lesson.subject),
+                        escape_html(&lesson.teacher)
                     )
                 } else {
                     format!(

@@ -10,11 +10,19 @@ pub struct Delivery<'a> {
     pub metadata: &'a Value,
     pub ttl: f64,
 }
-pub fn enqueue(db: &mut Connection, items: &[Delivery<'_>], now: f64) -> rusqlite::Result<()> {
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+pub fn enqueue_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    items: &[Delivery<'_>],
+    now: f64,
+) -> rusqlite::Result<()> {
     for item in items {
         tx.execute("INSERT INTO delivery_outbox (delivery_id,platform,peer_key,method,payload_json,metadata_json,created_at,updated_at,expires_at,next_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(delivery_id) DO NOTHING", params![item.id,item.platform,item.peer,item.method,item.payload.to_string(),item.metadata.to_string(),now,now,now+item.ttl,now])?;
     }
+    Ok(())
+}
+pub fn enqueue(db: &mut Connection, items: &[Delivery<'_>], now: f64) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    enqueue_in_transaction(&tx, items, now)?;
     tx.commit()
 }
 fn expire(db: &Connection, now: f64) -> rusqlite::Result<()> {

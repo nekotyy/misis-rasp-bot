@@ -73,3 +73,212 @@ async fn http_retry_then_parses_college_page() {
     assert_eq!(snapshot.group_name, "Group");
     thread.join().unwrap();
 }
+#[tokio::test]
+async fn transport_sends_telegram_and_vk_payloads_to_local_api() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192];
+            let length = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            assert!(if index == 0 {
+                request.starts_with("POST /bottest/sendMessage ")
+            } else {
+                request.starts_with("POST /messages.send ")
+            });
+            let body = if index == 0 {
+                r#"{"ok":true,"result":{"message_id":7}}"#
+            } else {
+                r#"{"response":42}"#
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let transport = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "test".into(),
+        "5.199",
+    )
+    .unwrap();
+    let tg = transport
+        .send(
+            "telegram",
+            "sendMessage",
+            &serde_json::json!({"chat_id":1,"text":"x"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tg["message_id"], 7);
+    let vk = transport
+        .send(
+            "vk",
+            "messages.send",
+            &serde_json::json!({"peer_id":1,"message":"x","random_id":1}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(vk, 42);
+    server.join().unwrap();
+}
+#[tokio::test]
+async fn queued_vk_message_falls_back_without_keyboard() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).unwrap();
+            let body = if index == 0 {
+                r#"{"error":{"error_code":911,"error_msg":"keyboard"}}"#
+            } else {
+                r#"{"response":42}"#
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(misis_rasp_core::outbox::SCHEMA).unwrap();
+    db.execute_batch("CREATE TABLE delivery_events(message_id TEXT,campaign_type TEXT,platform TEXT,user_id INTEGER,via_broker INTEGER,status TEXT,attempt INTEGER,error_text TEXT,created_at TEXT);").unwrap();
+    let messages = misis_rasp_core::notification::prepare_notification(
+        "vk",
+        2,
+        "hello",
+        "notification",
+        "event",
+        None,
+    );
+    misis_rasp_core::notification::enqueue_prepared(&mut db, &messages, 100.0).unwrap();
+    let base = format!("http://{addr}");
+    let transport = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "".into(),
+        "test".into(),
+        "5.199",
+    )
+    .unwrap();
+    let outcome = misis_rasp_core::notification::drain_once(&mut db, &transport, "vk", 100.0, 50)
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        vec![(
+            messages[0].id.clone(),
+            misis_rasp_core::notification::ProcessOutcome::Sent
+        )]
+    );
+    assert_eq!(
+        misis_rasp_core::outbox::status(&db, &messages[0].id)
+            .unwrap()
+            .as_deref(),
+        Some("sent")
+    );
+    let status: String = db
+        .query_row("SELECT status FROM delivery_events", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(status, "sent");
+    server.join().unwrap();
+}
+#[tokio::test]
+async fn vk_poll_uses_saved_position_after_server_refresh() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = [0; 8192];
+            let n = stream.read(&mut bytes).unwrap();
+            let req = String::from_utf8_lossy(&bytes[..n]);
+            let body = if index == 0 {
+                assert!(req.starts_with("POST /groups.getLongPollServer "));
+                format!(
+                    r#"{{"response":{{"server":"http://{addr}/poll","key":"test","ts":"100"}}}}"#
+                )
+            } else {
+                assert!(req.contains("ts=42"));
+                r#"{"ts":"43","updates":[{"event_id":"e1"}]}"#.into()
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "".into(),
+        "test".into(),
+        "5.199",
+    )
+    .unwrap();
+    let mut poll = misis_rasp_core::vk_poll::VkLongPoll::new(1, 25, Some("42".into())).unwrap();
+    match poll.poll_once(&api).await.unwrap() {
+        misis_rasp_core::vk_poll::PollResult::Batch { ts, updates } => {
+            assert_eq!(ts, "43");
+            assert_eq!(updates.len(), 1);
+        }
+        _ => panic!("expected batch"),
+    };
+    server.join().unwrap();
+}
+#[tokio::test]
+async fn telegram_poll_reads_updates_without_advancing_before_ack() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = [0; 8192];
+        let n = stream.read(&mut bytes).unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..n]).starts_with("POST /bottest/getUpdates "));
+        let body = r#"{"ok":true,"result":[{"update_id":42,"message":{}}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let updates = poll.fetch(&api).await.unwrap();
+    assert_eq!(poll.next_offset(), None);
+    assert!(poll.acknowledge(&updates[0]));
+    assert_eq!(poll.next_offset(), Some(43));
+    server.join().unwrap();
+}
