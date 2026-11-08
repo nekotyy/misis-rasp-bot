@@ -473,6 +473,42 @@ mod client_tests {
     }
 }
 impl ScheduleParser {
+    pub async fn parse_university_variant(
+        &self,
+        url: &str,
+        variant: u8,
+        target_date: chrono::NaiveDate,
+    ) -> Result<ScheduleSnapshot, Box<dyn std::error::Error>> {
+        if !matches!(variant, 1 | 2) {
+            return Err("Вариант недели должен быть 1 или 2".into());
+        }
+        let base = url.trim_end_matches('/');
+        let base = if base.ends_with("/1") || base.ends_with("/2") {
+            &base[..base.len() - 2]
+        } else {
+            base
+        };
+        let html = self.fetch_html(&format!("{base}/{variant}")).await?;
+        let valid = {
+            let doc = scraper::Html::parse_document(&html);
+            let onclick = doc
+                .select(&selector("#schedule-title .search-button-active[onclick]"))
+                .next()
+                .and_then(|e| e.value().attr("onclick"));
+            let suffix = format!("/{variant}");
+            onclick.is_some_and(|onclick| {
+                onclick.contains(&format!("{suffix}'")) || onclick.contains(&format!("{suffix}\""))
+            })
+        };
+        if !valid {
+            return Err("Сайт не вернул выбранный вариант недели".into());
+        }
+        Ok(parse_university_html(
+            &html,
+            target_date.and_hms_opt(0, 0, 0).unwrap(),
+            true,
+        )?)
+    }
     pub async fn parse(
         &self,
         schedule_id: i64,

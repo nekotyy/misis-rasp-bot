@@ -29,6 +29,16 @@ impl TelegramEngine {
         update: &Value,
         context: &EngineContext<'_>,
     ) -> Result<HandleOutcome, Box<dyn std::error::Error>> {
+        self.handle_with_snapshot(db, update, context, None, None)
+    }
+    fn handle_with_snapshot(
+        &mut self,
+        db: &mut Connection,
+        update: &Value,
+        context: &EngineContext<'_>,
+        resolved: Option<Option<&crate::ScheduleSnapshot>>,
+        override_actions: Option<Vec<BotAction>>,
+    ) -> Result<HandleOutcome, Box<dyn std::error::Error>> {
         let Some(update_id) = update.get("update_id").and_then(Value::as_i64) else {
             return Ok(HandleOutcome::Unsupported);
         };
@@ -68,7 +78,9 @@ impl TelegramEngine {
             crate::telegram_ui::register_group_chat(&tx, update, &now)?;
         }
 
-        let snapshot = if let (Some(key), Some(title)) = (
+        let snapshot = if let Some(resolved) = resolved {
+            resolved.cloned()
+        } else if let (Some(key), Some(title)) = (
             user.subscription_key.as_deref(),
             user.subscription_title.as_deref(),
         ) {
@@ -88,7 +100,9 @@ impl TelegramEngine {
                 .and_then(crate::sources::university_kind)
                 .is_some();
         let callback = update.get("callback_query");
-        let actions = if let Some(callback) = callback.filter(|v| {
+        let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(callback) = callback.filter(|v| {
             v.get("data")
                 .and_then(Value::as_str)
                 .is_some_and(|s| s.starts_with("teacher:"))
@@ -231,6 +245,189 @@ pub fn cleanup_processed(db: &Connection, now: f64) -> rusqlite::Result<usize> {
     )
 }
 
+pub enum PollError {
+    Transport(crate::notification::DeliveryFailure),
+    Handler(Box<dyn std::error::Error>),
+}
+pub enum PollOutcome {
+    Processed(usize),
+    Unsupported {
+        processed: usize,
+        update_id: Option<i64>,
+    },
+}
+async fn week_actions(
+    parser: &crate::parser::ScheduleParser,
+    update: &Value,
+    user: Option<&crate::UserRecord>,
+    now: chrono::NaiveDateTime,
+) -> Option<Vec<BotAction>> {
+    let callback = update.get("callback_query")?;
+    let id = callback.get("id")?.as_str()?;
+    let chat_id = callback.pointer("/message/chat/id")?.as_i64()?;
+    let data = callback
+        .get("data")?
+        .as_str()?
+        .strip_prefix("schedule:week:")?;
+    let result: Result<(String, String), Box<dyn std::error::Error>> = async {
+        let (date, variant) = data.split_once(':').ok_or("Неверный вариант")?;
+        let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
+        let variant: u8 = variant.parse()?;
+        let user = user.ok_or("Пользователь не найден")?;
+        let url = if let Some(schedule_id) = user.schedule_id.filter(|id| *id < 0) {
+            parser.build_schedule_url(schedule_id)?
+        } else {
+            user.subscription_url
+                .as_deref()
+                .filter(|url| crate::sources::university_kind(url).is_some())
+                .ok_or("Источник недоступен")?
+                .to_owned()
+        };
+        let snapshot = match variant {
+            0 => parser.parse_from_url(&url, now).await?.0,
+            1 | 2 => parser.parse_university_variant(&url, variant, date).await?,
+            _ => return Err("Неверный вариант".into()),
+        };
+        let date_iso = date.to_string();
+        let text = snapshot
+            .days
+            .iter()
+            .find(|day| day.date_iso == date_iso)
+            .map(|day| {
+                crate::format::format_day(
+                    day,
+                    crate::subgroups::personal_subgroup(Some(user))
+                        .and_then(|n| u32::try_from(n).ok()),
+                    true,
+                    now.date(),
+                )
+            })
+            .unwrap_or_else(|| "На эту дату нет данных.".into());
+        Ok((text, date_iso))
+    }
+    .await;
+    let (text, keyboard) = match result {
+        Ok((text, date)) => (text, crate::telegram_ui::university_keyboard(&date)),
+        Err(_) => (
+            "Не удалось загрузить вариант расписания. Попробуй позже.".into(),
+            crate::notification::telegram_keyboard(),
+        ),
+    };
+    Some(vec![
+        BotAction {
+            method: "sendMessage".into(),
+            payload: serde_json::json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": keyboard}),
+        },
+        BotAction {
+            method: "answerCallbackQuery".into(),
+            payload: serde_json::json!({"callback_query_id": id}),
+        },
+    ])
+}
+pub async fn poll_iteration(
+    poll: &mut crate::telegram_poll::TelegramLongPoll,
+    api: &crate::notification::ApiTransport,
+    engine: &mut TelegramEngine,
+    db: &mut Connection,
+    context: &EngineContext<'_>,
+) -> Result<PollOutcome, PollError> {
+    poll_iteration_with_parser(poll, api, engine, db, context, None).await
+}
+pub async fn poll_iteration_with_parser(
+    poll: &mut crate::telegram_poll::TelegramLongPoll,
+    api: &crate::notification::ApiTransport,
+    engine: &mut TelegramEngine,
+    db: &mut Connection,
+    context: &EngineContext<'_>,
+    parser: Option<&crate::parser::ScheduleParser>,
+) -> Result<PollOutcome, PollError> {
+    let updates = poll.fetch(api).await.map_err(PollError::Transport)?;
+    let mut processed = 0;
+    for update in updates {
+        let data = update
+            .pointer("/callback_query/data")
+            .and_then(Value::as_str);
+        let command = update
+            .pointer("/message/text")
+            .and_then(Value::as_str)
+            .and_then(|text| text.split_whitespace().next())
+            .and_then(|text| text.split('@').next());
+        let needs_snapshot = matches!(
+            data,
+            Some("schedule:today" | "schedule:tomorrow" | "schedule:day_after" | "menu:start")
+        ) || (command == Some("/start")
+            && update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private"));
+        let actor_id = update
+            .pointer("/callback_query/from/id")
+            .or_else(|| update.pointer("/message/from/id"))
+            .and_then(Value::as_i64);
+        let is_week = data.is_some_and(|s| s.starts_with("schedule:week:"));
+        let already_processed = match update.get("update_id").and_then(Value::as_i64) {
+            Some(id) if parser.is_some() && (needs_snapshot || is_week) => db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM telegram_processed_updates WHERE update_id=?)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|err| PollError::Handler(Box::new(err)))?,
+            _ => false,
+        };
+        let resolved = if let (Some(parser), Some(actor_id)) = (
+            parser.filter(|_| needs_snapshot && !already_processed),
+            actor_id,
+        ) {
+            let user = crate::database::get_user(db, "telegram", actor_id)
+                .map_err(|err| PollError::Handler(Box::new(err)))?;
+            match user {
+                Some(user) => Some(
+                    crate::snapshot_resolver::resolve(db, parser, &user, context.now)
+                        .await
+                        .map_err(PollError::Handler)?,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let week_actions = if let (Some(parser), Some(actor_id)) =
+            (parser.filter(|_| is_week && !already_processed), actor_id)
+        {
+            let user = crate::database::get_user(db, "telegram", actor_id)
+                .map_err(|err| PollError::Handler(Box::new(err)))?;
+            week_actions(parser, &update, user.as_ref(), context.now).await
+        } else {
+            None
+        };
+        match engine
+            .handle_with_snapshot(
+                db,
+                &update,
+                context,
+                resolved.as_ref().map(Option::as_ref),
+                week_actions,
+            )
+            .map_err(PollError::Handler)?
+        {
+            HandleOutcome::Handled => {
+                if !poll.acknowledge(&update) {
+                    return Ok(PollOutcome::Unsupported {
+                        processed,
+                        update_id: None,
+                    });
+                }
+                processed += 1;
+            }
+            HandleOutcome::Unsupported => {
+                return Ok(PollOutcome::Unsupported {
+                    processed,
+                    update_id: update.get("update_id").and_then(Value::as_i64),
+                })
+            }
+        }
+    }
+    Ok(PollOutcome::Processed(processed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +526,104 @@ mod tests {
         );
         assert_eq!(cleanup_processed(&db, 100.0 + 89.0 * 86400.0).unwrap(), 0);
         assert_eq!(cleanup_processed(&db, 100.0 + 91.0 * 86400.0).unwrap(), 3);
+    }
+}
+
+#[cfg(test)]
+mod selection_integration_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn new_user_can_select_group_and_replayed_input_is_not_applied_twice() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+        let groups = GroupCatalog::new(vec![crate::group_catalog::GroupInfo {
+            department_id: 1,
+            department_code: "ИСП".into(),
+            department_name: "Отделение".into(),
+            group_name: "ИСП-25".into(),
+            schedule_id: Some(123),
+            url: "http://college/rasp/123".into(),
+        }]);
+        let search = SearchCatalog::default();
+        let settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            now,
+            timestamp: 100.0,
+        };
+        let mut engine = TelegramEngine::default();
+        let start = json!({"update_id":1,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42,"first_name":"Иван"},"text":"/start"}});
+        assert!(matches!(
+            engine.handle(&mut db, &start, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let input = json!({"update_id":2,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42,"first_name":"Иван"},"text":"ИCП 25"}});
+        assert!(matches!(
+            engine.handle(&mut db, &input, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        assert_eq!(
+            crate::database::get_user(&db, "telegram", 42)
+                .unwrap()
+                .unwrap()
+                .subscription_key
+                .as_deref(),
+            Some("group:123")
+        );
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM account_subscriptions WHERE subscription_key='group:123'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(matches!(
+            engine.handle(&mut db, &input, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM delivery_outbox WHERE delivery_id LIKE 'telegram-update:2:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[cfg(test)]
+mod week_tests {
+    use super::*;
+    #[tokio::test]
+    async fn invalid_week_request_returns_recoverable_response_and_acknowledges() {
+        let parser = crate::parser::ScheduleParser::new(
+            "",
+            "",
+            std::time::Duration::from_secs(1),
+            1,
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        let update = serde_json::json!({"callback_query":{"id":"cb","from":{"id":42},"message":{"chat":{"id":42}},"data":"schedule:week:2026-11-08:3"}});
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let actions = week_actions(&parser, &update, None, now).await.unwrap();
+        assert!(actions[0].payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("Не удалось"));
+        assert_eq!(actions[1].method, "answerCallbackQuery");
     }
 }

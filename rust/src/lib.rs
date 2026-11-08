@@ -110,6 +110,7 @@ pub mod account;
 pub mod group_catalog;
 pub mod notification;
 pub mod search;
+pub mod snapshot_resolver;
 pub mod sync;
 pub mod telegram_engine;
 pub mod telegram_poll;
