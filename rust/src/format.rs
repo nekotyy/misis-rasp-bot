@@ -152,36 +152,6 @@ pub fn format_day(
     );
     result
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Lesson;
-    #[test]
-    fn formatted_schedule_escapes_html_and_filters_subgroups() {
-        let day = DaySchedule {
-            date_label: "2026-11-09".into(),
-            date_iso: "2026-11-09".into(),
-            week_variant: Some(1),
-            current_week_variant: Some(2),
-            lessons: vec![Lesson {
-                number: 1,
-                subject: "A & B (1 подгруппа)".into(),
-                teacher: "<Иванов>".into(),
-                classroom: "101".into(),
-            }],
-        };
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
-        let text = format_day(&day, Some(1), true, today);
-        assert!(text.contains("9 ноября 2026 года"));
-        assert!(text.contains("A &amp; B"));
-        assert!(text.contains("&lt;Иванов&gt;"));
-        assert!(format_day(&day, Some(2), false, today).ends_with("Пар нет."));
-        assert_eq!(
-            current_week(today, today + chrono::Duration::days(7), Some(1)),
-            Some(2)
-        );
-    }
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChangeSummary {
@@ -263,6 +233,61 @@ pub fn compare(
         message,
     })
 }
+
+pub fn looks_like_stale_site_glitch(
+    previous: Option<&crate::database::StoredSnapshot>,
+    snapshot: &crate::ScheduleSnapshot,
+    now: chrono::NaiveDateTime,
+) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    if snapshot.days.is_empty()
+        || snapshot.days.iter().any(|day| !day.lessons.is_empty())
+        || !previous
+            .content
+            .days
+            .iter()
+            .any(|day| !day.lessons.is_empty())
+    {
+        return false;
+    }
+    chrono::NaiveDateTime::parse_from_str(&previous.fetched_at, "%Y-%m-%dT%H:%M:%S%.f")
+        .ok()
+        .is_some_and(|time| now.signed_duration_since(time) < chrono::Duration::hours(12))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Lesson;
+    #[test]
+    fn formatted_schedule_escapes_html_and_filters_subgroups() {
+        let day = DaySchedule {
+            date_label: "2026-11-09".into(),
+            date_iso: "2026-11-09".into(),
+            week_variant: Some(1),
+            current_week_variant: Some(2),
+            lessons: vec![Lesson {
+                number: 1,
+                subject: "A & B (1 подгруппа)".into(),
+                teacher: "<Иванов>".into(),
+                classroom: "101".into(),
+            }],
+        };
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        let text = format_day(&day, Some(1), true, today);
+        assert!(text.contains("9 ноября 2026 года"));
+        assert!(text.contains("A &amp; B"));
+        assert!(text.contains("&lt;Иванов&gt;"));
+        assert!(format_day(&day, Some(2), false, today).ends_with("Пар нет."));
+        assert_eq!(
+            current_week(today, today + chrono::Duration::days(7), Some(1)),
+            Some(2)
+        );
+    }
+}
+
 #[cfg(test)]
 mod compare_tests {
     use super::*;
@@ -296,5 +321,55 @@ mod compare_tests {
         current.days[0].lessons.clear();
         assert!(compare(Some(&old), &current, date, None, false).is_none());
         assert!(compare(Some(&old), &current, date, None, true).is_some());
+    }
+}
+
+#[cfg(test)]
+mod glitch_tests {
+    use super::*;
+    #[test]
+    fn fresh_nonempty_cache_rejects_untrusted_empty_site_response() {
+        let previous_content = crate::ScheduleSnapshot {
+            group_name: "x".into(),
+            fetched_at: "2026-11-08T10:00:00".into(),
+            days: vec![DaySchedule {
+                date_label: String::new(),
+                date_iso: "2026-11-09".into(),
+                lessons: vec![crate::Lesson {
+                    number: 1,
+                    subject: "a".into(),
+                    teacher: String::new(),
+                    classroom: String::new(),
+                }],
+                week_variant: None,
+                current_week_variant: None,
+            }],
+        };
+        let previous = crate::database::StoredSnapshot {
+            source_type: None,
+            source_key: None,
+            source_title: None,
+            source_url: None,
+            group_name: None,
+            schedule_id: None,
+            hash: String::new(),
+            content: previous_content.clone(),
+            fetched_at: previous_content.fetched_at.clone(),
+            created_at: String::new(),
+        };
+        let mut empty = previous_content;
+        empty.days[0].lessons.clear();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        assert!(looks_like_stale_site_glitch(Some(&previous), &empty, now));
+        assert!(!looks_like_stale_site_glitch(
+            Some(&previous),
+            &empty,
+            now + chrono::Duration::hours(13)
+        ));
+        empty.days.clear();
+        assert!(!looks_like_stale_site_glitch(Some(&previous), &empty, now));
     }
 }

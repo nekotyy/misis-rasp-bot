@@ -70,6 +70,88 @@ pub fn sync_primary(tx: &Transaction<'_>, account_id: &str) -> rusqlite::Result<
     Ok(())
 }
 
+#[derive(Default)]
+pub struct Preferences<'a> {
+    pub theme: Option<&'a str>,
+    pub accent: Option<&'a str>,
+    pub density: Option<&'a str>,
+    pub reduced_motion: Option<bool>,
+    pub notifications_enabled: Option<bool>,
+}
+pub fn update_preferences(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    prefs: &Preferences<'_>,
+    now: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if prefs
+        .theme
+        .is_some_and(|v| !matches!(v, "system" | "light" | "dark"))
+    {
+        return Err("Некорректная тема".into());
+    }
+    if prefs
+        .density
+        .is_some_and(|v| !matches!(v, "comfortable" | "compact"))
+    {
+        return Err("Некорректная плотность".into());
+    }
+    let changed = tx.execute("UPDATE accounts SET theme=COALESCE(?,theme),accent=COALESCE(?,accent),density=COALESCE(?,density),reduced_motion=COALESCE(?,reduced_motion),notifications_enabled=COALESCE(?,notifications_enabled),updated_at=? WHERE id=?",params![prefs.theme,prefs.accent,prefs.density,prefs.reduced_motion,prefs.notifications_enabled,now,account_id])?;
+    if changed != 0 {
+        if let Some(enabled) = prefs.notifications_enabled {
+            tx.execute("UPDATE users SET homework_notifications_enabled=? WHERE (platform,user_id) IN (SELECT platform,user_id FROM account_identities WHERE account_id=?)",params![enabled,account_id])?;
+        }
+    }
+    Ok(changed != 0)
+}
+pub fn update_subscription(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    id: i64,
+    primary: Option<bool>,
+    subgroup: Option<i64>,
+    notifications: Option<bool>,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    let row: Option<(String,bool)> = tx.query_row("SELECT subscription_type,is_primary FROM account_subscriptions WHERE id=? AND account_id=?",params![id,account_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((kind, was_primary)) = row else {
+        return Ok(false);
+    };
+    if primary == Some(true) && !was_primary {
+        tx.execute("UPDATE account_subscriptions SET is_primary=0 WHERE account_id=? AND subscription_type=?",params![account_id,kind])?;
+    }
+    tx.execute("UPDATE account_subscriptions SET is_primary=COALESCE(?,is_primary),university_subgroup=COALESCE(?,university_subgroup),notifications_enabled=COALESCE(?,notifications_enabled),updated_at=? WHERE id=? AND account_id=?",params![primary,subgroup,notifications,now,id,account_id])?;
+    if primary == Some(true) || (was_primary && subgroup.is_some()) {
+        sync_primary(tx, account_id)?;
+    }
+    Ok(true)
+}
+pub fn remove_subscription(
+    tx: &Transaction<'_>,
+    account_id: &str,
+    id: i64,
+) -> rusqlite::Result<bool> {
+    let row: Option<(String,bool)> = tx.query_row("SELECT subscription_type,is_primary FROM account_subscriptions WHERE id=? AND account_id=?",params![id,account_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((kind, primary)) = row else {
+        return Ok(false);
+    };
+    tx.execute(
+        "DELETE FROM account_subscriptions WHERE id=? AND account_id=?",
+        params![id, account_id],
+    )?;
+    if primary {
+        let next: Option<i64> = tx.query_row("SELECT id FROM account_subscriptions WHERE account_id=? AND subscription_type=? ORDER BY id LIMIT 1",params![account_id,kind],|r|r.get(0)).optional()?;
+        if let Some(next) = next {
+            tx.execute(
+                "UPDATE account_subscriptions SET is_primary=1 WHERE id=?",
+                [next],
+            )?;
+        }
+        sync_primary(tx, account_id)?;
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +201,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(vk_key, "group:-2");
+        let new_id:i64=tx.query_row("SELECT id FROM account_subscriptions WHERE account_id=? AND subscription_key='group:-2'",[&id],|r|r.get(0)).unwrap();
+        assert!(update_subscription(&tx, &id, new_id, None, Some(1), None, "new").unwrap());
+        let prefs = Preferences {
+            theme: Some("dark"),
+            notifications_enabled: Some(false),
+            ..Default::default()
+        };
+        assert!(update_preferences(&tx, &id, &prefs, "new").unwrap());
+        let flags: Vec<i64> = {
+            let mut q = tx
+                .prepare("SELECT homework_notifications_enabled FROM users ORDER BY platform")
+                .unwrap();
+            q.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(flags, vec![0, 0]);
+        assert!(update_preferences(
+            &tx,
+            &id,
+            &Preferences {
+                theme: Some("invalid"),
+                ..Default::default()
+            },
+            "new"
+        )
+        .is_err());
+        assert!(remove_subscription(&tx, &id, new_id).unwrap());
+        let current: String = tx
+            .query_row(
+                "SELECT subscription_key FROM users WHERE platform='telegram'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(current, "group:-1");
     }
 }

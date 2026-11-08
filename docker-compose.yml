@@ -128,4 +128,3 @@ services:
 
 volumes:
   rabbitmq-data:
-
