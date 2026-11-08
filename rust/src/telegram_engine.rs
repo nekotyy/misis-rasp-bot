@@ -13,6 +13,7 @@ pub enum HandleOutcome {
 #[derive(Default)]
 pub struct TelegramEngine {
     selection: SelectionFlow,
+    search: crate::telegram_search::SearchFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -101,6 +102,10 @@ impl TelegramEngine {
                 .is_some();
         let callback = update.get("callback_query");
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) =
+            crate::telegram_subgroup::handle(&tx, update, &user, snapshot.as_ref(), &now)?
+        {
             actions
         } else if let Some(callback) = callback.filter(|v| {
             v.get("data")
@@ -354,16 +359,23 @@ pub async fn poll_iteration_with_parser(
             .and_then(|text| text.split('@').next());
         let needs_snapshot = matches!(
             data,
-            Some("schedule:today" | "schedule:tomorrow" | "schedule:day_after" | "menu:start")
-        ) || (command == Some("/start")
-            && update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private"));
+            Some(
+                "schedule:today"
+                    | "schedule:tomorrow"
+                    | "schedule:day_after"
+                    | "menu:start"
+                    | "menu:subgroup"
+            )
+        ) || data.is_some_and(|data| data.starts_with("subgroup:"))
+            || (command == Some("/start")
+                && update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private"));
         let actor_id = update
             .pointer("/callback_query/from/id")
             .or_else(|| update.pointer("/message/from/id"))
             .and_then(Value::as_i64);
         let is_week = data.is_some_and(|s| s.starts_with("schedule:week:"));
         let already_processed = match update.get("update_id").and_then(Value::as_i64) {
-            Some(id) if parser.is_some() && (needs_snapshot || is_week) => db
+            Some(id) if parser.is_some() => db
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM telegram_processed_updates WHERE update_id=?)",
                     [id],
@@ -389,6 +401,23 @@ pub async fn poll_iteration_with_parser(
         } else {
             None
         };
+        let mut next_search = parser
+            .filter(|_| !already_processed && engine.search.interested(&update))
+            .map(|_| engine.search.clone());
+        let search_actions = if let (Some(parser), Some(search)) = (parser, next_search.as_mut()) {
+            search
+                .process(
+                    db,
+                    parser,
+                    &update,
+                    (context.groups, context.search, context.group_snapshots),
+                    context.now,
+                )
+                .await
+                .map_err(PollError::Handler)?
+        } else {
+            None
+        };
         let week_actions = if let (Some(parser), Some(actor_id)) =
             (parser.filter(|_| is_week && !already_processed), actor_id)
         {
@@ -404,11 +433,14 @@ pub async fn poll_iteration_with_parser(
                 &update,
                 context,
                 resolved.as_ref().map(Option::as_ref),
-                week_actions,
+                search_actions.or(week_actions),
             )
             .map_err(PollError::Handler)?
         {
             HandleOutcome::Handled => {
+                if let Some(search) = next_search {
+                    engine.search = search;
+                }
                 if !poll.acknowledge(&update) {
                     return Ok(PollOutcome::Unsupported {
                         processed,
@@ -625,5 +657,93 @@ mod week_tests {
             .unwrap()
             .contains("Не удалось"));
         assert_eq!(actions[1].method, "answerCallbackQuery");
+    }
+}
+
+#[cfg(test)]
+mod subgroup_integration_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn subgroup_choice_and_reply_are_queued_atomically() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+        db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,group_name,schedule_id,created_at,last_seen_at) VALUES ('telegram',42,'group','group:-123','Университет','Университет',-123,'now','now')",[]).unwrap();
+        let snapshot = crate::ScheduleSnapshot {
+            group_name: "Университет".into(),
+            fetched_at: "2026-11-08".into(),
+            days: vec![crate::DaySchedule {
+                date_label: "8 ноября".into(),
+                date_iso: "2026-11-08".into(),
+                week_variant: Some(1),
+                current_week_variant: Some(1),
+                lessons: vec![crate::Lesson {
+                    number: 1,
+                    subject: "Физика (2 подгруппа)".into(),
+                    teacher: "Иванов".into(),
+                    classroom: "101".into(),
+                }],
+            }],
+        };
+        crate::database::save_snapshot(
+            &mut db,
+            &crate::database::SnapshotInput {
+                snapshot_type: "current",
+                hash: "h",
+                snapshot: &snapshot,
+                schedule_id: Some(-123),
+                group_name: Some("Университет"),
+                source_type: Some("group"),
+                source_key: Some("group:-123"),
+                source_title: Some("Университет"),
+                source_url: None,
+                archive_origin: None,
+                archive_dates: None,
+                archive_projected: false,
+                timezone: chrono_tz::UTC,
+                created_at: "now",
+            },
+        )
+        .unwrap();
+        let settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        let groups = GroupCatalog::default();
+        let search = SearchCatalog::default();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            timestamp: 100.0,
+        };
+        let update = json!({"update_id":60,"callback_query":{"id":"cb","from":{"id":42},"message":{"chat":{"id":42}},"data":"subgroup:-123:2"}});
+        let mut engine = TelegramEngine::default();
+        db.execute_batch("CREATE TRIGGER fail_subgroup BEFORE INSERT ON delivery_outbox BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+        assert!(engine.handle(&mut db, &update, &context).is_err());
+        assert_eq!(
+            crate::database::get_user(&db, "telegram", 42)
+                .unwrap()
+                .unwrap()
+                .university_subgroup,
+            None
+        );
+        db.execute_batch("DROP TRIGGER fail_subgroup").unwrap();
+        assert!(matches!(
+            engine.handle(&mut db, &update, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        assert_eq!(
+            crate::database::get_user(&db, "telegram", 42)
+                .unwrap()
+                .unwrap()
+                .university_subgroup,
+            Some(2)
+        );
+        assert!(crate::outbox::get(&db, "telegram-update:60:0")
+            .unwrap()
+            .is_some());
     }
 }

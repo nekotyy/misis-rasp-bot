@@ -593,3 +593,212 @@ async fn university_variant_checks_the_active_button_and_target_week() {
         .is_err());
     server.join().unwrap();
 }
+
+#[tokio::test]
+async fn telegram_search_queues_preview_without_changing_subscription() {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 8192];
+        let _ = stream.read(&mut request).unwrap();
+        let body = r#"{"ok":true,"result":[{"update_id":40,"callback_query":{"id":"cb","from":{"id":42},"message":{"chat":{"id":42}},"data":"schedule:find"}},{"update_id":41,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"ИСП-25"}}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let parser =
+        parser::ScheduleParser::new("", "", Duration::from_millis(100), 1, Duration::ZERO).unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,created_at,last_seen_at) VALUES ('telegram',42,'group','group:1','Старая','now','now')", []).unwrap();
+    let snapshot = ScheduleSnapshot {
+        group_name: "ИСП-25".into(),
+        fetched_at: "2026-11-08T12:00:00".into(),
+        days: vec![DaySchedule {
+            date_label: "8 ноября".into(),
+            date_iso: "2026-11-08".into(),
+            week_variant: None,
+            current_week_variant: None,
+            lessons: vec![Lesson {
+                number: 1,
+                subject: "Физика".into(),
+                teacher: "Иванов".into(),
+                classroom: "101".into(),
+            }],
+        }],
+    };
+    misis_rasp_core::database::save_snapshot(
+        &mut db,
+        &misis_rasp_core::database::SnapshotInput {
+            snapshot_type: "current",
+            hash: "h",
+            snapshot: &snapshot,
+            schedule_id: Some(123),
+            group_name: Some("ИСП-25"),
+            source_type: Some("group"),
+            source_key: Some("group:123"),
+            source_title: Some("ИСП-25"),
+            source_url: None,
+            archive_origin: None,
+            archive_dates: None,
+            archive_projected: false,
+            timezone: chrono_tz::UTC,
+            created_at: "now",
+        },
+    )
+    .unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::new(vec![
+        misis_rasp_core::group_catalog::GroupInfo {
+            department_id: 1,
+            department_code: "ИСП".into(),
+            department_name: "Отделение".into(),
+            group_name: "ИСП-25".into(),
+            schedule_id: Some(123),
+            url: "http://127.0.0.1:1/rasp/123".into(),
+        },
+    ]);
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let search = misis_rasp_core::search::SearchCatalog::default();
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let result = misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+        &mut poll,
+        &api,
+        &mut Default::default(),
+        &mut db,
+        &context,
+        Some(&parser),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Processed(2))
+    ));
+    assert!(misis_rasp_core::outbox::get(&db, "telegram-update:41:0")
+        .unwrap()
+        .unwrap()
+        .payload_json
+        .contains("Физика"));
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", 42)
+            .unwrap()
+            .unwrap()
+            .subscription_key
+            .as_deref(),
+        Some("group:1")
+    );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn failed_search_prompt_does_not_leave_input_state() {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for body in [
+            r#"{"ok":true,"result":[{"update_id":50,"callback_query":{"id":"cb","from":{"id":42},"message":{"chat":{"id":42}},"data":"schedule:find"}}]}"#,
+            r#"{"ok":true,"result":[{"update_id":51,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"ИСП-25"}}]}"#,
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let parser =
+        parser::ScheduleParser::new("", "", Duration::from_millis(100), 1, Duration::ZERO).unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,created_at,last_seen_at) VALUES ('telegram',42,'group','group:1','Группа','now','now')",[]).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_search BEFORE INSERT ON delivery_outbox BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::default();
+    let search = misis_rasp_core::search::SearchCatalog::default();
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let mut engine = misis_rasp_core::telegram_engine::TelegramEngine::default();
+    assert!(
+        misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+            &mut poll,
+            &api,
+            &mut engine,
+            &mut db,
+            &context,
+            Some(&parser)
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(poll.next_offset(), None);
+    db.execute_batch("DROP TRIGGER fail_search").unwrap();
+    let result = misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+        &mut poll,
+        &api,
+        &mut engine,
+        &mut db,
+        &context,
+        Some(&parser),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Unsupported {
+            processed: 0,
+            update_id: Some(51)
+        })
+    ));
+    server.join().unwrap();
+}

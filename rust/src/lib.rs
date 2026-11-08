@@ -44,9 +44,12 @@ pub mod calendar;
 pub mod diff;
 pub mod format;
 pub mod parser;
+pub mod search_preview;
 pub mod sources;
 pub mod subgroups;
 pub mod subscription;
+pub mod telegram_search;
+pub mod telegram_subgroup;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserRecord {

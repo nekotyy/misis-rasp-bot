@@ -162,7 +162,7 @@ fn message(chat_id: i64, text: &str, keyboard: Option<Value>) -> BotAction {
         payload,
     }
 }
-fn snapshot_current_week(
+pub(crate) fn snapshot_current_week(
     snapshot: Option<&crate::ScheduleSnapshot>,
     today: chrono::NaiveDate,
 ) -> Option<i64> {

@@ -153,6 +153,134 @@ pub fn format_day(
     result
 }
 
+pub fn format_search_snapshot(
+    title: &str,
+    snapshot: &crate::ScheduleSnapshot,
+    today: chrono::NaiveDate,
+    html: bool,
+) -> String {
+    let safe = |s: &str| if html { escape_html(s) } else { s.to_owned() };
+    let mut lines = vec![format!("Расписание для {}", safe(title)), String::new()];
+    let date = today.to_string();
+    let mut days = snapshot
+        .days
+        .iter()
+        .filter(|day| day.date_iso >= date)
+        .collect::<Vec<_>>();
+    days.sort_by(|a, b| a.date_iso.cmp(&b.date_iso));
+    let mut added = false;
+    for day in days.into_iter().take(3) {
+        if day.lessons.is_empty() {
+            continue;
+        }
+        added = true;
+        if matches!(day.week_variant, Some(1 | 2)) {
+            let mut adjusted = day.clone();
+            adjusted.current_week_variant = snapshot
+                .fetched_at
+                .get(..10)
+                .and_then(|value| chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                .and_then(|fetched| current_week(fetched, today, day.current_week_variant));
+            lines.push(format_day(&adjusted, None, html, today));
+        } else {
+            let label = if day.date_label.is_empty() {
+                &day.date_iso
+            } else {
+                &day.date_label
+            };
+            lines.push(safe(&human_date(label, today.year())));
+            let mut lessons = day.lessons.iter().collect::<Vec<_>>();
+            lessons.sort_by_key(|lesson| lesson.number);
+            for lesson in lessons {
+                lines.push(if html {
+                    format!(
+                        "<b>{}.</b> в <b>{}</b> по <b>{}</b> у <b>{}</b>",
+                        lesson.number,
+                        safe(&lesson.classroom),
+                        safe(&lesson.subject),
+                        safe(&lesson.teacher)
+                    )
+                } else {
+                    format!(
+                        "{}. в {} по {} у {}",
+                        lesson.number, lesson.classroom, lesson.subject, lesson.teacher
+                    )
+                });
+            }
+        }
+        lines.push(String::new());
+    }
+    if !added {
+        lines.push("Пар нет.".into());
+    } else {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+#[cfg(test)]
+mod search_preview_tests {
+    use super::*;
+    #[test]
+    fn limits_preview_to_first_three_dates_and_escapes_html() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        let lesson = crate::Lesson {
+            number: 1,
+            subject: "<физика>".into(),
+            teacher: "Иванов & Петров".into(),
+            classroom: "101".into(),
+        };
+        let day = |date: &str, lessons: Vec<crate::Lesson>| DaySchedule {
+            date_label: date.into(),
+            date_iso: date.into(),
+            week_variant: None,
+            current_week_variant: None,
+            lessons,
+        };
+        let snapshot = crate::ScheduleSnapshot {
+            group_name: "Г".into(),
+            fetched_at: "2026-11-08".into(),
+            days: vec![
+                day("2026-11-11", vec![lesson.clone()]),
+                day("2026-11-08", vec![lesson.clone()]),
+                day("2026-11-07", vec![lesson.clone()]),
+                day("2026-11-09", vec![]),
+                day("2026-11-10", vec![lesson]),
+            ],
+        };
+        let result = format_search_snapshot("<Г>", &snapshot, today, true);
+        assert!(
+            result.contains("&lt;Г&gt;")
+                && result.contains("&lt;физика&gt;")
+                && result.contains("Иванов &amp; Петров")
+        );
+        assert!(result.contains("8 ноября") && result.contains("10 ноября"));
+        assert!(!result.contains("7 ноября") && !result.contains("11 ноября"));
+    }
+    #[test]
+    fn preview_advances_current_week_from_snapshot_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let snapshot = crate::ScheduleSnapshot {
+            group_name: "Г".into(),
+            fetched_at: "2026-11-02T12:00:00".into(),
+            days: vec![DaySchedule {
+                date_label: "2026-11-09".into(),
+                date_iso: "2026-11-09".into(),
+                week_variant: Some(2),
+                current_week_variant: Some(1),
+                lessons: vec![crate::Lesson {
+                    number: 1,
+                    subject: "Физика".into(),
+                    teacher: "Иванов".into(),
+                    classroom: "101".into(),
+                }],
+            }],
+        };
+        assert!(format_search_snapshot("Г", &snapshot, today, true)
+            .contains("Учимся по: <b>Знаменатель</b>"));
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub changed_dates: Vec<String>,
