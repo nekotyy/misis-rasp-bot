@@ -75,6 +75,11 @@ pub struct UserRecord {
     pub university_subgroup: Option<i64>,
 }
 
+pub mod config;
+pub mod database;
+pub mod outbox;
+pub mod web_security;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,3 +106,4 @@ mod tests {
         assert_eq!(normalize_dashes("А—Б–В‑Г−Д-Е"), "А-Б-В-Г-Д-Е");
     }
 }
+pub mod account;

@@ -1,5 +1,5 @@
 x-logging: &default-logging
-  driver: json-file
+  driver: local
   options:
     max-size: "10m"
     max-file: "3"
@@ -128,3 +128,4 @@ services:
 
 volumes:
   rabbitmq-data:
+
