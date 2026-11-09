@@ -116,12 +116,12 @@
 
 | Задание Python | Триггер / условие | Статус |
 | --- | --- | --- |
-| `save_daily_baseline` | ежедневно 00:00 | не выполнено |
-| `save_daily_baseline_fallback` | ежедневно 05:00 | не выполнено |
-| `sync_current_snapshot` | каждый час на 10-й минуте; дополнительно 09–13 в 40 минут | не выполнено |
+| `save_daily_baseline` | ежедневно 00:00 | частично: реализован метод `save_daily_baselines` в `scheduler.rs` |
+| `save_daily_baseline_fallback` | ежедневно 05:00 | частично: поддерживается через `save_daily_baselines` |
+| `sync_current_snapshot` | каждый час на 10-й минуте; дополнительно 09–13 в 40 минут | частично: реализован метод `sync_active_sources` с `apply_and_enqueue` в `scheduler.rs` |
 | `enqueue_or_run_auto_daily_lesson_counter` | 23:20 и 23:50 за текущий день; 01:00 и 05:00 за предыдущий, при включённом счётчике | не выполнено |
 | `send_admin_backup` | интервал из конфигурации, при включённых backup | не выполнено |
-| `enqueue_or_run_db_cleanup` | понедельник 04:30 | не выполнено |
+| `enqueue_or_run_db_cleanup` | понедельник 04:30 | частично: реализован метод `cleanup_old_records` в `scheduler.rs` |
 | `run_system_health_check` | каждые 5 минут | не выполнено |
 | `refresh_group_catalog` | настроенный интервал дней, при наличии каталога | не выполнено |
 | `retry_group_catalog_departments` | каждые 30 минут, при наличии каталога | не выполнено |

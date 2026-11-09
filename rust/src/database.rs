@@ -1071,6 +1071,87 @@ pub fn cleanup_database(
     Ok(deleted_outbox + deleted_updates)
 }
 
+#[derive(Debug, Clone)]
+pub struct SourceRow {
+    pub source_type: String,
+    pub source_key: String,
+    pub source_title: String,
+    pub source_url: String,
+    pub schedule_id: Option<i64>,
+    pub group_name: Option<String>,
+    pub users_count: i64,
+}
+
+pub fn get_active_sources(conn: &Connection) -> rusqlite::Result<Vec<SourceRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_type, source_key, source_title, source_url, schedule_id, group_name, SUM(users_count)
+         FROM (
+             SELECT
+                 COALESCE(subscription_type, '') AS source_type,
+                 COALESCE(subscription_key, '') AS source_key,
+                 COALESCE(subscription_title, '') AS source_title,
+                 COALESCE(subscription_url, '') AS source_url,
+                 schedule_id,
+                 group_name,
+                 COUNT(*) AS users_count
+             FROM users
+             WHERE subscription_key IS NOT NULL
+             GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
+
+             UNION ALL
+
+             SELECT
+                 'audience' AS source_type,
+                 COALESCE(audience_subscription_key, '') AS source_key,
+                 COALESCE(audience_subscription_title, '') AS source_title,
+                 COALESCE(audience_subscription_url, '') AS source_url,
+                 NULL AS schedule_id,
+                 audience_subscription_title AS group_name,
+                 COUNT(*) AS users_count
+             FROM users
+             WHERE audience_subscription_key IS NOT NULL
+             GROUP BY audience_subscription_key, audience_subscription_title, audience_subscription_url
+
+             UNION ALL
+
+             SELECT
+                 COALESCE(subscription_type, '') AS source_type,
+                 COALESCE(subscription_key, '') AS source_key,
+                 COALESCE(subscription_title, '') AS source_title,
+                 COALESCE(subscription_url, '') AS source_url,
+                 schedule_id,
+                 group_name,
+                 COUNT(*) AS users_count
+             FROM account_subscriptions
+             WHERE is_primary = 0 AND subscription_key IS NOT NULL
+             GROUP BY subscription_type, subscription_key, subscription_title, subscription_url, schedule_id, group_name
+         )
+         GROUP BY source_type, source_key, source_title, source_url, schedule_id, group_name
+         ORDER BY source_title"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(SourceRow {
+            source_type: row.get(0)?,
+            source_key: row.get(1)?,
+            source_title: row.get(2)?,
+            source_url: row.get(3)?,
+            schedule_id: row.get(4)?,
+            group_name: row.get(5)?,
+            users_count: row.get(6)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        let r = row?;
+        if !r.source_key.is_empty() && !r.source_title.is_empty() {
+            result.push(r);
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,6 +1487,12 @@ mod tests {
 
         let cleaned = cleanup_database(&db, 7, "2026-11-20T12:00:00").unwrap();
         assert_eq!(cleaned, 0);
+
+        let active_sources = get_active_sources(&db).unwrap();
+        assert_eq!(active_sources.len(), 1);
+        assert_eq!(active_sources[0].source_key, "group:1");
+        assert_eq!(active_sources[0].source_type, "group");
+        assert_eq!(active_sources[0].users_count, 1);
     }
 }
 

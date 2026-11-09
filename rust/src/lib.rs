@@ -112,6 +112,7 @@ mod tests {
 pub mod account;
 pub mod group_catalog;
 pub mod notification;
+pub mod scheduler;
 pub mod search;
 pub mod snapshot_resolver;
 pub mod sync;
