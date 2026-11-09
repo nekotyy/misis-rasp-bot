@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
@@ -28,11 +29,31 @@ pub struct AppState {
     pub settings: Arc<Settings>,
 }
 
+// The Rust admin does not yet implement the Python admin's authentication,
+// session, CSRF and audit protections. Keep every admin handler inaccessible
+// until those protections are implemented and verified together.
+async fn admin_unavailable(_request: Request<axum::body::Body>, _next: Next) -> StatusCode {
+    StatusCode::SERVICE_UNAVAILABLE
+}
+
 pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+
+    let admin = Router::new()
+        .route("/", get(admin_index))
+        .route("/login", get(admin_login_page).post(admin_login_post))
+        .route("/logout", post(admin_logout_post))
+        .route("/api/metrics", get(admin_metrics))
+        .route("/control", get(admin_control_page))
+        .route("/control/broadcast", post(admin_control_broadcast))
+        .route(
+            "/api/admin/schedule/import-json",
+            post(admin_import_schedule_json),
+        )
+        .route_layer(middleware::from_fn(admin_unavailable));
 
     Router::new()
         // Health check
@@ -58,17 +79,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/miniapp/v1/telemetry/session", post(telemetry_session))
         .route("/api/miniapp/v1/telemetry/ping", post(telemetry_ping))
         .route("/api/miniapp/v1/telemetry/event", post(telemetry_event))
-        // Web Admin
-        .route("/", get(admin_index))
-        .route("/login", get(admin_login_page).post(admin_login_post))
-        .route("/logout", post(admin_logout_post))
-        .route("/api/metrics", get(admin_metrics))
-        .route("/control", get(admin_control_page))
-        .route("/control/broadcast", post(admin_control_broadcast))
-        .route(
-            "/api/admin/schedule/import-json",
-            post(admin_import_schedule_json),
-        )
+        .merge(admin)
         .layer(cors)
         .with_state(state)
 }
@@ -946,7 +957,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_login_authenticates_with_pbkdf2() {
+    async fn admin_login_is_disabled_even_with_valid_credentials() {
         let state = test_app_state();
         {
             let db = state.db.lock().await;
@@ -972,7 +983,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         // Неверный пароль
         let app2 = create_router(state.clone());
@@ -989,11 +1000,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response2.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response2.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
-    async fn admin_can_import_schedule_from_json() {
+    async fn admin_import_is_disabled_without_session_protection() {
         let state = test_app_state();
         let app = create_router(state.clone());
 
@@ -1029,6 +1040,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

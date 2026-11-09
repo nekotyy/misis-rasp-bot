@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let now_dt = chrono::Local::now().naive_local();
             let mut db = db_daily.lock().await;
             let _ = sched_daily.save_daily_baselines(&mut db, now_dt).await;
-            let now_str = now_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+            let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
             let _ = sched_daily.cleanup_old_records(&db, 30, &now_str);
         }
     });

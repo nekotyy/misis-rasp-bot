@@ -40,15 +40,12 @@ pub fn normalize_dashes(text: &str) -> String {
 }
 
 pub mod archive;
-pub mod calendar;
-pub mod diff;
+pub mod domain;
+pub use domain::{calendar, diff, sources, subgroups, subscription};
 pub mod format;
 pub mod json_import;
 pub mod parser;
 pub mod search_preview;
-pub mod sources;
-pub mod subgroups;
-pub mod subscription;
 pub mod telegram_search;
 pub mod telegram_subgroup;
 

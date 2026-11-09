@@ -1051,22 +1051,38 @@ pub fn collect_admin_status(conn: &Connection) -> rusqlite::Result<AdminStatusSu
     Ok(summary)
 }
 
+/// `now` is UTC in `%Y-%m-%dT%H:%M:%S` format, matching stored Unix timestamps.
 pub fn cleanup_database(
     conn: &Connection,
     max_age_days: i64,
     now: &str,
 ) -> rusqlite::Result<usize> {
-    let threshold = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S")
-        .map(|dt| dt - chrono::Duration::days(max_age_days))
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
-        .unwrap_or_else(|_| now.to_string());
+    let invalid = || rusqlite::Error::InvalidParameterName("invalid cleanup date or age".into());
+    let age = chrono::Duration::try_days(max_age_days)
+        .filter(|_| max_age_days >= 0)
+        .ok_or_else(invalid)?;
+    let current = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| invalid())?
+        .and_utc();
+    let requested = current.checked_sub_signed(age).ok_or_else(invalid)?;
+    // Never shorten the production retention windows, even when the caller
+    // requests a more aggressive general database cleanup.
+    let outbox_cutoff = crate::outbox::retention_cutoff(current)
+        .ok_or_else(invalid)?
+        .min(requested)
+        .timestamp() as f64;
+    let updates_cutoff = current
+        .checked_sub_signed(chrono::Duration::days(90))
+        .ok_or_else(invalid)?
+        .min(requested)
+        .timestamp() as f64;
     let deleted_outbox = conn.execute(
-        "DELETE FROM delivery_outbox WHERE status IN ('sent', 'failed') AND created_at < ?",
-        [&threshold],
+        "DELETE FROM delivery_outbox WHERE status IN ('sent', 'failed') AND created_at < ? AND lease_until <= ?",
+        [outbox_cutoff, current.timestamp() as f64],
     )?;
     let deleted_updates = conn.execute(
         "DELETE FROM telegram_processed_updates WHERE processed_at < ?",
-        [&threshold],
+        [updates_cutoff],
     )?;
     Ok(deleted_outbox + deleted_updates)
 }

@@ -32,6 +32,17 @@ pub struct AdminFlow {
     pub json_import_drafts: HashMap<i64, crate::json_import::ImportResult>,
 }
 
+fn cleanup_utc(timestamp: f64) -> rusqlite::Result<String> {
+    if !timestamp.is_finite() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "invalid cleanup timestamp".into(),
+        ));
+    }
+    let datetime = chrono::DateTime::from_timestamp(timestamp.floor() as i64, 0)
+        .ok_or_else(|| rusqlite::Error::InvalidParameterName("invalid cleanup timestamp".into()))?;
+    Ok(datetime.format("%Y-%m-%dT%H:%M:%S").to_string())
+}
+
 impl AdminFlow {
     pub fn interested(&self, update: &Value) -> bool {
         let text = update.pointer("/message/text").and_then(Value::as_str);
@@ -181,7 +192,7 @@ impl AdminFlow {
                         None,
                     )]));
                 }
-                let cleaned = cleanup_database(tx, 14, now)?;
+                let cleaned = cleanup_database(tx, 14, &cleanup_utc(context.timestamp)?)?;
                 return Ok(Some(vec![send_message(
                     chat_id,
                     &format!("<b>Очистка базы завершена!</b>\n\nУдалено устаревших записей: <b>{cleaned}</b>."),
@@ -373,7 +384,7 @@ impl AdminFlow {
         }
 
         if action == "cleandb" {
-            let cleaned = cleanup_database(tx, 14, now)?;
+            let cleaned = cleanup_database(tx, 14, &cleanup_utc(context.timestamp)?)?;
             let text = format!(
                 "<b>Очистка базы завершена!</b>\n\nУдалено устаревших записей: <b>{cleaned}</b>."
             );
@@ -969,6 +980,12 @@ fn answer_callback(callback_id: &str, text: Option<&str>, show_alert: bool) -> B
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cleanup_time_uses_utc_and_rejects_invalid_timestamp() {
+        assert_eq!(super::cleanup_utc(0.0).unwrap(), "1970-01-01T00:00:00");
+        assert!(super::cleanup_utc(f64::NAN).is_err());
+        assert!(super::cleanup_utc(f64::INFINITY).is_err());
+    }
     use super::*;
     use crate::telegram_engine::{EngineContext, HandleOutcome, TelegramEngine};
 
