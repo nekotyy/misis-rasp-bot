@@ -10,6 +10,7 @@ pub mod telegram_help;
 pub mod telegram_personalization;
 pub mod telegram_poll;
 pub mod telegram_report;
+pub mod telegram_runtime;
 pub mod telegram_search;
 pub mod telegram_subgroup;
 pub mod telegram_ui;
