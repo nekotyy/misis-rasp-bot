@@ -113,6 +113,15 @@ impl TelegramEngine {
         let Some(user) = actor else {
             return Ok(HandleOutcome::Unsupported);
         };
+        if update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private")
+            && update.pointer("/message/reply_to_message").is_some()
+            && update
+                .pointer("/message/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.starts_with('/'))
+        {
+            return Ok(HandleOutcome::Unsupported);
+        }
         if let Some(id) = reset_user {
             selection.reset_user(id);
             if let Some(search) = search.as_mut() {
@@ -203,6 +212,17 @@ impl TelegramEngine {
                 callback["data"].as_str().unwrap(),
                 &now,
             )?
+        } else if update.get("message").is_some_and(|message| {
+            matches!(
+                message.pointer("/chat/type").and_then(Value::as_str),
+                Some("group" | "supergroup")
+            ) && message
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.starts_with('/'))
+        }) {
+            crate::telegram_ui::register_group_chat(&tx, update, &now)?;
+            vec![]
         } else if let Some(message) = update.get("message").filter(|_| {
             user.subscription_key.as_ref().is_none_or(|s| s.is_empty())
                 || user
@@ -245,6 +265,22 @@ impl TelegramEngine {
                 };
                 actions
             }
+        } else if let Some(message) = update.get("message").filter(|message| {
+            message.pointer("/chat/type").and_then(Value::as_str) == Some("private")
+                && message
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.starts_with('/'))
+        }) {
+            let Some(chat) = message.pointer("/chat/id").and_then(Value::as_i64) else {
+                return Ok(HandleOutcome::Unsupported);
+            };
+            let week =
+                crate::telegram_ui::snapshot_current_week(snapshot.as_ref(), context.now.date());
+            vec![BotAction {
+                method: "sendMessage".into(),
+                payload: serde_json::json!({"chat_id":chat,"text":crate::telegram_ui::welcome_text(Some(&user),week,university),"parse_mode":"HTML","reply_markup":crate::telegram_ui::start_keyboard(Some(&user))}),
+            }]
         } else {
             let Some(actions) = crate::telegram_ui::route_stateful_in_transaction(
                 &tx,
@@ -450,6 +486,15 @@ pub async fn poll_iteration_with_parser(
             data,
             Some("schedule:today" | "schedule:tomorrow" | "schedule:day_after")
         );
+        let generic_private_text = update.pointer("/message/chat/type").and_then(Value::as_str)
+            == Some("private")
+            && update.pointer("/message/reply_to_message").is_none()
+            && update
+                .pointer("/message/text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.starts_with('/'))
+            && !engine.audience.takes_precedence(&update)
+            && !engine.search.interested(&update);
         let needs_snapshot = matches!(
             data,
             Some(
@@ -460,6 +505,7 @@ pub async fn poll_iteration_with_parser(
                     | "menu:subgroup"
             )
         ) || data.is_some_and(|data| data.starts_with("subgroup:"))
+            || generic_private_text
             || (matches!(command, Some("/start" | "/cancel"))
                 && update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private"));
         let actor_id = update
@@ -521,6 +567,7 @@ pub async fn poll_iteration_with_parser(
             .filter(|_| {
                 !already_processed
                     && !private_group_setup
+                    && update.pointer("/message/reply_to_message").is_none()
                     && reset_user_id(&update).is_none()
                     && !engine.audience.takes_precedence(&update)
                     && engine.search.interested(&update)

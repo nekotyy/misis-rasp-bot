@@ -665,6 +665,141 @@ fn non_teacher_cannot_start_audience_subscription() {
 }
 
 #[test]
+fn telegram_app_and_about_keep_configured_url_and_settings_navigation() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    let settings = Settings::from_map(&std::collections::HashMap::from([(
+        "MINIAPP_URL".to_string(),
+        "https://example.test/app".to_string(),
+    )]))
+    .unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+    let app = json!({"update_id":330,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"/app"}});
+    assert!(matches!(
+        engine.handle(&mut db, &app, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let row = misis_rasp_core::outbox::get(&db, "telegram-update:330:0")
+        .unwrap()
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap();
+    assert_eq!(
+        payload["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"],
+        "https://example.test/app"
+    );
+    let about = json!({"update_id":331,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:about"}});
+    assert!(matches!(
+        engine.handle(&mut db, &about, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let row = misis_rasp_core::outbox::get(&db, "telegram-update:331:0")
+        .unwrap()
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap();
+    assert_eq!(row.method, "editMessageText");
+    assert!(payload["text"].as_str().unwrap().contains("О проекте"));
+    assert!(payload["reply_markup"].to_string().contains("menu:start"));
+    assert_eq!(
+        misis_rasp_core::outbox::get(&db, "telegram-update:331:1")
+            .unwrap()
+            .unwrap()
+            .method,
+        "answerCallbackQuery"
+    );
+    for (id, data) in [(332, "settings:about"), (333, "settings:help")] {
+        let update = json!({"update_id":id,"callback_query":{"id":format!("cb{id}"),"from":{"id":42},"data":data}});
+        assert!(matches!(
+            engine.handle(&mut db, &update, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        assert_eq!(
+            misis_rasp_core::outbox::get(&db, &format!("telegram-update:{id}:0"))
+                .unwrap()
+                .unwrap()
+                .method,
+            "answerCallbackQuery"
+        );
+    }
+}
+
+#[test]
+fn ordinary_text_uses_menu_or_ignores_group_chatter_without_consuming_replies() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,group_name,schedule_id,created_at,last_seen_at) VALUES ('telegram',42,'group','group:123','ИСП-25','ИСП-25',123,'now','now')",[]).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+    let private = json!({"update_id":340,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"Привет"}});
+    assert!(matches!(
+        engine.handle(&mut db, &private, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let row = misis_rasp_core::outbox::get(&db, "telegram-update:340:0")
+        .unwrap()
+        .unwrap();
+    assert!(row.payload_json.contains("ИСП-25") && row.payload_json.contains("start:rasp"));
+    let group = json!({"update_id":341,"message":{"chat":{"id":-100,"type":"supergroup","title":"Чат"},"from":{"id":42},"text":"Привет всем"}});
+    assert!(matches!(
+        engine.handle(&mut db, &group, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(misis_rasp_core::outbox::get(&db, "telegram-update:341:0")
+        .unwrap()
+        .is_none());
+    assert!(misis_rasp_core::database::get_user(&db, "telegram", -100)
+        .unwrap()
+        .is_some());
+    let reply = json!({"update_id":342,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"Ответ","reply_to_message":{"message_id":1}}});
+    assert!(matches!(
+        engine.handle(&mut db, &reply, &context).unwrap(),
+        HandleOutcome::Unsupported
+    ));
+    assert!(misis_rasp_core::outbox::get(&db, "telegram-update:342:0")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn returning_to_menu_cancels_audience_input_without_changing_subscription() {
     use misis_rasp_core::{
         config::Settings,
@@ -1823,11 +1958,13 @@ async fn failed_search_prompt_does_not_leave_input_state() {
     .await;
     assert!(matches!(
         result,
-        Ok(misis_rasp_core::telegram_engine::PollOutcome::Unsupported {
-            processed: 0,
-            update_id: Some(51)
-        })
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Processed(1))
     ));
+    let row = misis_rasp_core::outbox::get(&db, "telegram-update:51:0")
+        .unwrap()
+        .unwrap();
+    assert!(row.payload_json.contains("start:rasp"));
+    assert!(!row.payload_json.contains("По запросу"));
     server.join().unwrap();
 }
 

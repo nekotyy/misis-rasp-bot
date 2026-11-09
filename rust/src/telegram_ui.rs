@@ -246,6 +246,13 @@ pub fn route_update_with_config(
         let chat_id = msg.pointer("/chat/id")?.as_i64()?;
         let text = msg.get("text")?.as_str()?;
         let command = text.split_whitespace().next()?.split('@').next()?;
+        if command == "/app" {
+            return Some(vec![message(
+                chat_id,
+                "<b>Расписание пар ОПК</b>\n\nИнтерактивное приложение с расписанием пар и историей изменений доступно прямо внутри Telegram.",
+                Some(json!({"inline_keyboard":[[{"text":"Открыть расписание","web_app":{"url":miniapp_url.trim()}}]]})),
+            )]);
+        }
         if command == "/cancel" {
             if msg.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
                 return Some(vec![]);
@@ -615,6 +622,12 @@ pub fn route_stateful_in_transaction(
                     },
                 ]));
             }
+            if let Some(id) = callback.get("id").and_then(Value::as_str) {
+                return Ok(Some(vec![BotAction {
+                    method: "answerCallbackQuery".into(),
+                    payload: json!({"callback_query_id":id}),
+                }]));
+            }
             return Ok(None);
         }
     }
@@ -626,6 +639,38 @@ pub fn route_stateful_in_transaction(
         Some(id) => crate::database::get_user(tx, "telegram", id)?,
         None => None,
     };
+    if update
+        .pointer("/callback_query/data")
+        .and_then(Value::as_str)
+        == Some("settings:about")
+    {
+        let Some(id) = update.pointer("/callback_query/id").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let ack = BotAction {
+            method: "answerCallbackQuery".into(),
+            payload: json!({"callback_query_id":id}),
+        };
+        let (Some(chat), Some(message_id)) = (
+            update
+                .pointer("/callback_query/message/chat/id")
+                .and_then(Value::as_i64),
+            update
+                .pointer("/callback_query/message/message_id")
+                .and_then(Value::as_i64),
+        ) else {
+            return Ok(Some(vec![ack]));
+        };
+        let text = "<b>О проекте</b>\n\nБот сделан студентом ОИТ, группы ИСП-25-1, в качестве альтернативы официальному боту, который давно не работает. Я не сотрудник колледжа, а просто энтузиаст, который хочет помочь всем получать актуальную информацию о расписании и изменениях. Я не несу никакой ответственности за точность данных, так как получаю их с официального сайта, и не имею возможности оперативно исправлять ошибки в расписании. Если ты заметил неточности, пожалуйста, сообщи об этом администрации колледжа, чтобы они могли исправить информацию на сайте.\n\nПрофиль: <a href=\"https://github.com/nekotyy\">тык</a>\nПроект: <a href=\"https://github.com/nekotyy/misis-rasp-bot\">тык</a>\n\nЕсли понравилось, поставь звездочку на GitHub";
+        let screen = settings_screen(user.as_ref(), miniapp_url);
+        return Ok(Some(vec![
+            BotAction {
+                method: "editMessageText".into(),
+                payload: json!({"chat_id":chat,"message_id":message_id,"text":text,"parse_mode":"HTML","reply_markup":screen.keyboard}),
+            },
+            ack,
+        ]));
+    }
     if matches!(
         update
             .pointer("/callback_query/data")

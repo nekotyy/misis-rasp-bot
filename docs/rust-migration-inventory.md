@@ -21,7 +21,7 @@
 | [`handle_cancel_command`](../src/telegram_bot.py#L2943) | `dispatcher.message(Command('cancel'))` | частично: сбрасывает перенесённые режимы; оставшиеся состояния и удаление контекстных сообщений ещё не перенесены |
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('app_stats'))` | не перенесено |
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('miniapp_stats'))` | не перенесено |
-| [`handle_app_command`](../src/telegram_bot.py#L3140) | `dispatcher.message(Command('app'))` | не перенесено |
+| [`handle_app_command`](../src/telegram_bot.py#L3140) | `dispatcher.message(Command('app'))` | частично: кнопка с настроенным адресом перенесена; нужен сквозной тест в Telegram |
 | [`handle_bugreport_command`](../src/telegram_bot.py#L3155) | `dispatcher.message(Command('bugreport'))` | не перенесено |
 | [`handle_feedback_command`](../src/telegram_bot.py#L3167) | `dispatcher.message(Command('feedback', 'support'))` | не перенесено |
 | [`handle_reply_command`](../src/telegram_bot.py#L3181) | `dispatcher.message(Command('reply'))` | не перенесено |
@@ -142,7 +142,8 @@
 | `settings:clear_group` | Очистить подписку | частично |
 | `settings:help`, `help:*` | Разделы справки и возврат | частично |
 | `settings:personalization`, `settings:pers_set_sticker`, `settings:pers_clear_sticker`, `settings:pers_preview_sticker` | Выбор, удаление и предпросмотр стикера | частично; ошибки предпросмотра ещё не доведены |
-| `settings:about`, `settings:lesson_counters` | Информация о проекте и статистика занятий | не перенесено |
+| `settings:about` | Информация о проекте и навигация настроек | частично: перенесён экран, требуется сквозной тест в Telegram |
+| `settings:lesson_counters` | Статистика занятий | не перенесено |
 | `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | не перенесено |
 | `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | не перенесено |
 | `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | не перенесено |
