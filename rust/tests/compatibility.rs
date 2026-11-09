@@ -802,3 +802,107 @@ async fn failed_search_prompt_does_not_leave_input_state() {
     ));
     server.join().unwrap();
 }
+
+#[tokio::test]
+async fn group_command_checks_telegram_administrator_and_preserves_subscription_on_api_error() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for (i,body) in [r#"{"ok":true,"result":[{"update_id":80,"message":{"chat":{"id":-100,"type":"supergroup","title":"Учебная"},"from":{"id":42},"text":"/group_clear"}}]}"#,r#"{"ok":false,"error_code":503,"description":"unavailable"}"#].into_iter().enumerate() {
+            let (mut stream,_) = listener.accept().unwrap(); let mut buf=[0;8192]; let n=stream.read(&mut buf).unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with(if i==0 {"POST /bottest/getUpdates "} else {"POST /bottest/getChatMember "}));
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,created_at,last_seen_at) VALUES ('telegram',-100,'group','group:123','ИСП-25','now','now')",[]).unwrap();
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::default();
+    let search = misis_rasp_core::search::SearchCatalog::default();
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    assert!(misis_rasp_core::telegram_engine::poll_iteration(
+        &mut poll,
+        &api,
+        &mut Default::default(),
+        &mut db,
+        &context
+    )
+    .await
+    .is_err());
+    assert_eq!(poll.next_offset(), None);
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", -100)
+            .unwrap()
+            .unwrap()
+            .subscription_key
+            .as_deref(),
+        Some("group:123")
+    );
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn telegram_group_admin_check_accepts_only_administrator_or_creator() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for status in ["member", "administrator", "creator"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            assert!(String::from_utf8_lossy(&buf[..n]).starts_with("POST /bottest/getChatMember "));
+            let body = format!(r#"{{"ok":true,"result":{{"status":"{status}"}}}}"#);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    assert!(
+        !misis_rasp_core::telegram_group::check_admin(&api, -100, 42)
+            .await
+            .unwrap()
+    );
+    assert!(misis_rasp_core::telegram_group::check_admin(&api, -100, 42)
+        .await
+        .unwrap());
+    assert!(misis_rasp_core::telegram_group::check_admin(&api, -100, 42)
+        .await
+        .unwrap());
+    server.join().unwrap();
+}

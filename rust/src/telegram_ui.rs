@@ -577,6 +577,33 @@ pub fn route_stateful_in_transaction(
     miniapp_url: &str,
     now: &str,
 ) -> Result<Option<Vec<BotAction>>, Box<dyn std::error::Error>> {
+    if let Some(callback) = update.get("callback_query") {
+        if let Some((text, keyboard)) = callback
+            .get("data")
+            .and_then(Value::as_str)
+            .and_then(crate::telegram_help::screen)
+        {
+            if let (Some(chat), Some(message_id), Some(id)) = (
+                callback.pointer("/message/chat/id").and_then(Value::as_i64),
+                callback
+                    .pointer("/message/message_id")
+                    .and_then(Value::as_i64),
+                callback.get("id").and_then(Value::as_str),
+            ) {
+                return Ok(Some(vec![
+                    BotAction {
+                        method: "editMessageText".into(),
+                        payload: json!({"chat_id":chat,"message_id":message_id,"text":text,"parse_mode":"HTML","reply_markup":keyboard}),
+                    },
+                    BotAction {
+                        method: "answerCallbackQuery".into(),
+                        payload: json!({"callback_query_id":id}),
+                    },
+                ]));
+            }
+            return Ok(None);
+        }
+    }
     let actor_id = update
         .pointer("/callback_query/from/id")
         .or_else(|| update.pointer("/message/from/id"))

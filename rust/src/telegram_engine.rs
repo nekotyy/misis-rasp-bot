@@ -14,6 +14,7 @@ pub enum HandleOutcome {
 pub struct TelegramEngine {
     selection: SelectionFlow,
     search: crate::telegram_search::SearchFlow,
+    group: crate::telegram_group::GroupFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -30,7 +31,7 @@ impl TelegramEngine {
         update: &Value,
         context: &EngineContext<'_>,
     ) -> Result<HandleOutcome, Box<dyn std::error::Error>> {
-        self.handle_with_snapshot(db, update, context, None, None)
+        self.handle_with_snapshot(db, update, context, None, None, None)
     }
     fn handle_with_snapshot(
         &mut self,
@@ -39,6 +40,7 @@ impl TelegramEngine {
         context: &EngineContext<'_>,
         resolved: Option<Option<&crate::ScheduleSnapshot>>,
         override_actions: Option<Vec<BotAction>>,
+        group_access: Option<bool>,
     ) -> Result<HandleOutcome, Box<dyn std::error::Error>> {
         let Some(update_id) = update.get("update_id").and_then(Value::as_i64) else {
             return Ok(HandleOutcome::Unsupported);
@@ -53,7 +55,17 @@ impl TelegramEngine {
             tx.commit()?;
             return Ok(HandleOutcome::Handled);
         }
+        if let Some(actions) = crate::telegram_group::membership_actions(update) {
+            enqueue_actions_in_transaction(&tx, update_id, &actions, context.timestamp)?;
+            tx.execute(
+                "INSERT INTO telegram_processed_updates(update_id,processed_at) VALUES (?,?)",
+                rusqlite::params![update_id, context.timestamp],
+            )?;
+            tx.commit()?;
+            return Ok(HandleOutcome::Handled);
+        }
         let mut selection = self.selection.clone();
+        let mut group = self.group.interested(update).then(|| self.group.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -102,6 +114,11 @@ impl TelegramEngine {
                 .is_some();
         let callback = update.get("callback_query");
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) = match group.as_mut() {
+            Some(group) => group.handle(&tx, update, group_access, context, &now)?,
+            None => None,
+        } {
             actions
         } else if let Some(actions) =
             crate::telegram_subgroup::handle(&tx, update, &user, snapshot.as_ref(), &now)?
@@ -190,6 +207,9 @@ impl TelegramEngine {
         )?;
         tx.commit()?;
         self.selection = selection;
+        if let Some(group) = group {
+            self.group = group;
+        }
         Ok(HandleOutcome::Handled)
     }
 }
@@ -375,7 +395,7 @@ pub async fn poll_iteration_with_parser(
             .and_then(Value::as_i64);
         let is_week = data.is_some_and(|s| s.starts_with("schedule:week:"));
         let already_processed = match update.get("update_id").and_then(Value::as_i64) {
-            Some(id) if parser.is_some() => db
+            Some(id) => db
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM telegram_processed_updates WHERE update_id=?)",
                     [id],
@@ -401,8 +421,23 @@ pub async fn poll_iteration_with_parser(
         } else {
             None
         };
+        let private_group_setup = crate::telegram_group::needs_bot_identity(&update);
+        let private_setup_actions = if private_group_setup && !already_processed {
+            let bot = api
+                .send("telegram", "getMe", &serde_json::json!({}))
+                .await
+                .map_err(PollError::Transport)?;
+            crate::telegram_group::private_setup_actions(
+                &update,
+                bot.get("username").and_then(Value::as_str).unwrap_or("bot"),
+            )
+        } else {
+            None
+        };
         let mut next_search = parser
-            .filter(|_| !already_processed && engine.search.interested(&update))
+            .filter(|_| {
+                !already_processed && !private_group_setup && engine.search.interested(&update)
+            })
             .map(|_| engine.search.clone());
         let search_actions = if let (Some(parser), Some(search)) = (parser, next_search.as_mut()) {
             search
@@ -427,13 +462,26 @@ pub async fn poll_iteration_with_parser(
         } else {
             None
         };
+        let group_access = if !already_processed {
+            match engine.group.requires_authorization(&update) {
+                Some((chat, actor)) => Some(
+                    crate::telegram_group::check_admin(api, chat, actor)
+                        .await
+                        .map_err(PollError::Transport)?,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
         match engine
             .handle_with_snapshot(
                 db,
                 &update,
                 context,
                 resolved.as_ref().map(Option::as_ref),
-                search_actions.or(week_actions),
+                private_setup_actions.or(search_actions).or(week_actions),
+                group_access,
             )
             .map_err(PollError::Handler)?
         {
@@ -657,6 +705,81 @@ mod week_tests {
             .unwrap()
             .contains("Не удалось"));
         assert_eq!(actions[1].method, "answerCallbackQuery");
+    }
+}
+
+#[cfg(test)]
+mod help_integration_tests {
+    use super::*;
+    #[test]
+    fn help_callback_queues_navigation_and_acknowledgement() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+        let settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        let groups = GroupCatalog::default();
+        let search = SearchCatalog::default();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            timestamp: 100.0,
+        };
+        let update = serde_json::json!({"update_id":95,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:help"}});
+        assert!(matches!(
+            TelegramEngine::default()
+                .handle(&mut db, &update, &context)
+                .unwrap(),
+            HandleOutcome::Handled
+        ));
+        assert!(crate::outbox::get(&db, "telegram-update:95:0")
+            .unwrap()
+            .unwrap()
+            .payload_json
+            .contains("help:group_setup"));
+        assert!(crate::outbox::get(&db, "telegram-update:95:1")
+            .unwrap()
+            .is_some());
+    }
+}
+
+#[cfg(test)]
+mod membership_integration_tests {
+    use super::*;
+    #[test]
+    fn bot_added_welcome_is_queued_once() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+        let settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        let groups = GroupCatalog::default();
+        let search = SearchCatalog::default();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            now: chrono::NaiveDate::from_ymd_opt(2026, 11, 8)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            timestamp: 100.0,
+        };
+        let update = serde_json::json!({"update_id":90,"my_chat_member":{"chat":{"id":-100},"old_chat_member":{"status":"left"},"new_chat_member":{"status":"member"}}});
+        let mut engine = TelegramEngine::default();
+        assert!(matches!(
+            engine.handle(&mut db, &update, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        assert!(matches!(
+            engine.handle(&mut db, &update, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let count:i64=db.query_row("SELECT count(*) FROM delivery_outbox WHERE delivery_id LIKE 'telegram-update:90:%'",[],|r|r.get(0)).unwrap();
+        assert_eq!(count, 1);
     }
 }
 
