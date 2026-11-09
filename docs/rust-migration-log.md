@@ -134,7 +134,7 @@
 - **Зачем:** перенести бэкенд Telegram/VK Mini App и веб-интерфейс конфигуратора на высокопроизводительный стек Rust с сохранением безопасности и совместимости со схемой БД.
 - **Проверки:** Rust `cargo test --locked` — 94 unit и 33 integration теста успешно (всего 127 тестов в `rust/`); Clippy и `cargo fmt` без замечаний. Python: `ruff check` и `compileall` успешно.
 - **Осталось:** CLI-бинарник `main.rs` (демон объединения Telegram polling, VK polling, планировщика и веб-сервера), OCR-модуль, Dockerfile.
-- **Коммит:** готовится к отправке.
+- **Коммит:** `830c83e`, отправлен в `codex/rust-rewrite`.
 
 ## Ранее выполненные участки в `codex/rust-rewrite`
 
