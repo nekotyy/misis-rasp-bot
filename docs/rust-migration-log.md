@@ -190,7 +190,7 @@
   - В `.github/workflows/ci-cd.yml` добавлен джоб `rust-ci`, выполняющий `cargo fmt --check`, `cargo clippy` и `cargo test --locked`.
 - **Зачем:** обеспечить полную автоматизацию проверок в CI/CD и готовность к развертыванию на целевом VPS (1 vCPU, 1 ГБ RAM, 10 ГБ NVMe) с минимальным потреблением ресурсов.
 - **Проверки:** `cargo fmt --check`, `cargo clippy`, `cargo test` (133 теста), Python `ruff` и `compileall`, `docker compose config` пройдены успешно.
-- **Коммит:** готовится к отправке.
+- **Коммит:** `f9daee5`, отправлен в `codex/rust-rewrite`.
 
 ## Ранее выполненные участки в `codex/rust-rewrite`
 
