@@ -446,6 +446,10 @@ pub async fn poll_iteration_with_parser(
             .and_then(Value::as_str)
             .and_then(|text| text.split_whitespace().next())
             .and_then(|text| text.split('@').next());
+        let schedule_request = matches!(
+            data,
+            Some("schedule:today" | "schedule:tomorrow" | "schedule:day_after")
+        );
         let needs_snapshot = matches!(
             data,
             Some(
@@ -480,12 +484,22 @@ pub async fn poll_iteration_with_parser(
             let user = crate::database::get_user(db, "telegram", actor_id)
                 .map_err(|err| PollError::Handler(Box::new(err)))?;
             match user {
-                Some(user) => Some(
-                    crate::snapshot_resolver::resolve(db, parser, &user, context.now)
-                        .await
-                        .map_err(PollError::Handler)?,
-                ),
-                None => None,
+                Some(user)
+                    if schedule_request
+                        || user.schedule_id.is_some_and(|id| id < 0)
+                        || user
+                            .subscription_url
+                            .as_deref()
+                            .and_then(crate::sources::university_kind)
+                            .is_some() =>
+                {
+                    Some(
+                        crate::snapshot_resolver::resolve(db, parser, &user, context.now)
+                            .await
+                            .map_err(PollError::Handler)?,
+                    )
+                }
+                _ => None,
             }
         } else {
             None

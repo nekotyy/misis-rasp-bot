@@ -1372,6 +1372,203 @@ async fn telegram_fetches_missing_schedule_before_queuing_response() {
 }
 
 #[tokio::test]
+async fn college_menu_navigation_does_not_fetch_schedule_without_cache() {
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 8192];
+        let n = stream.read(&mut buf).unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("POST /bottest/getUpdates "));
+        let body = r#"{"ok":true,"result":[{"update_id":310,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"/start"}},{"update_id":311,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"menu:start"}},{"update_id":312,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"/cancel"}}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut extra = false;
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    extra = true;
+                    let mut request = [0; 8192];
+                    let _ = stream.read(&mut request);
+                    let body = "<div id='titleF'>Group</div>";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(err) => panic!("{err}"),
+            }
+        }
+        extra
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let parser = parser::ScheduleParser::new(
+        &format!("{base}/rasp"),
+        "",
+        Duration::from_secs(2),
+        1,
+        Duration::ZERO,
+    )
+    .unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,group_name,schedule_id,created_at,last_seen_at) VALUES ('telegram',42,'group','group:123','ИСП-25','ИСП-25',123,'now','now')",[]).unwrap();
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::default();
+    let search = misis_rasp_core::search::SearchCatalog::default();
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let result = misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+        &mut poll,
+        &api,
+        &mut Default::default(),
+        &mut db,
+        &context,
+        Some(&parser),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Processed(3))
+    ));
+    assert!(
+        !server.join().unwrap(),
+        "Открытие меню не должно запрашивать расписание колледжа"
+    );
+}
+
+#[tokio::test]
+async fn university_start_still_fetches_current_week_without_cache() {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for i in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let body = if i == 0 {
+                assert!(request.starts_with("POST /bottest/getUpdates "));
+                r#"{"ok":true,"result":[{"update_id":320,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"/start"}}]}"#.to_string()
+            } else {
+                assert!(request.starts_with(if i == 1 {
+                    "GET /group/123 "
+                } else {
+                    "GET /group/123/2 "
+                }));
+                let weekdays = [
+                    "Понедельник",
+                    "Вторник",
+                    "Среда",
+                    "Четверг",
+                    "Пятница",
+                    "Суббота",
+                    "Воскресенье",
+                ];
+                let rows=weekdays.iter().map(|day|format!(r#"<tr><th class="table-weekdays">{day}</th><td class="table-empty">—</td></tr>"#)).collect::<String>();
+                let shown = if i == 1 {
+                    "числителю"
+                } else {
+                    "знаменателю"
+                };
+                format!(
+                    r#"<a id="title-value">Расписание для Группа</a><div id="schedule-title"><button class="search-button-active" onclick="open('/group/123/{i}')"></button><div class="misc-schedule"><span>На этой неделе учимся по числителю (показано по {shown})</span></div></div><table id="schedule-table"><tr><th><span class="table-lesson-num">1</span></th></tr>{rows}</table>"#
+                )
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let parser =
+        parser::ScheduleParser::new("", &base, Duration::from_secs(2), 1, Duration::ZERO).unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,group_name,schedule_id,created_at,last_seen_at) VALUES ('telegram',42,'group','group:-123','Группа','Группа',-123,'now','now')",[]).unwrap();
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::default();
+    let search = misis_rasp_core::search::SearchCatalog::default();
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let result = misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+        &mut poll,
+        &api,
+        &mut Default::default(),
+        &mut db,
+        &context,
+        Some(&parser),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Processed(1))
+    ));
+    assert!(misis_rasp_core::outbox::get(&db, "telegram-update:320:0")
+        .unwrap()
+        .unwrap()
+        .payload_json
+        .contains("Числитель"));
+    server.join().unwrap();
+}
+
+#[tokio::test]
 async fn university_variant_checks_the_active_button_and_target_week() {
     use std::io::{Read, Write};
     use std::time::Duration;
