@@ -50,6 +50,12 @@ fn private_start(update: &Value) -> bool {
             == Some("/start")
 }
 impl PersonalizationFlow {
+    pub fn has_user(&self, user_id: i64) -> bool {
+        self.waiting.contains(&user_id)
+    }
+    pub fn reset_user(&mut self, user_id: i64) {
+        self.waiting.remove(&user_id);
+    }
     pub fn interested(&self, update: &Value) -> bool {
         if let Some(callback) = update.get("callback_query") {
             let data = callback.get("data").and_then(Value::as_str).unwrap_or("");

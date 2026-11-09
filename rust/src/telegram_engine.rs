@@ -26,6 +26,30 @@ pub struct EngineContext<'a> {
     pub now: chrono::NaiveDateTime,
     pub timestamp: f64,
 }
+fn reset_user_id(update: &Value) -> Option<i64> {
+    if update
+        .pointer("/callback_query/data")
+        .and_then(Value::as_str)
+        == Some("menu:start")
+    {
+        return update
+            .pointer("/callback_query/from/id")
+            .and_then(Value::as_i64);
+    }
+    if update.pointer("/message/chat/type").and_then(Value::as_str) != Some("private") {
+        return None;
+    }
+    let command = update
+        .pointer("/message/text")
+        .and_then(Value::as_str)
+        .and_then(|text| text.split_whitespace().next())
+        .and_then(|command| command.split('@').next());
+    if matches!(command, Some("/start" | "/cancel")) {
+        update.pointer("/message/from/id").and_then(Value::as_i64)
+    } else {
+        None
+    }
+}
 impl TelegramEngine {
     pub fn handle(
         &mut self,
@@ -66,16 +90,18 @@ impl TelegramEngine {
             tx.commit()?;
             return Ok(HandleOutcome::Handled);
         }
+        let reset_user = reset_user_id(update);
         let mut selection = self.selection.clone();
+        let mut search = reset_user
+            .filter(|id| self.search.has_user(*id))
+            .map(|_| self.search.clone());
         let mut group = self.group.interested(update).then(|| self.group.clone());
-        let mut personalization = self
-            .personalization
-            .interested(update)
-            .then(|| self.personalization.clone());
-        let mut audience = self
-            .audience
-            .interested(update)
-            .then(|| self.audience.clone());
+        let mut personalization = (self.personalization.interested(update)
+            || reset_user.is_some_and(|id| self.personalization.has_user(id)))
+        .then(|| self.personalization.clone());
+        let mut audience = (self.audience.interested(update)
+            || reset_user.is_some_and(|id| self.audience.has_user(id)))
+        .then(|| self.audience.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -87,6 +113,18 @@ impl TelegramEngine {
         let Some(user) = actor else {
             return Ok(HandleOutcome::Unsupported);
         };
+        if let Some(id) = reset_user {
+            selection.reset_user(id);
+            if let Some(search) = search.as_mut() {
+                search.reset_user(id);
+            }
+            if let Some(personalization) = personalization.as_mut() {
+                personalization.reset_user(id);
+            }
+            if let Some(audience) = audience.as_mut() {
+                audience.reset_user(id);
+            }
+        }
         let group_start = update
             .pointer("/message/chat/type")
             .and_then(Value::as_str)
@@ -229,6 +267,9 @@ impl TelegramEngine {
         )?;
         tx.commit()?;
         self.selection = selection;
+        if let Some(search) = search {
+            self.search = search;
+        }
         if let Some(group) = group {
             self.group = group;
         }
@@ -415,7 +456,7 @@ pub async fn poll_iteration_with_parser(
                     | "menu:subgroup"
             )
         ) || data.is_some_and(|data| data.starts_with("subgroup:"))
-            || (command == Some("/start")
+            || (matches!(command, Some("/start" | "/cancel"))
                 && update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private"));
         let actor_id = update
             .pointer("/callback_query/from/id")
@@ -466,6 +507,7 @@ pub async fn poll_iteration_with_parser(
             .filter(|_| {
                 !already_processed
                     && !private_group_setup
+                    && reset_user_id(&update).is_none()
                     && !engine.audience.takes_precedence(&update)
                     && engine.search.interested(&update)
             })

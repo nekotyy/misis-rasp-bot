@@ -18,7 +18,7 @@
 | [`process_successful_payment`](../src/telegram_bot.py#L2869) | `dispatcher.message(F.successful_payment)` | не перенесено |
 | [`handle_settings_command`](../src/telegram_bot.py#L2914) | `dispatcher.message(Command('settings'))` | частично |
 | [`handle_rasp_command`](../src/telegram_bot.py#L2929) | `dispatcher.message(Command('rasp'))` | частично |
-| [`handle_cancel_command`](../src/telegram_bot.py#L2943) | `dispatcher.message(Command('cancel'))` | не перенесено |
+| [`handle_cancel_command`](../src/telegram_bot.py#L2943) | `dispatcher.message(Command('cancel'))` | частично: сбрасывает перенесённые режимы; оставшиеся состояния и удаление контекстных сообщений ещё не перенесены |
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('app_stats'))` | не перенесено |
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('miniapp_stats'))` | не перенесено |
 | [`handle_app_command`](../src/telegram_bot.py#L3140) | `dispatcher.message(Command('app'))` | не перенесено |
@@ -126,6 +126,33 @@
 | `refresh_group_catalog` | настроенный интервал дней, при наличии каталога | не выполнено |
 | `retry_group_catalog_departments` | каждые 30 минут, при наличии каталога | не выполнено |
 | `promote_pending_teacher_subscribers` | каждые 30 минут, при наличии поискового каталога | не выполнено |
+
+## Telegram: ветви внутри широких обработчиков
+
+Наличие отдельной Rust-ветви не означает полного совпадения обработки ошибок, очистки сообщений или интеграции с реальным ботом. Поэтому даже перенесённые ниже действия обозначены как **частично** до полного сквозного теста.
+
+| Префикс и действие | Поведение | Статус |
+| --- | --- | --- |
+| `schedule:today`, `schedule:tomorrow`, `schedule:day_after` | Показать расписание выбранного дня | частично |
+| `schedule:week:<date>:<variant>` | Выбрать актуальную неделю, числитель или знаменатель | частично |
+| `schedule:bells` | Показать расписание звонков | частично |
+| `schedule:find` | Поиск группы, преподавателя или кабинета | частично |
+| `settings:toggle_notifications` | Включить или отключить уведомления | частично |
+| `settings:audience_setup`, `settings:audience_clear` | Выбрать или отвязать кабинет преподавателя | частично |
+| `settings:clear_group` | Очистить подписку | частично |
+| `settings:help`, `help:*` | Разделы справки и возврат | частично |
+| `settings:personalization`, `settings:pers_set_sticker`, `settings:pers_clear_sticker`, `settings:pers_preview_sticker` | Выбор, удаление и предпросмотр стикера | частично; ошибки предпросмотра ещё не доведены |
+| `settings:about`, `settings:lesson_counters` | Информация о проекте и статистика занятий | не перенесено |
+| `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | не перенесено |
+| `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | не перенесено |
+| `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | не перенесено |
+| `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | не перенесено |
+| `admin:import_lessons*`, `admin:ocr_*` | Импорт занятий и OCR-диалоги | не перенесено |
+| `admin:lesson_*`, `editor:toggle:*` | Добавление, редактирование и удаление занятий, права редактора | не перенесено |
+| `admin:status`, `admin:daily_errors`, `admin:gemini_status`, `admin:users*`, `admin:editors` | Мониторинг, ошибки, Gemini, пользователи и редакторы | не перенесено |
+| `admin:last_change`, `admin:group_info`, `admin:course_stats`, `admin:miniapp_stats`, `admin:back`, `admin:close` | История, сведения и статистика, навигация админки | не перенесено |
+
+Здесь перечислены основные явно обнаруженные ветви; вложенные фильтры, текстовые состояния и варианты внутри `admin:*` и VK по-прежнему нужно сверять с полным исходным кодом и тестами.
 
 ## Запуск, брокер, OCR и фоновые сервисы
 

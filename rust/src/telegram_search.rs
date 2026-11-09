@@ -38,6 +38,14 @@ fn prompt(chat: i64) -> BotAction {
     message(chat, "<b>Поиск расписания</b>\n\nПоиск осуществляется по группам, преподавателям и аудиториям!\n\nНапиши группу, фамилию преподавателя или аудиторию.", Some(json!({"inline_keyboard":[[{"text":"Назад","callback_data":"menu:start"}]]})))
 }
 impl SearchFlow {
+    pub fn has_user(&self, user_id: i64) -> bool {
+        self.pending.iter().any(|(_, id)| *id == user_id)
+            || self.choices.keys().any(|(_, id)| *id == user_id)
+    }
+    pub fn reset_user(&mut self, user_id: i64) {
+        self.pending.retain(|(_, id)| *id != user_id);
+        self.choices.retain(|(_, id), _| *id != user_id);
+    }
     pub fn interested(&self, update: &Value) -> bool {
         if let Some(callback) = update.get("callback_query") {
             let data = callback.get("data").and_then(Value::as_str).unwrap_or("");

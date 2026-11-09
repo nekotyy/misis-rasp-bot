@@ -246,6 +246,20 @@ pub fn route_update_with_config(
         let chat_id = msg.pointer("/chat/id")?.as_i64()?;
         let text = msg.get("text")?.as_str()?;
         let command = text.split_whitespace().next()?.split('@').next()?;
+        if command == "/cancel" {
+            if msg.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
+                return Some(vec![]);
+            }
+            return Some(vec![message(
+                chat_id,
+                &welcome_text(
+                    user,
+                    snapshot_current_week(snapshot, today),
+                    university_source,
+                ),
+                Some(start_keyboard(user)),
+            )]);
+        }
         if command == "/settings" {
             if msg.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
                 return Some(vec![]);
@@ -826,6 +840,9 @@ pub struct SelectionRequest<'a> {
     pub now: &'a str,
 }
 impl SelectionFlow {
+    pub fn reset_user(&mut self, user_id: i64) {
+        self.choices.retain(|(_, id), _| *id != user_id);
+    }
     pub fn input(
         &mut self,
         db: &mut rusqlite::Connection,

@@ -29,6 +29,12 @@ fn private_start(update: &Value) -> bool {
             == Some("/start")
 }
 impl AudienceFlow {
+    pub fn has_user(&self, user_id: i64) -> bool {
+        self.waiting.contains(&user_id)
+    }
+    pub fn reset_user(&mut self, user_id: i64) {
+        self.waiting.remove(&user_id);
+    }
     pub fn takes_precedence(&self, update: &Value) -> bool {
         let Some(user) = update.pointer("/message/from/id").and_then(Value::as_i64) else {
             return false;
