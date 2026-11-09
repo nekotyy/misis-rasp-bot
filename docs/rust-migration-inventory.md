@@ -11,16 +11,16 @@
 | [`handle_teacher_choice`](../src/telegram_bot.py#L2332) | `dispatcher.callback_query(F.data.startswith('teacher:'))` | частично |
 | [`handle_start`](../src/telegram_bot.py#L2684) | `dispatcher.message(CommandStart())` | частично |
 | [`handle_sticker_message`](../src/telegram_bot.py#L2728) | `dispatcher.message(F.sticker)` | частично: сохранение стикера при активном выборе перенесено; нужен полный сквозной тест и сверка обработки ошибок |
-| [`handle_donate_command`](../src/telegram_bot.py#L2744) | `dispatcher.message(Command('donate'))` | не перенесено |
+| [`handle_donate_command`](../src/telegram_bot.py#L2744) | `dispatcher.message(Command('donate'))` | частично: перенесена команда /donate, инлайн-клавиатура сумм и диалог ввода произвольного количества звезд |
 | [`handle_cleandb_command`](../src/telegram_bot.py#L2767) | `dispatcher.message(Command('cleandb'))` | не перенесено |
-| [`handle_dnremove_command`](../src/telegram_bot.py#L2782) | `dispatcher.message(Command('dnremove'))` | не перенесено |
-| [`process_pre_checkout`](../src/telegram_bot.py#L2865) | `dispatcher.pre_checkout_query()` | не перенесено |
-| [`process_successful_payment`](../src/telegram_bot.py#L2869) | `dispatcher.message(F.successful_payment)` | не перенесено |
+| [`handle_dnremove_command`](../src/telegram_bot.py#L2782) | `dispatcher.message(Command('dnremove'))` | частично: перенесена админская команда /dnremove, вызов refundStarPayment и отметка возврата в БД |
+| [`process_pre_checkout`](../src/telegram_bot.py#L2865) | `dispatcher.pre_checkout_query()` | частично: перенесен ответ answerPreCheckoutQuery(ok=true) |
+| [`process_successful_payment`](../src/telegram_bot.py#L2869) | `dispatcher.message(F.successful_payment)` | частично: перенесена запись транзакции в star_donations и благодарственное сообщение |
 | [`handle_settings_command`](../src/telegram_bot.py#L2914) | `dispatcher.message(Command('settings'))` | частично |
 | [`handle_rasp_command`](../src/telegram_bot.py#L2929) | `dispatcher.message(Command('rasp'))` | частично |
 | [`handle_cancel_command`](../src/telegram_bot.py#L2943) | `dispatcher.message(Command('cancel'))` | частично: сбрасывает перенесённые режимы; оставшиеся состояния и удаление контекстных сообщений ещё не перенесены |
-| [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('app_stats'))` | не перенесено |
-| [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('miniapp_stats'))` | не перенесено |
+| [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('app_stats'))` | частично: перенесена агрегация статистики Mini App и генерация отчета для администраторов |
+| [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('miniapp_stats'))` | частично: перенесена агрегация статистики Mini App и генерация отчета для администраторов |
 | [`handle_app_command`](../src/telegram_bot.py#L3140) | `dispatcher.message(Command('app'))` | частично: кнопка с настроенным адресом перенесена; нужен сквозной тест в Telegram |
 | [`handle_bugreport_command`](../src/telegram_bot.py#L3155) | `dispatcher.message(Command('bugreport'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
 | [`handle_feedback_command`](../src/telegram_bot.py#L3167) | `dispatcher.message(Command('feedback', 'support'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
@@ -41,7 +41,7 @@
 | [`handle_help_query`](../src/telegram_bot.py#L3616) | `dispatcher.callback_query(F.data.startswith('help:'))` | частично |
 | [`handle_bot_added_to_chat`](../src/telegram_bot.py#L3639) | `dispatcher.my_chat_member()` | частично |
 | [`handle_startgroup_command`](../src/telegram_bot.py#L3659) | `dispatcher.message(F.text.func(is_group_setup_command))` | частично |
-| [`handle_donate_callback`](../src/telegram_bot.py#L3695) | `dispatcher.callback_query(F.data.startswith('donate:'))` | не перенесено |
+| [`handle_donate_callback`](../src/telegram_bot.py#L3695) | `dispatcher.callback_query(F.data.startswith('donate:'))` | частично: обработка donate:stars:*, donate:stars:custom и donate:stars:cancel |
 | [`handle_admin_callback`](../src/telegram_bot.py#L3734) | `dispatcher.callback_query(F.data.startswith('admin:'))` | не перенесено |
 | [`handle_editor_toggle`](../src/telegram_bot.py#L4637) | `dispatcher.callback_query(F.data.startswith('editor:toggle:'))` | не перенесено |
 | [`handle_admin_ocr_photo`](../src/telegram_bot.py#L4657) | `dispatcher.message(F.photo \| F.document)` | не перенесено |
@@ -143,9 +143,9 @@
 | `settings:help`, `help:*` | Разделы справки и возврат | частично |
 | `settings:personalization`, `settings:pers_set_sticker`, `settings:pers_clear_sticker`, `settings:pers_preview_sticker` | Выбор, удаление и предпросмотр стикера | частично; ошибки предпросмотра ещё не доведены |
 | `settings:about` | Информация о проекте и навигация настроек | частично: перенесён экран, требуется сквозной тест в Telegram |
-| `settings:lesson_counters` | Статистика занятий | не перенесено |
+| `settings:lesson_counters` | Статистика занятий | частично: перенесён экран счетчиков занятий |
 | `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | частично: перенесён ввод черновика, подтверждение, отправка и ответы админа; требуется сквозной тест в Telegram |
-| `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | не перенесено |
+| `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | частично: перенесены выбор суммы, инвойс, pre_checkout и successful_payment |
 | `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | не перенесено |
 | `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | не перенесено |
 | `admin:import_lessons*`, `admin:ocr_*` | Импорт занятий и OCR-диалоги | не перенесено |

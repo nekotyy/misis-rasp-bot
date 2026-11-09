@@ -18,6 +18,7 @@ pub struct TelegramEngine {
     personalization: crate::telegram_personalization::PersonalizationFlow,
     audience: crate::telegram_audience::AudienceFlow,
     report: crate::telegram_report::ReportFlow,
+    donate: crate::telegram_donate::DonateFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -106,6 +107,9 @@ impl TelegramEngine {
         let mut report = (self.report.interested(update)
             || reset_user.is_some_and(|id| self.report.has_user(id)))
         .then(|| self.report.clone());
+        let mut donate = (self.donate.interested(update)
+            || reset_user.is_some_and(|id| self.donate.has_user(id)))
+        .then(|| self.donate.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -130,6 +134,9 @@ impl TelegramEngine {
             }
             if let Some(report) = report.as_mut() {
                 report.reset_user(id);
+            }
+            if let Some(donate) = donate.as_mut() {
+                donate.reset_user(id);
             }
         }
         let group_start = update
@@ -180,7 +187,13 @@ impl TelegramEngine {
             Some(flow) => flow.handle(&tx, update, &user, context, &now)?,
             None => None,
         };
+        let donate_actions = match donate.as_mut() {
+            Some(flow) => flow.handle(&tx, update, &user, context, &now)?,
+            None => None,
+        };
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) = donate_actions {
             actions
         } else if let Some(actions) = report_actions {
             actions
@@ -324,6 +337,9 @@ impl TelegramEngine {
         }
         if let Some(report) = report {
             self.report = report;
+        }
+        if let Some(donate) = donate {
+            self.donate = donate;
         }
         Ok(HandleOutcome::Handled)
     }
@@ -505,6 +521,7 @@ pub async fn poll_iteration_with_parser(
                 .is_some_and(|text| !text.starts_with('/'))
             && !engine.audience.takes_precedence(&update)
             && !engine.report.takes_precedence(&update)
+            && !engine.donate.takes_precedence(&update)
             && !engine.search.interested(&update);
         let needs_snapshot = matches!(
             data,
@@ -582,6 +599,7 @@ pub async fn poll_iteration_with_parser(
                     && reset_user_id(&update).is_none()
                     && !engine.audience.takes_precedence(&update)
                     && !engine.report.takes_precedence(&update)
+                    && !engine.donate.takes_precedence(&update)
                     && engine.search.interested(&update)
             })
             .map(|_| engine.search.clone());

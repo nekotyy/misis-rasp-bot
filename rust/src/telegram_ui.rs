@@ -452,7 +452,9 @@ pub fn register_actor(
 ) -> rusqlite::Result<Option<UserRecord>> {
     let actor = update
         .pointer("/message/from")
-        .or_else(|| update.pointer("/callback_query/from"));
+        .or_else(|| update.pointer("/callback_query/from"))
+        .or_else(|| update.pointer("/pre_checkout_query/from"))
+        .or_else(|| update.pointer("/my_chat_member/from"));
     let Some(actor) = actor else {
         return Ok(None);
     };

@@ -745,6 +745,212 @@ pub fn get_latest_open_feedback(
     .optional()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StarDonation {
+    pub id: i64,
+    pub user_id: i64,
+    pub username: Option<String>,
+    pub full_name: Option<String>,
+    pub stars: i64,
+    pub charge_id: String,
+    pub refunded: bool,
+    pub created_at: String,
+    pub refunded_at: Option<String>,
+}
+
+pub fn record_star_donation(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: i64,
+    username: Option<&str>,
+    full_name: Option<&str>,
+    stars: i64,
+    charge_id: &str,
+    now: &str,
+) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO star_donations (user_id, username, full_name, stars, charge_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        rusqlite::params![user_id, username, full_name, stars, charge_id, now],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+pub fn get_star_donation(conn: &Connection, query: &str) -> rusqlite::Result<Option<StarDonation>> {
+    let raw = query.trim();
+    if let Ok(id) = raw.parse::<i64>() {
+        conn.query_row(
+            "SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at FROM star_donations WHERE id = ? OR charge_id = ?",
+            rusqlite::params![id, raw],
+            |row| {
+                Ok(StarDonation {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    username: row.get(2)?,
+                    full_name: row.get(3)?,
+                    stars: row.get(4)?,
+                    charge_id: row.get(5)?,
+                    refunded: row.get::<_, i64>(6)? != 0,
+                    created_at: row.get(7)?,
+                    refunded_at: row.get(8)?,
+                })
+            },
+        )
+        .optional()
+    } else {
+        conn.query_row(
+            "SELECT id, user_id, username, full_name, stars, charge_id, refunded, created_at, refunded_at FROM star_donations WHERE charge_id = ?",
+            rusqlite::params![raw],
+            |row| {
+                Ok(StarDonation {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    username: row.get(2)?,
+                    full_name: row.get(3)?,
+                    stars: row.get(4)?,
+                    charge_id: row.get(5)?,
+                    refunded: row.get::<_, i64>(6)? != 0,
+                    created_at: row.get(7)?,
+                    refunded_at: row.get(8)?,
+                })
+            },
+        )
+        .optional()
+    }
+}
+
+pub fn refund_star_donation(
+    tx: &rusqlite::Transaction<'_>,
+    donation_id: i64,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    let rows = tx.execute(
+        "UPDATE star_donations SET refunded = 1, refunded_at = ? WHERE id = ? AND refunded = 0",
+        rusqlite::params![now, donation_id],
+    )?;
+    Ok(rows > 0)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MiniappStatsSummary {
+    pub total_unique_users: i64,
+    pub total_tg_unique: i64,
+    pub total_vk_unique: i64,
+    pub dau_today: i64,
+    pub wau_7d: i64,
+    pub mau_30d: i64,
+    pub total_sessions: i64,
+    pub sessions_today: i64,
+    pub sessions_7d: i64,
+    pub sessions_30d: i64,
+    pub active_online_15m: i64,
+    pub page_views_schedule: i64,
+    pub page_views_history: i64,
+    pub page_views_profile: i64,
+}
+
+pub fn collect_miniapp_stats(
+    conn: &Connection,
+    now: chrono::NaiveDateTime,
+) -> rusqlite::Result<MiniappStatsSummary> {
+    let today_date = now.date();
+    let today_start = today_date
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let seven_days_ago = (now - chrono::Duration::days(7))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let thirty_days_ago = (now - chrono::Duration::days(30))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let fifteen_mins_ago = (now - chrono::Duration::minutes(15))
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+
+    let mut summary = MiniappStatsSummary::default();
+
+    let users_query = "
+        WITH all_users AS (
+            SELECT platform, user_id, start_time AS ts FROM miniapp_telemetry_sessions
+            UNION
+            SELECT platform, user_id, created_at AS ts FROM miniapp_sessions
+            UNION
+            SELECT platform, user_id, created_at AS ts FROM account_identities
+        )
+        SELECT
+            COUNT(DISTINCT platform || ':' || user_id) AS total_unique,
+            COUNT(DISTINCT CASE WHEN platform = 'telegram' THEN user_id END) AS tg_unique,
+            COUNT(DISTINCT CASE WHEN platform = 'vk' THEN user_id END) AS vk_unique,
+            COUNT(DISTINCT CASE WHEN ts >= ? THEN platform || ':' || user_id END) AS dau,
+            COUNT(DISTINCT CASE WHEN ts >= ? THEN platform || ':' || user_id END) AS wau,
+            COUNT(DISTINCT CASE WHEN ts >= ? THEN platform || ':' || user_id END) AS mau
+        FROM all_users
+    ";
+    let _ = conn.query_row(
+        users_query,
+        rusqlite::params![today_start, seven_days_ago, thirty_days_ago],
+        |row| {
+            summary.total_unique_users = row.get(0).unwrap_or(0);
+            summary.total_tg_unique = row.get(1).unwrap_or(0);
+            summary.total_vk_unique = row.get(2).unwrap_or(0);
+            summary.dau_today = row.get(3).unwrap_or(0);
+            summary.wau_7d = row.get(4).unwrap_or(0);
+            summary.mau_30d = row.get(5).unwrap_or(0);
+            Ok(())
+        },
+    );
+
+    let sess_query = "
+        WITH combined_sessions AS (
+            SELECT id, start_time AS ts, last_ping_time FROM miniapp_telemetry_sessions
+            UNION ALL
+            SELECT token_hash AS id, created_at AS ts, created_at AS last_ping_time
+            FROM miniapp_sessions
+            WHERE token_hash NOT IN (SELECT id FROM miniapp_telemetry_sessions)
+        )
+        SELECT
+            COUNT(*) AS total_sessions,
+            COUNT(CASE WHEN ts >= ? THEN 1 END) AS sessions_today,
+            COUNT(CASE WHEN ts >= ? THEN 1 END) AS sessions_7d,
+            COUNT(CASE WHEN ts >= ? THEN 1 END) AS sessions_30d,
+            COUNT(CASE WHEN last_ping_time >= ? THEN 1 END) AS active_online_15m
+        FROM combined_sessions
+    ";
+    let _ = conn.query_row(
+        sess_query,
+        rusqlite::params![
+            today_start,
+            seven_days_ago,
+            thirty_days_ago,
+            fifteen_mins_ago
+        ],
+        |row| {
+            summary.total_sessions = row.get(0).unwrap_or(0);
+            summary.sessions_today = row.get(1).unwrap_or(0);
+            summary.sessions_7d = row.get(2).unwrap_or(0);
+            summary.sessions_30d = row.get(3).unwrap_or(0);
+            summary.active_online_15m = row.get(4).unwrap_or(0);
+            Ok(())
+        },
+    );
+
+    let views_query = "
+        SELECT
+            COALESCE(SUM(page_views_schedule), 0),
+            COALESCE(SUM(page_views_history), 0),
+            COALESCE(SUM(page_views_profile), 0)
+        FROM miniapp_telemetry_sessions
+    ";
+    let _ = conn.query_row(views_query, [], |row| {
+        summary.page_views_schedule = row.get(0).unwrap_or(0);
+        summary.page_views_history = row.get(1).unwrap_or(0);
+        summary.page_views_profile = row.get(2).unwrap_or(0);
+        Ok(())
+    });
+
+    Ok(summary)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,6 +1175,76 @@ mod tests {
         assert!(get_latest_open_feedback(&db, "telegram", 42)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn star_donation_and_miniapp_stats_roundtrip() {
+        let mut db = Connection::open_in_memory().unwrap();
+        initialize(&mut db).unwrap();
+
+        let tx = db.transaction().unwrap();
+        let id = record_star_donation(
+            &tx,
+            77,
+            Some("donor"),
+            Some("Донатер"),
+            100,
+            "charge_123",
+            "2026-11-09T12:00:00",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert!(id > 0);
+
+        let d = get_star_donation(&db, "1").unwrap().unwrap();
+        assert_eq!(d.user_id, 77);
+        assert_eq!(d.stars, 100);
+        assert_eq!(d.charge_id, "charge_123");
+        assert!(!d.refunded);
+
+        let d_by_charge = get_star_donation(&db, "charge_123").unwrap().unwrap();
+        assert_eq!(d_by_charge.id, id);
+
+        let tx = db.transaction().unwrap();
+        assert!(refund_star_donation(&tx, id, "2026-11-09T13:00:00").unwrap());
+        tx.commit().unwrap();
+
+        let refunded = get_star_donation(&db, "charge_123").unwrap().unwrap();
+        assert!(refunded.refunded);
+        assert_eq!(refunded.refunded_at.as_deref(), Some("2026-11-09T13:00:00"));
+
+        let acc_id = {
+            let tx = db.transaction().unwrap();
+            let acc = crate::account::get_or_create_account(
+                &tx,
+                "telegram",
+                77,
+                None,
+                None,
+                "2026-11-09T11:00:00",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            acc
+        };
+        db.execute(
+            "INSERT INTO miniapp_sessions (token_hash, account_id, platform, user_id, expires_at, created_at) VALUES ('tok1', ?, 'telegram', 77, '2026-11-10T11:30:00', '2026-11-09T11:30:00')",
+            [&acc_id],
+        )
+        .unwrap();
+
+        let stats = collect_miniapp_stats(
+            &db,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stats.total_unique_users, 1);
+        assert_eq!(stats.total_tg_unique, 1);
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.sessions_today, 1);
     }
 }
 
