@@ -69,3 +69,25 @@ jobs:
       - name: Docker compose smoke check
         run: docker compose config
 
+  rust-ci:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml -- --check
+
+      - name: Lint with clippy
+        run: cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path rust/Cargo.toml
+

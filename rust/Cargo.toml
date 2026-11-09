@@ -31,3 +31,10 @@ url = "2"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

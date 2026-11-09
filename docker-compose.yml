@@ -27,6 +27,27 @@ services:
       - ./runtime:/app/runtime
       - ./.env:/app/config/.env
 
+  bot-rust:
+    build:
+      context: ./rust
+      dockerfile: Dockerfile
+    container_name: misis-rasp-bot-rust
+    restart: unless-stopped
+    logging: *default-logging
+    stop_grace_period: 30s
+    profiles:
+      - rust
+    env_file:
+      - .env
+    environment:
+      TZ: ${APP_TIMEZONE:-Europe/Moscow}
+      DATABASE_PATH: /app/runtime/bot.db
+    ports:
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-8080}:8080"
+      - "${MINIAPP_API_BIND_IP:-127.0.0.1}:${MINIAPP_API_PORT:-8000}:8000"
+    volumes:
+      - ./runtime:/app/runtime
+
   web:
     build: .
     container_name: misis-web-configurator

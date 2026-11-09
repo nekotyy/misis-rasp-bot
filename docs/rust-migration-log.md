@@ -178,6 +178,18 @@
   - В `rust/src/vk_engine.rs` реализована админ-панель (`/admin`), меню «Расписание и OCR», режим ожидания JSON «Импорт OCR JSON», клавиатура подтверждения/тихого сохранения расписания и мониторинг статуса.
 - **Зачем:** позволить администраторам быстро загружать готовое распознанное расписание прямо через Telegram и VK без необходимости взаимодействия с API или браузерной админкой, и без ненадежных сторонних зависимостей.
 - **Проверки:** 100 unit-тестов, 33 integration-теста (всего 133 теста) успешно проходят в WSL; `cargo fmt --check` и `cargo clippy --locked --all-targets -- -D warnings` без замечаний; Python `ruff` и `compileall` успешно.
+- **Коммит:** `be13838`, отправлен в `codex/rust-rewrite`.
+
+## 9 ноября 2026 — настройка релизного профиля Rust, Dockerfile и CI/CD
+
+- **Что:** завершены фазы 8 и 9 миграции. Настроен релизный профиль Rust (`Cargo.toml`), мультистейдж `rust/Dockerfile`, добавлен сервис `bot-rust` в `docker-compose.yml` и настроен workflow `ci-cd.yml`.
+- **Как:**
+  - В `rust/Cargo.toml` задан `[profile.release]` (`opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`).
+  - В `rust/Dockerfile` добавлен запуск от непривилегированного пользователя `appuser` (UID 10001).
+  - В `docker-compose.yml` добавлен сервис `bot-rust` (профиль `rust`) с маппингом портов 8000 и 8080, томом `/app/runtime` и корректным graceful shutdown.
+  - В `.github/workflows/ci-cd.yml` добавлен джоб `rust-ci`, выполняющий `cargo fmt --check`, `cargo clippy` и `cargo test --locked`.
+- **Зачем:** обеспечить полную автоматизацию проверок в CI/CD и готовность к развертыванию на целевом VPS (1 vCPU, 1 ГБ RAM, 10 ГБ NVMe) с минимальным потреблением ресурсов.
+- **Проверки:** `cargo fmt --check`, `cargo clippy`, `cargo test` (133 теста), Python `ruff` и `compileall`, `docker compose config` пройдены успешно.
 - **Коммит:** готовится к отправке.
 
 ## Ранее выполненные участки в `codex/rust-rewrite`

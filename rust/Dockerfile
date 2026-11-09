@@ -15,9 +15,14 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -d /app -s /usr/sbin/nologin appuser
+
 WORKDIR /app
 COPY --from=builder /app/target/release/misis-rasp-core /usr/local/bin/misis-rasp-bot
-RUN mkdir -p /app/runtime
+RUN mkdir -p /app/runtime && chown -R appuser:appgroup /app
+
+USER appuser
 
 ENV DATABASE_PATH=/app/runtime/bot.db \
     TZ=Europe/Moscow
