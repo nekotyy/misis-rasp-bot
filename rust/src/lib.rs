@@ -125,4 +125,5 @@ pub mod telegram_personalization;
 pub mod telegram_poll;
 pub mod telegram_report;
 pub mod telegram_ui;
+pub mod vk_engine;
 pub mod vk_poll;

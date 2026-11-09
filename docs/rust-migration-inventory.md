@@ -52,7 +52,7 @@
 
 | Исходная функция | Регистрация / маршрут | Статус |
 | --- | --- | --- |
-| [`all_messages_handler`](../src/vk_bot.py#L2041) | `bot.on.message()` | не перенесено |
+| [`all_messages_handler`](../src/vk_bot.py#L2041) | `bot.on.message()`, `bot.on.raw_event()` | частично: перенесён VkEngine с поддержкой message_new, message_event, бесед (peer_id >= 2_000_000_000), команд расписания, звонков, поиска и настроек |
 
 ## Админка: маршруты и middleware
 
