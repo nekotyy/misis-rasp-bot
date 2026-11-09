@@ -65,6 +65,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/metrics", get(admin_metrics))
         .route("/control", get(admin_control_page))
         .route("/control/broadcast", post(admin_control_broadcast))
+        .route(
+            "/api/admin/schedule/import-json",
+            post(admin_import_schedule_json),
+        )
         .layer(cors)
         .with_state(state)
 }
@@ -733,6 +737,103 @@ async fn admin_control_broadcast(
     }
 }
 
+#[derive(Deserialize)]
+pub struct ImportScheduleJsonPayload {
+    pub group_name: String,
+    pub schedule_id: Option<i64>,
+    pub source_type: Option<String>,
+    pub source_key: Option<String>,
+    pub source_url: Option<String>,
+    pub days: Vec<crate::DaySchedule>,
+    pub notify: Option<bool>,
+}
+
+async fn admin_import_schedule_json(
+    State(state): State<AppState>,
+    Json(payload): Json<ImportScheduleJsonPayload>,
+) -> Response {
+    if payload.group_name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "group_name is required").into_response();
+    }
+
+    let now_dt = chrono::Local::now().naive_local();
+    let now_ts = chrono::Utc::now().timestamp() as f64;
+
+    let snapshot = crate::ScheduleSnapshot {
+        group_name: payload.group_name.clone(),
+        fetched_at: now_dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        days: payload.days,
+    };
+
+    let hash = crate::parser::compute_snapshot_hash(&snapshot);
+    let source_type = payload.source_type.unwrap_or_else(|| "group".into());
+    let source_key = payload.source_key.unwrap_or_else(|| {
+        if let Some(id) = payload.schedule_id {
+            format!("group:{id}")
+        } else {
+            format!("group:{}", payload.group_name)
+        }
+    });
+    let source_title = payload.group_name.clone();
+    let source_url = payload.source_url.unwrap_or_default();
+
+    let sync_source = crate::sync::Source {
+        source_type: &source_type,
+        source_key: &source_key,
+        source_title: &source_title,
+        source_url: &source_url,
+        group_name: Some(&payload.group_name),
+        schedule_id: payload.schedule_id,
+    };
+
+    let options = crate::sync::ApplyOptions {
+        notify: payload.notify.unwrap_or(true),
+        trust_empty: true,
+        manual_origin: "manual_json_import",
+        observed_dates: None,
+        timezone: chrono_tz::Europe::Moscow,
+        now: now_dt,
+    };
+
+    let platforms = crate::sync::DeliveryPlatforms {
+        telegram: !state.settings.telegram_bot_token.is_empty(),
+        vk: !state.settings.vk_bot_token.is_empty(),
+    };
+
+    let mut db = state.db.lock().await;
+    match crate::sync::apply_and_enqueue(
+        &mut db,
+        &sync_source,
+        &snapshot,
+        &hash,
+        &options,
+        &platforms,
+        now_ts,
+    ) {
+        Ok(outcome) => {
+            let result_str = match outcome {
+                crate::sync::AtomicApplyResult::RejectedEmpty => "rejected_empty",
+                crate::sync::AtomicApplyResult::FirstBaseline => "first_baseline",
+                crate::sync::AtomicApplyResult::Unchanged => "unchanged",
+                crate::sync::AtomicApplyResult::Changed { queued, .. } => {
+                    return Json(json!({
+                        "status": "changed",
+                        "hash": hash,
+                        "queued_notifications": queued,
+                    }))
+                    .into_response();
+                }
+            };
+            Json(json!({"status": result_str, "hash": hash})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Sync error: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,5 +990,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(response2.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_can_import_schedule_from_json() {
+        let state = test_app_state();
+        let app = create_router(state.clone());
+
+        let payload = json!({
+            "group_name": "ИСП-25-1",
+            "schedule_id": 100,
+            "days": [
+                {
+                    "date_iso": "2026-11-10",
+                    "date_label": "10 ноября",
+                    "lessons": [
+                        {
+                            "number": 1,
+                            "subject": "Математика",
+                            "teacher": "Сидоров",
+                            "classroom": "303"
+                        }
+                    ]
+                }
+            ],
+            "notify": false
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/schedule/import-json")
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

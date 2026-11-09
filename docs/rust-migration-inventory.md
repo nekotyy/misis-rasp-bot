@@ -204,7 +204,7 @@
 | `20261105_0007_accounts_and_subscriptions.py` | Аккаунты и подписки | часть операций и схема есть; переход старой БД не реализован |
 | `scripts/deploy_production.py`, `deploy_request.py`, `deploy_ssh.py` | Деплой и взаимодействие с сервером | Rust-эквиваленты и проверенный сценарий переключения отсутствуют |
 | `scripts/generate_release_notes.py` | Генерация заметок о релизе | перенос или готовая совместимая замена не проверены |
-| `scripts/import_schedule.py`, `import_schedule_photos.py` | Импорт расписания и фотографий | перенос и проверка импорта не завершены |
+| `scripts/import_schedule.py`, `import_schedule_photos.py` | Импорт расписания и фотографий | реализован прямой импорт JSON через `POST /api/admin/schedule/import-json`; Gemini OCR исключён |
 | `scripts/seed_pending_groups.py` | Начальное заполнение ожидающих групп | перенос или готовая замена не проверены |
 
 ## Что обязательно дополнить при переносе
