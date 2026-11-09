@@ -453,10 +453,23 @@ pub fn set_audience_subscription(
     now: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    set_audience_subscription_in_transaction(&tx, platform, user_id, key, title, url, now)?;
+    tx.commit()?;
+    Ok(())
+}
+pub fn set_audience_subscription_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+    key: &str,
+    title: &str,
+    url: &str,
+    now: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     tx.execute("UPDATE users SET audience_subscription_key=?,audience_subscription_title=?,audience_subscription_url=? WHERE platform=? AND user_id=?",params![key,title,url,platform,user_id])?;
-    let account = crate::account::get_or_create_account(&tx, platform, user_id, None, None, now)?;
+    let account = crate::account::get_or_create_account(tx, platform, user_id, None, None, now)?;
     crate::account::add_subscription(
-        &tx,
+        tx,
         &account,
         &crate::account::AccountSubscription {
             subscription_type: "audience",
@@ -471,7 +484,6 @@ pub fn set_audience_subscription(
         },
         now,
     )?;
-    tx.commit()?;
     Ok(())
 }
 pub fn clear_audience_subscription(

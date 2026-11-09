@@ -16,6 +16,7 @@ pub struct TelegramEngine {
     search: crate::telegram_search::SearchFlow,
     group: crate::telegram_group::GroupFlow,
     personalization: crate::telegram_personalization::PersonalizationFlow,
+    audience: crate::telegram_audience::AudienceFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -71,6 +72,10 @@ impl TelegramEngine {
             .personalization
             .interested(update)
             .then(|| self.personalization.clone());
+        let mut audience = self
+            .audience
+            .interested(update)
+            .then(|| self.audience.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -122,7 +127,13 @@ impl TelegramEngine {
             Some(flow) => flow.handle(&tx, update, &user)?,
             None => None,
         };
+        let audience_actions = match audience.as_mut() {
+            Some(flow) => flow.handle(&tx, update, &user, context, &now)?,
+            None => None,
+        };
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) = audience_actions {
             actions
         } else if let Some(actions) = personal_actions {
             actions
@@ -223,6 +234,9 @@ impl TelegramEngine {
         }
         if let Some(personalization) = personalization {
             self.personalization = personalization;
+        }
+        if let Some(audience) = audience {
+            self.audience = audience;
         }
         Ok(HandleOutcome::Handled)
     }
@@ -450,7 +464,10 @@ pub async fn poll_iteration_with_parser(
         };
         let mut next_search = parser
             .filter(|_| {
-                !already_processed && !private_group_setup && engine.search.interested(&update)
+                !already_processed
+                    && !private_group_setup
+                    && !engine.audience.takes_precedence(&update)
+                    && engine.search.interested(&update)
             })
             .map(|_| engine.search.clone());
         let search_actions = if let (Some(parser), Some(search)) = (parser, next_search.as_mut()) {

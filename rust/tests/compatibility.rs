@@ -288,6 +288,244 @@ fn personalization_callback_without_message_is_acknowledged() {
     );
 }
 
+#[test]
+fn teacher_audience_subscription_is_atomic_and_replay_safe() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,subscription_url,created_at,last_seen_at) VALUES ('telegram',42,'teacher','teacher:1','Иванов','http://college/raspprep/1','now','now')",[]).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::new(&[], &[("312".into(), "http://college/raspAud/312".into())]);
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+    let setup = json!({"update_id":230,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:audience_setup"}});
+    assert!(matches!(
+        engine.handle(&mut db, &setup, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let missing = json!({"update_id":231,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"несуществующий кабинет"}});
+    assert!(matches!(
+        engine.handle(&mut db, &missing, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(misis_rasp_core::outbox::get(&db, "telegram-update:231:0")
+        .unwrap()
+        .unwrap()
+        .payload_json
+        .contains("Кабинет не найден"));
+    let input = json!({"update_id":232,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"312"}});
+    db.execute_batch("CREATE TRIGGER fail_audience BEFORE INSERT ON delivery_outbox BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+    assert!(engine.handle(&mut db, &input, &context).is_err());
+    assert!(misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap()
+        .audience_subscription_key
+        .is_none());
+    db.execute_batch("DROP TRIGGER fail_audience").unwrap();
+    assert!(matches!(
+        engine.handle(&mut db, &input, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(matches!(
+        engine.handle(&mut db, &input, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let user = misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.subscription_key.as_deref(), Some("teacher:1"));
+    assert_eq!(
+        user.audience_subscription_key.as_deref(),
+        Some("audience:312")
+    );
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM account_subscriptions WHERE subscription_key='audience:312'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn non_teacher_cannot_start_audience_subscription() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let setup = serde_json::json!({"update_id":240,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:audience_setup"}});
+    assert!(matches!(
+        TelegramEngine::default()
+            .handle(&mut db, &setup, &context)
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    let row = misis_rasp_core::outbox::get(&db, "telegram-update:240:0")
+        .unwrap()
+        .unwrap();
+    assert!(row.payload_json.contains("show_alert") && row.payload_json.contains("преподавателя"));
+}
+
+#[test]
+fn returning_to_menu_cancels_audience_input_without_changing_subscription() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,subscription_url,created_at,last_seen_at) VALUES ('telegram',42,'teacher','teacher:1','Иванов','http://college/raspprep/1','now','now')",[]).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::new(&[], &[("312".into(), "http://college/raspAud/312".into())]);
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let callback = |id: i64, data: &str| json!({"update_id":id,"callback_query":{"id":format!("cb{id}"),"from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":data}});
+    let mut engine = TelegramEngine::default();
+    assert!(matches!(
+        engine
+            .handle(&mut db, &callback(260, "settings:audience_setup"), &context)
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(matches!(
+        engine
+            .handle(&mut db, &callback(261, "menu:start"), &context)
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    let input = json!({"update_id":262,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"312"}});
+    let _ = engine.handle(&mut db, &input, &context).unwrap();
+    assert!(misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap()
+        .audience_subscription_key
+        .is_none());
+}
+
+#[tokio::test]
+async fn audience_input_takes_precedence_over_pending_search_in_polling() {
+    use std::io::{Read, Write};
+    use std::time::Duration;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 8192];
+        let _ = stream.read(&mut buf).unwrap();
+        let body = r#"{"ok":true,"result":[{"update_id":250,"callback_query":{"id":"s","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"schedule:find"}},{"update_id":251,"callback_query":{"id":"a","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:audience_setup"}},{"update_id":252,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"312"}}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let parser =
+        parser::ScheduleParser::new("", "", Duration::from_millis(100), 1, Duration::ZERO).unwrap();
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,subscription_type,subscription_key,subscription_title,subscription_url,created_at,last_seen_at) VALUES ('telegram',42,'teacher','teacher:1','Иванов','http://college/raspprep/1','now','now')",[]).unwrap();
+    let settings = misis_rasp_core::config::Settings::from_map(&Default::default()).unwrap();
+    let groups = misis_rasp_core::group_catalog::GroupCatalog::default();
+    let search = misis_rasp_core::search::SearchCatalog::new(
+        &[],
+        &[("312".into(), "http://college/raspAud/312".into())],
+    );
+    let context = misis_rasp_core::telegram_engine::EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut poll = misis_rasp_core::telegram_poll::TelegramLongPoll::new(25);
+    let result = misis_rasp_core::telegram_engine::poll_iteration_with_parser(
+        &mut poll,
+        &api,
+        &mut Default::default(),
+        &mut db,
+        &context,
+        Some(&parser),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Ok(misis_rasp_core::telegram_engine::PollOutcome::Processed(3))
+    ));
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", 42)
+            .unwrap()
+            .unwrap()
+            .audience_subscription_key
+            .as_deref(),
+        Some("audience:312")
+    );
+    server.join().unwrap();
+}
+
 #[tokio::test]
 async fn http_retry_then_parses_college_page() {
     use std::io::{Read, Write};
