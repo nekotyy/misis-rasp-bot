@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 // Секреты не реализуют Debug, чтобы случайно не попасть в журналы.
+#[derive(Clone)]
 pub struct Settings {
     pub schedule_url: String,
     pub university_schedule_url: String,

@@ -1,0 +1,101 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+use misis_rasp_core::config::Settings;
+use misis_rasp_core::database;
+use misis_rasp_core::notification::ApiTransport;
+use misis_rasp_core::scheduler::Scheduler;
+use misis_rasp_core::web_server::{create_router, AppState};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Запуск сервиса misis-rasp-bot на Rust...");
+
+    let settings = Settings::from_env().unwrap_or_else(|e| {
+        eprintln!("Ошибка загрузки конфигурации: {e}");
+        std::process::exit(1);
+    });
+
+    println!("Подключение к базе данных {:?}", settings.database_path);
+    let mut conn = rusqlite::Connection::open(&settings.database_path)?;
+    database::initialize(&mut conn)?;
+
+    let db_mutex = Arc::new(Mutex::new(conn));
+    let settings_arc = Arc::new(settings);
+
+    let transport = Arc::new(ApiTransport::new(
+        "https://api.telegram.org",
+        "https://api.vk.com/method",
+        settings_arc.telegram_bot_token.clone(),
+        settings_arc.vk_bot_token.clone(),
+        "5.131",
+    )?);
+
+    let scheduler = Arc::new(Scheduler::new((*settings_arc).clone(), transport.clone())?);
+
+    // 1. Фоновый воркер доставки сообщений из outbox
+    let sched_outbox = scheduler.clone();
+    let db_outbox = db_mutex.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let now = chrono::Utc::now().timestamp() as f64;
+            let mut db = db_outbox.lock().await;
+            let _ = sched_outbox.process_outbox_batch(&mut db, 30, now).await;
+        }
+    });
+
+    // 2. Фоновый планировщик синхронизации расписания
+    let sched_sync = scheduler.clone();
+    let db_sync = db_mutex.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(900)).await;
+            let now_dt = chrono::Local::now().naive_local();
+            let now_ts = chrono::Utc::now().timestamp() as f64;
+            let mut db = db_sync.lock().await;
+            let _ = sched_sync
+                .sync_active_sources(&mut db, now_dt, now_ts)
+                .await;
+        }
+    });
+
+    // 3. Ежедневное сохранение эталонов и очистка БД
+    let sched_daily = scheduler.clone();
+    let db_daily = db_mutex.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600 * 6)).await;
+            let now_dt = chrono::Local::now().naive_local();
+            let mut db = db_daily.lock().await;
+            let _ = sched_daily.save_daily_baselines(&mut db, now_dt).await;
+            let now_str = now_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+            let _ = sched_daily.cleanup_old_records(&db, 30, &now_str);
+        }
+    });
+
+    // 4. Веб-сервер axum (порт 8000 или из PORT)
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8000".into())
+        .parse::<u16>()
+        .unwrap_or(8000);
+    let app_state = AppState {
+        db: db_mutex.clone(),
+        settings: settings_arc.clone(),
+    };
+    let router = create_router(app_state);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("Веб-сервер запущен на http://{addr}");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            tokio::signal::ctrl_c().await.ok();
+            println!("Получен сигнал завершения. Остановка сервиса...");
+        })
+        .await?;
+
+    Ok(())
+}
