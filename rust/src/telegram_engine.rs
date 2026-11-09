@@ -17,6 +17,7 @@ pub struct TelegramEngine {
     group: crate::telegram_group::GroupFlow,
     personalization: crate::telegram_personalization::PersonalizationFlow,
     audience: crate::telegram_audience::AudienceFlow,
+    report: crate::telegram_report::ReportFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -102,6 +103,9 @@ impl TelegramEngine {
         let mut audience = (self.audience.interested(update)
             || reset_user.is_some_and(|id| self.audience.has_user(id)))
         .then(|| self.audience.clone());
+        let mut report = (self.report.interested(update)
+            || reset_user.is_some_and(|id| self.report.has_user(id)))
+        .then(|| self.report.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -113,15 +117,6 @@ impl TelegramEngine {
         let Some(user) = actor else {
             return Ok(HandleOutcome::Unsupported);
         };
-        if update.pointer("/message/chat/type").and_then(Value::as_str) == Some("private")
-            && update.pointer("/message/reply_to_message").is_some()
-            && update
-                .pointer("/message/text")
-                .and_then(Value::as_str)
-                .is_some_and(|text| !text.starts_with('/'))
-        {
-            return Ok(HandleOutcome::Unsupported);
-        }
         if let Some(id) = reset_user {
             selection.reset_user(id);
             if let Some(search) = search.as_mut() {
@@ -132,6 +127,9 @@ impl TelegramEngine {
             }
             if let Some(audience) = audience.as_mut() {
                 audience.reset_user(id);
+            }
+            if let Some(report) = report.as_mut() {
+                report.reset_user(id);
             }
         }
         let group_start = update
@@ -178,7 +176,13 @@ impl TelegramEngine {
             Some(flow) => flow.handle(&tx, update, &user, context, &now)?,
             None => None,
         };
+        let report_actions = match report.as_mut() {
+            Some(flow) => flow.handle(&tx, update, &user, context, &now)?,
+            None => None,
+        };
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) = report_actions {
             actions
         } else if let Some(actions) = audience_actions {
             actions
@@ -272,6 +276,9 @@ impl TelegramEngine {
                     .and_then(Value::as_str)
                     .is_some_and(|text| !text.starts_with('/'))
         }) {
+            if message.pointer("/reply_to_message").is_some() {
+                return Ok(HandleOutcome::Unsupported);
+            }
             let Some(chat) = message.pointer("/chat/id").and_then(Value::as_i64) else {
                 return Ok(HandleOutcome::Unsupported);
             };
@@ -314,6 +321,9 @@ impl TelegramEngine {
         }
         if let Some(audience) = audience {
             self.audience = audience;
+        }
+        if let Some(report) = report {
+            self.report = report;
         }
         Ok(HandleOutcome::Handled)
     }
@@ -494,6 +504,7 @@ pub async fn poll_iteration_with_parser(
                 .and_then(Value::as_str)
                 .is_some_and(|text| !text.starts_with('/'))
             && !engine.audience.takes_precedence(&update)
+            && !engine.report.takes_precedence(&update)
             && !engine.search.interested(&update);
         let needs_snapshot = matches!(
             data,
@@ -570,6 +581,7 @@ pub async fn poll_iteration_with_parser(
                     && update.pointer("/message/reply_to_message").is_none()
                     && reset_user_id(&update).is_none()
                     && !engine.audience.takes_precedence(&update)
+                    && !engine.report.takes_precedence(&update)
                     && engine.search.interested(&update)
             })
             .map(|_| engine.search.clone());

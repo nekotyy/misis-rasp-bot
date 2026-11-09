@@ -22,9 +22,9 @@
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('app_stats'))` | не перенесено |
 | [`handle_miniapp_stats_command`](../src/telegram_bot.py#L3132) | `dispatcher.message(Command('miniapp_stats'))` | не перенесено |
 | [`handle_app_command`](../src/telegram_bot.py#L3140) | `dispatcher.message(Command('app'))` | частично: кнопка с настроенным адресом перенесена; нужен сквозной тест в Telegram |
-| [`handle_bugreport_command`](../src/telegram_bot.py#L3155) | `dispatcher.message(Command('bugreport'))` | не перенесено |
-| [`handle_feedback_command`](../src/telegram_bot.py#L3167) | `dispatcher.message(Command('feedback', 'support'))` | не перенесено |
-| [`handle_reply_command`](../src/telegram_bot.py#L3181) | `dispatcher.message(Command('reply'))` | не перенесено |
+| [`handle_bugreport_command`](../src/telegram_bot.py#L3155) | `dispatcher.message(Command('bugreport'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
+| [`handle_feedback_command`](../src/telegram_bot.py#L3167) | `dispatcher.message(Command('feedback', 'support'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
+| [`handle_reply_command`](../src/telegram_bot.py#L3181) | `dispatcher.message(Command('reply'))` | частично: перенесён ответ по ID пользователя/обращения и цитированием сообщения бота администратором |
 | [`handle_admin_command`](../src/telegram_bot.py#L3240) | `dispatcher.message(Command('admin'))` | не перенесено |
 | [`handle_ocr_command`](../src/telegram_bot.py#L3255) | `dispatcher.message(Command('ocr'))` | не перенесено |
 | [`handle_group_setup_command`](../src/telegram_bot.py#L3271) | `dispatcher.message(Command('group_setup'))` | частично |
@@ -36,7 +36,7 @@
 | [`handle_menu_settings`](../src/telegram_bot.py#L3410) | `dispatcher.callback_query(F.data == 'menu:settings')` | частично |
 | [`handle_start_rasp`](../src/telegram_bot.py#L3429) | `dispatcher.callback_query(F.data == 'start:rasp')` | частично |
 | [`handle_schedule_callback`](../src/telegram_bot.py#L3438) | `dispatcher.callback_query(F.data.startswith('schedule:'))` | частично |
-| [`handle_report_callback`](../src/telegram_bot.py#L3453) | `dispatcher.callback_query(F.data.startswith('report:'))` | не перенесено |
+| [`handle_report_callback`](../src/telegram_bot.py#L3453) | `dispatcher.callback_query(F.data.startswith('report:'))` | частично: перенесены подтверждение, отмена и отправка обращения |
 | [`handle_settings_callback`](../src/telegram_bot.py#L3491) | `dispatcher.callback_query(F.data.startswith('settings:'))` | частично |
 | [`handle_help_query`](../src/telegram_bot.py#L3616) | `dispatcher.callback_query(F.data.startswith('help:'))` | частично |
 | [`handle_bot_added_to_chat`](../src/telegram_bot.py#L3639) | `dispatcher.my_chat_member()` | частично |
@@ -144,7 +144,7 @@
 | `settings:personalization`, `settings:pers_set_sticker`, `settings:pers_clear_sticker`, `settings:pers_preview_sticker` | Выбор, удаление и предпросмотр стикера | частично; ошибки предпросмотра ещё не доведены |
 | `settings:about` | Информация о проекте и навигация настроек | частично: перенесён экран, требуется сквозной тест в Telegram |
 | `settings:lesson_counters` | Статистика занятий | не перенесено |
-| `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | не перенесено |
+| `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | частично: перенесён ввод черновика, подтверждение, отправка и ответы админа; требуется сквозной тест в Telegram |
 | `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | не перенесено |
 | `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | не перенесено |
 | `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | не перенесено |

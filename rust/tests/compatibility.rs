@@ -2071,3 +2071,142 @@ async fn telegram_group_admin_check_accepts_only_administrator_or_creator() {
         .unwrap());
     server.join().unwrap();
 }
+
+#[test]
+fn telegram_report_flow_end_to_end() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+
+    let mut env = std::collections::HashMap::new();
+    env.insert("ADMIN_TELEGRAM_ID".into(), "777".into());
+    let settings = Settings::from_map(&env).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+
+    // 1. Прямая команда /support с текстом -> формирует черновик
+    let direct_cmd = json!({
+        "update_id": 401,
+        "message": {
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 42, "username": "student42"},
+            "text": "/support Не могу найти нужную аудиторию"
+        }
+    });
+    assert!(matches!(
+        engine.handle(&mut db, &direct_cmd, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let draft_row = misis_rasp_core::outbox::get(&db, "telegram-update:401:0")
+        .unwrap()
+        .unwrap();
+    assert!(draft_row.payload_json.contains("Подтверждение отправки"));
+    assert!(draft_row
+        .payload_json
+        .contains("Не могу найти нужную аудиторию"));
+
+    // 2. Подтверждение черновика
+    let confirm_cb = json!({
+        "update_id": 402,
+        "callback_query": {
+            "id": "cb_conf",
+            "from": {"id": 42, "username": "student42"},
+            "message": {"message_id": 100, "chat": {"id": 42}},
+            "data": "report:confirm"
+        }
+    });
+    assert!(matches!(
+        engine.handle(&mut db, &confirm_cb, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let fb = misis_rasp_core::database::get_feedback_message(&db, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(fb.user_id, 42);
+    assert_eq!(fb.message_type, "support");
+    assert_eq!(fb.status, "open");
+
+    // 3. Админ 777 отвечает на обращение через /reply tg 42
+    let reply_msg = json!({
+        "update_id": 403,
+        "message": {
+            "chat": {"id": 777, "type": "private"},
+            "from": {"id": 777},
+            "text": "/reply tg 42 Аудитория находится на 3 этаже"
+        }
+    });
+    assert!(matches!(
+        engine.handle(&mut db, &reply_msg, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let closed_fb = misis_rasp_core::database::get_feedback_message(&db, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(closed_fb.status, "answered");
+    assert_eq!(
+        closed_fb.reply_text.as_deref(),
+        Some("Аудитория находится на 3 этаже")
+    );
+
+    // Проверяем отправку ответа пользователю
+    let user_reply = misis_rasp_core::outbox::get(&db, "telegram-update:403:0")
+        .unwrap()
+        .unwrap();
+    assert!(user_reply.payload_json.contains("42"));
+    assert!(user_reply
+        .payload_json
+        .contains("Аудитория находится на 3 этаже"));
+
+    // 4. Отмена запроса ввода: пользователь открывает форму баг-репорта, но пишет /cancel
+    let prompt_cb = json!({
+        "update_id": 404,
+        "callback_query": {
+            "id": "cb_bug",
+            "from": {"id": 42},
+            "message": {"message_id": 105, "chat": {"id": 42}},
+            "data": "settings:bugreport"
+        }
+    });
+    assert!(matches!(
+        engine.handle(&mut db, &prompt_cb, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+
+    let cancel_msg = json!({
+        "update_id": 405,
+        "message": {
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 42},
+            "text": "отмена"
+        }
+    });
+    assert!(matches!(
+        engine.handle(&mut db, &cancel_msg, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let cancel_reply = misis_rasp_core::outbox::get(&db, "telegram-update:405:0")
+        .unwrap()
+        .unwrap();
+    assert!(cancel_reply
+        .payload_json
+        .contains("Отправка обращения отменена"));
+}

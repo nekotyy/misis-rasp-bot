@@ -651,6 +651,100 @@ fn verify_schema(db: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FeedbackMessage {
+    pub id: i64,
+    pub created_at: String,
+    pub platform: String,
+    pub user_id: i64,
+    pub user_name: Option<String>,
+    pub message_type: String,
+    pub message_text: String,
+    pub status: String,
+    pub reply_text: Option<String>,
+    pub replied_at: Option<String>,
+}
+
+pub fn create_feedback_message(
+    tx: &rusqlite::Transaction<'_>,
+    platform: &str,
+    user_id: i64,
+    user_name: Option<&str>,
+    message_type: &str,
+    message_text: &str,
+    now: &str,
+) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO feedback_messages (created_at, platform, user_id, user_name, message_type, message_text, status) VALUES (?, ?, ?, ?, ?, ?, 'open')",
+        rusqlite::params![now, platform, user_id, user_name, message_type, message_text],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+pub fn get_feedback_message(
+    conn: &Connection,
+    feedback_id: i64,
+) -> rusqlite::Result<Option<FeedbackMessage>> {
+    conn.query_row(
+        "SELECT id, created_at, platform, user_id, user_name, message_type, message_text, status, reply_text, replied_at FROM feedback_messages WHERE id = ?",
+        [feedback_id],
+        |row| {
+            Ok(FeedbackMessage {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                platform: row.get(2)?,
+                user_id: row.get(3)?,
+                user_name: row.get(4)?,
+                message_type: row.get(5)?,
+                message_text: row.get(6)?,
+                status: row.get(7)?,
+                reply_text: row.get(8)?,
+                replied_at: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn answer_feedback_message(
+    tx: &rusqlite::Transaction<'_>,
+    feedback_id: i64,
+    reply_text: &str,
+    now: &str,
+) -> rusqlite::Result<bool> {
+    let rows = tx.execute(
+        "UPDATE feedback_messages SET status = 'answered', reply_text = ?, replied_at = ? WHERE id = ?",
+        rusqlite::params![reply_text, now, feedback_id],
+    )?;
+    Ok(rows > 0)
+}
+
+pub fn get_latest_open_feedback(
+    conn: &Connection,
+    platform: &str,
+    user_id: i64,
+) -> rusqlite::Result<Option<FeedbackMessage>> {
+    conn.query_row(
+        "SELECT id, created_at, platform, user_id, user_name, message_type, message_text, status, reply_text, replied_at FROM feedback_messages WHERE platform = ? AND user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1",
+        rusqlite::params![platform, user_id],
+        |row| {
+            Ok(FeedbackMessage {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                platform: row.get(2)?,
+                user_id: row.get(3)?,
+                user_name: row.get(4)?,
+                message_type: row.get(5)?,
+                message_text: row.get(6)?,
+                status: row.get(7)?,
+                reply_text: row.get(8)?,
+                replied_at: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +915,60 @@ mod tests {
                 .as_deref(),
             Some("group:-9")
         );
+    }
+
+    #[test]
+    fn feedback_crud_roundtrip() {
+        let mut db = Connection::open_in_memory().unwrap();
+        initialize(&mut db).unwrap();
+        let tx = db.transaction().unwrap();
+        let id = create_feedback_message(
+            &tx,
+            "telegram",
+            42,
+            Some("Student (@student)"),
+            "bugreport",
+            "Расписание не грузится",
+            "2026-11-09T12:00:00",
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert!(id > 0);
+
+        let fb = get_feedback_message(&db, id).unwrap().unwrap();
+        assert_eq!(fb.id, id);
+        assert_eq!(fb.user_id, 42);
+        assert_eq!(fb.message_type, "bugreport");
+        assert_eq!(fb.message_text, "Расписание не грузится");
+        assert_eq!(fb.status, "open");
+        assert_eq!(fb.reply_text, None);
+
+        let latest = get_latest_open_feedback(&db, "telegram", 42)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.id, id);
+
+        let tx = db.transaction().unwrap();
+        assert!(answer_feedback_message(
+            &tx,
+            id,
+            "Исправлено в новой версии",
+            "2026-11-09T13:00:00"
+        )
+        .unwrap());
+        tx.commit().unwrap();
+
+        let updated = get_feedback_message(&db, id).unwrap().unwrap();
+        assert_eq!(updated.status, "answered");
+        assert_eq!(
+            updated.reply_text.as_deref(),
+            Some("Исправлено в новой версии")
+        );
+        assert_eq!(updated.replied_at.as_deref(), Some("2026-11-09T13:00:00"));
+
+        assert!(get_latest_open_feedback(&db, "telegram", 42)
+            .unwrap()
+            .is_none());
     }
 }
 
