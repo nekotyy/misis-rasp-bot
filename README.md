@@ -171,6 +171,8 @@ uv run --frozen uvicorn web_configurator.app:app --host 0.0.0.0 --port 8080
 
 ## Архитектура
 
+Полный [план переноса на Rust](docs/rust-migration-plan.md) и [журнал работ](docs/rust-migration-log.md) описывают текущий статус, оставшиеся этапы и проверки. Перенос ещё не завершён; работающая версия приложения использует Python.
+
 ```mermaid
 flowchart LR
     student(["Студент<br/>Telegram · VK"])

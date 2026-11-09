@@ -32,6 +32,24 @@ fn snapshot_hash_matches_python_for_persisted_schedule() {
     );
 }
 
+#[test]
+fn delivery_stops_after_limit_and_large_request_does_not_disable_recipient() {
+    use misis_rasp_core::notification::{telegram_response, DeliveryFailure};
+    let rate_limit = telegram_response(
+        &serde_json::json!({"ok":false,"error_code":429,"parameters":{"retry_after":12}}),
+    )
+    .unwrap_err();
+    assert_eq!(rate_limit.retry_delay(9), Some(12.5));
+    assert_eq!(rate_limit.retry_delay(10), None);
+    let large = telegram_response(
+        &serde_json::json!({"ok":false,"error_code":413,"description":"Request Entity Too Large"}),
+    )
+    .unwrap_err();
+    assert_eq!(large.retry_delay(1), None);
+    assert!(!large.permanent_recipient());
+    assert_eq!(DeliveryFailure::Network.retry_delay(10), None);
+}
+
 #[tokio::test]
 async fn http_retry_then_parses_college_page() {
     use std::io::{Read, Write};
@@ -197,6 +215,81 @@ async fn queued_vk_message_falls_back_without_keyboard() {
         .query_row("SELECT status FROM delivery_events", [], |r| r.get(0))
         .unwrap();
     assert_eq!(status, "sent");
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn telegram_plain_http_413_fails_one_message_without_blocking_peer_or_disabling_user() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for (status, body) in [
+            ("413 Payload Too Large", "too large"),
+            ("200 OK", r#"{"ok":true,"result":{"message_id":7}}"#),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        }
+    });
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,created_at,last_seen_at) VALUES ('telegram',42,'now','now')",[]).unwrap();
+    let first = misis_rasp_core::notification::prepare_notification(
+        "telegram",
+        42,
+        "one",
+        "notification",
+        "first",
+        None,
+    );
+    let second = misis_rasp_core::notification::prepare_notification(
+        "telegram",
+        42,
+        "two",
+        "notification",
+        "second",
+        None,
+    );
+    misis_rasp_core::notification::enqueue_prepared(&mut db, &first, 100.0).unwrap();
+    misis_rasp_core::notification::enqueue_prepared(&mut db, &second, 100.0).unwrap();
+    let base = format!("http://{addr}");
+    let api = misis_rasp_core::notification::ApiTransport::new(
+        &base,
+        &base,
+        "test".into(),
+        "".into(),
+        "5.199",
+    )
+    .unwrap();
+    let first_result =
+        misis_rasp_core::notification::drain_once(&mut db, &api, "telegram", 100.0, 50)
+            .await
+            .unwrap();
+    assert_eq!(
+        first_result[0].1,
+        misis_rasp_core::notification::ProcessOutcome::Failed
+    );
+    let second_result =
+        misis_rasp_core::notification::drain_once(&mut db, &api, "telegram", 101.0, 50)
+            .await
+            .unwrap();
+    assert_eq!(
+        second_result[0].1,
+        misis_rasp_core::notification::ProcessOutcome::Sent
+    );
+    let user = misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap();
+    assert!(user.homework_notifications_enabled && !user.delivery_disabled_auto);
     server.join().unwrap();
 }
 #[tokio::test]

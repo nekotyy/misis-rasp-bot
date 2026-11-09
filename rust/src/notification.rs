@@ -170,9 +170,15 @@ pub enum DeliveryFailure {
 }
 impl DeliveryFailure {
     pub fn retry_delay(&self, attempts: u32) -> Option<f64> {
+        if attempts >= 10 {
+            return None;
+        }
         let delays = [10.0, 30.0, 60.0, 300.0];
         let delay = delays[attempts.saturating_sub(1).min(3) as usize];
         match self {
+            Self::Telegram {
+                code, description, ..
+            } if *code == 413 || description.to_lowercase().contains("entity too large") => None,
             Self::Network | Self::InvalidResponse => Some(delay),
             Self::Telegram {
                 retry_after: Some(seconds),
@@ -313,6 +319,13 @@ impl ApiTransport {
                 .await
                 .map_err(|_| DeliveryFailure::Network)?;
             let status = response.status().as_u16();
+            if status == 413 {
+                return Err(DeliveryFailure::Telegram {
+                    code: 413,
+                    description: "Request Entity Too Large".into(),
+                    retry_after: None,
+                });
+            }
             let value: Value = response.json().await.map_err(|_| {
                 if status == 401 {
                     DeliveryFailure::Telegram {
@@ -676,6 +689,23 @@ mod failure_tests {
         assert!(err.invalid_keyboard());
         assert_eq!(vk_response(&json!({"response":42})).unwrap(), json!(42));
         assert_eq!(DeliveryFailure::Network.retry_delay(5), Some(300.0));
+        assert_eq!(DeliveryFailure::Network.retry_delay(10), None);
+        assert_eq!(
+            DeliveryFailure::Telegram {
+                code: 429,
+                description: String::new(),
+                retry_after: Some(12.0)
+            }
+            .retry_delay(10),
+            None
+        );
+        let large = DeliveryFailure::Telegram {
+            code: 413,
+            description: "Request Entity Too Large".into(),
+            retry_after: None,
+        };
+        assert_eq!(large.retry_delay(1), None);
+        assert!(!large.permanent_recipient());
     }
 }
 #[cfg(test)]
