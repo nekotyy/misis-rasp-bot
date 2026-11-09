@@ -570,7 +570,7 @@ pub fn initialize(db: &mut Connection) -> Result<(), Box<dyn std::error::Error>>
     )?;
     if tables == 0 {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute_batch(include_str!("../schema.sql"))?;
+        tx.execute_batch(include_str!("../../schema.sql"))?;
         tx.execute(
             "INSERT INTO alembic_version(version_num) VALUES (?)",
             [SCHEMA_HEAD],
@@ -596,7 +596,7 @@ pub fn initialize(db: &mut Connection) -> Result<(), Box<dyn std::error::Error>>
 
 fn verify_schema(db: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(include_str!("../schema.sql"))?;
+    expected.execute_batch(include_str!("../../schema.sql"))?;
     let mut tables=expected.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
     let names = tables
         .query_map([], |r| r.get::<_, String>(0))?

@@ -43,11 +43,10 @@ pub mod archive;
 pub mod domain;
 pub use domain::{calendar, diff, sources, subgroups, subscription};
 pub mod format;
+pub mod integrations;
 pub mod json_import;
-pub mod parser;
 pub mod search_preview;
-pub mod telegram_search;
-pub mod telegram_subgroup;
+pub use integrations::{parser, telegram_search, telegram_subgroup};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserRecord {
@@ -77,9 +76,10 @@ pub struct UserRecord {
 }
 
 pub mod config;
-pub mod database;
-pub mod outbox;
-pub mod web_security;
+pub mod storage;
+pub mod web;
+pub use storage::{database, outbox};
+pub use web::{miniapp_auth, web_security, web_server};
 
 #[cfg(test)]
 mod tests {
@@ -109,22 +109,13 @@ mod tests {
 }
 pub mod account;
 pub mod group_catalog;
-pub mod miniapp_auth;
 pub mod notification;
 pub mod scheduler;
 pub mod search;
 pub mod snapshot_resolver;
 pub mod sync;
-pub mod telegram_admin;
-pub mod telegram_audience;
-pub mod telegram_donate;
-pub mod telegram_engine;
-pub mod telegram_group;
-pub mod telegram_help;
-pub mod telegram_personalization;
-pub mod telegram_poll;
-pub mod telegram_report;
-pub mod telegram_ui;
-pub mod vk_engine;
-pub mod vk_poll;
-pub mod web_server;
+pub use integrations::{
+    telegram_admin, telegram_audience, telegram_donate, telegram_engine, telegram_group,
+    telegram_help, telegram_personalization, telegram_poll, telegram_report, telegram_ui,
+    vk_engine, vk_poll,
+};

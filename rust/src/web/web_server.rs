@@ -158,7 +158,8 @@ pub struct AuthVkPayload {
 }
 
 async fn auth_vk(State(state): State<AppState>, Json(payload): Json<AuthVkPayload>) -> Response {
-    let verified = verify_vk_launch_params(&payload.launch_params, &state.settings.vk_bot_token);
+    let verified =
+        verify_vk_launch_params(&payload.launch_params, &state.settings.vk_miniapp_secret);
 
     let Some(user) = verified else {
         return (

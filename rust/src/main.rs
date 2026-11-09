@@ -18,6 +18,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     });
 
+    // Пока бот и админка не прошли проверку совместимости, нельзя допускать
+    // запуск воркера доставки с настоящими токенами и существующей базой.
+    if !settings.telegram_bot_token.is_empty()
+        || !settings.vk_bot_token.is_empty()
+        || !settings.vk_miniapp_secret.is_empty()
+    {
+        return Err("Rust-версия ещё не готова к работе с токенами или секретом VK Mini App; используйте изолированную тестовую конфигурацию".into());
+    }
+
     println!("Подключение к базе данных {:?}", settings.database_path);
     let mut conn = rusqlite::Connection::open(&settings.database_path)?;
     database::initialize(&mut conn)?;

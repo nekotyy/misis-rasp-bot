@@ -514,6 +514,20 @@ pub async fn poll_iteration_with_parser(
     parser: Option<&crate::parser::ScheduleParser>,
 ) -> Result<PollOutcome, PollError> {
     let updates = poll.fetch(api).await.map_err(PollError::Transport)?;
+    process_poll_updates(poll, api, engine, db, context, parser, updates).await
+}
+
+/// Обрабатывает уже полученные обновления, чтобы ожидание сети можно было
+/// выполнять без удержания общей блокировки подключения SQLite.
+pub async fn process_poll_updates(
+    poll: &mut crate::telegram_poll::TelegramLongPoll,
+    api: &crate::notification::ApiTransport,
+    engine: &mut TelegramEngine,
+    db: &mut Connection,
+    context: &EngineContext<'_>,
+    parser: Option<&crate::parser::ScheduleParser>,
+    updates: Vec<Value>,
+) -> Result<PollOutcome, PollError> {
     let mut processed = 0;
     for update in updates {
         let data = update

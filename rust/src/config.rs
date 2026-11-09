@@ -12,6 +12,7 @@ pub struct Settings {
     pub telegram_bot_token: String,
     pub telegram_proxy: String,
     pub vk_bot_token: String,
+    pub vk_miniapp_secret: String,
     pub vk_disable_ssl_verify: bool,
     pub admin_telegram_ids: Vec<i64>,
     pub limited_admin_telegram_ids: Vec<i64>,
@@ -108,6 +109,11 @@ impl Settings {
             telegram_bot_token: trimmed("TELEGRAM_BOT_TOKEN", ""),
             telegram_proxy: trimmed("TELEGRAM_PROXY", ""),
             vk_bot_token: trimmed("VK_BOT_TOKEN", ""),
+            vk_miniapp_secret: ["VK_MINIAPP_SECRET", "VK_APP_SECRET", "VK_CLIENT_SECRET"]
+                .iter()
+                .map(|key| trimmed(key, ""))
+                .find(|value| !value.is_empty())
+                .unwrap_or_default(),
             vk_disable_ssl_verify: matches!(
                 trimmed("VK_DISABLE_SSL_VERIFY", "").to_lowercase().as_str(),
                 "1" | "true" | "yes" | "on"
