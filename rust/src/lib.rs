@@ -111,6 +111,7 @@ mod tests {
 }
 pub mod account;
 pub mod group_catalog;
+pub mod miniapp_auth;
 pub mod notification;
 pub mod scheduler;
 pub mod search;
@@ -128,3 +129,4 @@ pub mod telegram_report;
 pub mod telegram_ui;
 pub mod vk_engine;
 pub mod vk_poll;
+pub mod web_server;

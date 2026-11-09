@@ -122,6 +122,20 @@
 - **Осталось:** веб-сервер админки и Mini App API (`axum`), бинарник/демон `main.rs`, Dockerfile.
 - **Коммит:** `849b2ae`, отправлен в `codex/rust-rewrite`.
 
+## 9 ноября 2026 — веб-сервер axum: Mini App API и веб-админка
+
+- **Что:** реализованы модули `miniapp_auth.rs` и `web_server.rs` на базе `axum` и `tower-http`. Поддержаны:
+  - Проверка криптографической подписи Telegram WebApp `initData` (`verify_telegram_init_data`) через HMAC-SHA256 с валидацией `max_age_seconds`.
+  - Проверка подписи параметров запуска VK Mini Apps `launch_params` (`verify_vk_launch_params`) через HMAC-SHA256.
+  - Управление сессиями Mini App (`create_session`, `authenticate_session`, `revoke_session`) с безопасным хранением хешей токенов в `miniapp_sessions`.
+  - Эндпоинты Mini App: `/api/miniapp/v1/auth/telegram`, `/api/miniapp/v1/auth/vk`, `/api/miniapp/v1/auth/logout`, профиль `/api/miniapp/v1/me`, настройки `/api/miniapp/v1/me/preferences`, каталог групп `/api/miniapp/v1/groups`, CRUD подписок `/api/miniapp/v1/me/subscriptions`, расписание `/api/miniapp/v1/schedule`, история изменений `/api/miniapp/v1/history`, телеметрия `/api/miniapp/v1/telemetry/*`.
+  - Веб-админка: `/health`, `/api/health`, страница входа `/login`, аутентификация по PBKDF2-хешам паролей пользователей из таблицы `web_users`, системные метрики `/api/metrics`, управление и рассылки `/control/broadcast`.
+- **Как:** веб-приложение построено на `axum`, маршрутизация изолирована через единый `Router` с поддержкой CORS и состояния `AppState`. Сессии привязаны к аккаунтам через модуль `account.rs`.
+- **Зачем:** перенести бэкенд Telegram/VK Mini App и веб-интерфейс конфигуратора на высокопроизводительный стек Rust с сохранением безопасности и совместимости со схемой БД.
+- **Проверки:** Rust `cargo test --locked` — 94 unit и 33 integration теста успешно (всего 127 тестов в `rust/`); Clippy и `cargo fmt` без замечаний. Python: `ruff check` и `compileall` успешно.
+- **Осталось:** CLI-бинарник `main.rs` (демон объединения Telegram polling, VK polling, планировщика и веб-сервера), OCR-модуль, Dockerfile.
+- **Коммит:** готовится к отправке.
+
 ## Ранее выполненные участки в `codex/rust-rewrite`
 
 | Коммит | Что и как сделано | Зачем и что ещё требуется |

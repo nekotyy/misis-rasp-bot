@@ -89,26 +89,26 @@
 
 | Исходная функция | Регистрация / маршрут | Статус |
 | --- | --- | --- |
-| [`health_check`](../miniapp_api/app.py#L104) | `app.get('/api/health')` | не перенесено |
-| [`health_check`](../miniapp_api/app.py#L104) | `app.get('/health')` | не перенесено |
-| [`auth_telegram`](../miniapp_api/app.py#L130) | `app.post('/api/miniapp/v1/auth/telegram', response_model=AuthResponse)` | не перенесено |
-| [`auth_vk`](../miniapp_api/app.py#L162) | `app.post('/api/miniapp/v1/auth/vk', response_model=AuthResponse)` | не перенесено |
-| [`logout`](../miniapp_api/app.py#L229) | `app.post('/api/miniapp/v1/auth/logout')` | не перенесено |
-| [`get_me`](../miniapp_api/app.py#L296) | `app.get('/api/miniapp/v1/me', response_model=ProfileResponse)` | не перенесено |
-| [`update_preferences`](../miniapp_api/app.py#L304) | `app.patch('/api/miniapp/v1/me/preferences', response_model=ProfileResponse)` | не перенесено |
-| [`search_groups`](../miniapp_api/app.py#L328) | `app.get('/api/miniapp/v1/groups', response_model=list[GroupItemDto])` | не перенесено |
-| [`add_subscription`](../miniapp_api/app.py#L394) | `app.post('/api/miniapp/v1/me/subscriptions', response_model=SubscriptionDto)` | не перенесено |
-| [`update_subscription`](../miniapp_api/app.py#L434) | `app.patch('/api/miniapp/v1/me/subscriptions/{sub_id}', response_model=SubscriptionDto)` | не перенесено |
-| [`delete_subscription`](../miniapp_api/app.py#L467) | `app.delete('/api/miniapp/v1/me/subscriptions/{sub_id}')` | не перенесено |
+| [`health_check`](../miniapp_api/app.py#L104) | `app.get('/api/health')` | перенесено (`web_server.rs`) |
+| [`health_check`](../miniapp_api/app.py#L104) | `app.get('/health')` | перенесено (`web_server.rs`) |
+| [`auth_telegram`](../miniapp_api/app.py#L130) | `app.post('/api/miniapp/v1/auth/telegram', response_model=AuthResponse)` | перенесено (`web_server.rs`) |
+| [`auth_vk`](../miniapp_api/app.py#L162) | `app.post('/api/miniapp/v1/auth/vk', response_model=AuthResponse)` | перенесено (`web_server.rs`) |
+| [`logout`](../miniapp_api/app.py#L229) | `app.post('/api/miniapp/v1/auth/logout')` | перенесено (`web_server.rs`) |
+| [`get_me`](../miniapp_api/app.py#L296) | `app.get('/api/miniapp/v1/me', response_model=ProfileResponse)` | перенесено (`web_server.rs`) |
+| [`update_preferences`](../miniapp_api/app.py#L304) | `app.patch('/api/miniapp/v1/me/preferences', response_model=ProfileResponse)` | перенесено (`web_server.rs`) |
+| [`search_groups`](../miniapp_api/app.py#L328) | `app.get('/api/miniapp/v1/groups', response_model=list[GroupItemDto])` | перенесено (`web_server.rs`) |
+| [`add_subscription`](../miniapp_api/app.py#L394) | `app.post('/api/miniapp/v1/me/subscriptions', response_model=SubscriptionDto)` | перенесено (`web_server.rs`) |
+| [`update_subscription`](../miniapp_api/app.py#L434) | `app.patch('/api/miniapp/v1/me/subscriptions/{sub_id}', response_model=SubscriptionDto)` | перенесено (`web_server.rs`) |
+| [`delete_subscription`](../miniapp_api/app.py#L467) | `app.delete('/api/miniapp/v1/me/subscriptions/{sub_id}')` | перенесено (`web_server.rs`) |
 | [`create_link_request`](../miniapp_api/app.py#L483) | `app.post('/api/miniapp/v1/account-links', response_model=CreateLinkRequestResponse)` | не перенесено |
 | [`confirm_link_request`](../miniapp_api/app.py#L496) | `app.post('/api/miniapp/v1/account-links/confirm')` | не перенесено |
 | [`unlink_identity`](../miniapp_api/app.py#L519) | `app.delete('/api/miniapp/v1/me/identities/{platform}')` | не перенесено |
-| [`get_schedule`](../miniapp_api/app.py#L636) | `app.get('/api/miniapp/v1/schedule', response_model=ScheduleResponse)` | не перенесено |
-| [`get_history`](../miniapp_api/app.py#L674) | `app.get('/api/miniapp/v1/history', response_model=HistoryResponse)` | не перенесено |
+| [`get_schedule`](../miniapp_api/app.py#L636) | `app.get('/api/miniapp/v1/schedule', response_model=ScheduleResponse)` | перенесено (`web_server.rs`) |
+| [`get_history`](../miniapp_api/app.py#L674) | `app.get('/api/miniapp/v1/history', response_model=HistoryResponse)` | перенесено (`web_server.rs`) |
 | [`get_user_avatar`](../miniapp_api/app.py#L759) | `app.get('/api/miniapp/v1/avatar/{platform}/{user_id}')` | не перенесено |
-| [`telemetry_session`](../miniapp_api/app.py#L907) | `app.post('/api/miniapp/v1/telemetry/session')` | не перенесено |
-| [`telemetry_ping`](../miniapp_api/app.py#L924) | `app.post('/api/miniapp/v1/telemetry/ping')` | не перенесено |
-| [`telemetry_event`](../miniapp_api/app.py#L937) | `app.post('/api/miniapp/v1/telemetry/event')` | не перенесено |
+| [`telemetry_session`](../miniapp_api/app.py#L907) | `app.post('/api/miniapp/v1/telemetry/session')` | перенесено (`web_server.rs`) |
+| [`telemetry_ping`](../miniapp_api/app.py#L924) | `app.post('/api/miniapp/v1/telemetry/ping')` | перенесено (`web_server.rs`) |
+| [`telemetry_event`](../miniapp_api/app.py#L937) | `app.post('/api/miniapp/v1/telemetry/event')` | перенесено (`web_server.rs`) |
 
 ## Планировщик: зарегистрированные задания
 
