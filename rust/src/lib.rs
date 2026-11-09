@@ -118,6 +118,7 @@ pub mod sync;
 pub mod telegram_engine;
 pub mod telegram_group;
 pub mod telegram_help;
+pub mod telegram_personalization;
 pub mod telegram_poll;
 pub mod telegram_ui;
 pub mod vk_poll;

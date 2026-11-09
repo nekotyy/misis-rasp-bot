@@ -15,6 +15,7 @@ pub struct TelegramEngine {
     selection: SelectionFlow,
     search: crate::telegram_search::SearchFlow,
     group: crate::telegram_group::GroupFlow,
+    personalization: crate::telegram_personalization::PersonalizationFlow,
 }
 pub struct EngineContext<'a> {
     pub settings: &'a crate::config::Settings,
@@ -66,6 +67,10 @@ impl TelegramEngine {
         }
         let mut selection = self.selection.clone();
         let mut group = self.group.interested(update).then(|| self.group.clone());
+        let mut personalization = self
+            .personalization
+            .interested(update)
+            .then(|| self.personalization.clone());
         let now = context.now.format("%Y-%m-%dT%H:%M:%S").to_string();
         let actor = crate::telegram_ui::register_actor(
             &tx,
@@ -113,7 +118,13 @@ impl TelegramEngine {
                 .and_then(crate::sources::university_kind)
                 .is_some();
         let callback = update.get("callback_query");
+        let personal_actions = match personalization.as_mut() {
+            Some(flow) => flow.handle(&tx, update, &user)?,
+            None => None,
+        };
         let actions = if let Some(actions) = override_actions {
+            actions
+        } else if let Some(actions) = personal_actions {
             actions
         } else if let Some(actions) = match group.as_mut() {
             Some(group) => group.handle(&tx, update, group_access, context, &now)?,
@@ -209,6 +220,9 @@ impl TelegramEngine {
         self.selection = selection;
         if let Some(group) = group {
             self.group = group;
+        }
+        if let Some(personalization) = personalization {
+            self.personalization = personalization;
         }
         Ok(HandleOutcome::Handled)
     }

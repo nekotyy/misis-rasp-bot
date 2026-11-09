@@ -50,6 +50,244 @@ fn delivery_stops_after_limit_and_large_request_does_not_disable_recipient() {
     assert_eq!(DeliveryFailure::Network.retry_delay(10), None);
 }
 
+#[test]
+fn sticker_personalization_rolls_back_and_replay_does_not_duplicate_delivery() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+    let setup = json!({"update_id":200,"callback_query":{"id":"cb","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:pers_set_sticker"}});
+    assert!(matches!(
+        engine.handle(&mut db, &setup, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let sticker = json!({"update_id":201,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"sticker":{"file_id":"sticker-file"}}});
+    db.execute_batch("CREATE TRIGGER fail_sticker BEFORE INSERT ON delivery_outbox BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+    assert!(engine.handle(&mut db, &sticker, &context).is_err());
+    assert!(misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap()
+        .custom_sticker_file_id
+        .is_none());
+    db.execute_batch("DROP TRIGGER fail_sticker").unwrap();
+    assert!(matches!(
+        engine.handle(&mut db, &sticker, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(matches!(
+        engine.handle(&mut db, &sticker, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", 42)
+            .unwrap()
+            .unwrap()
+            .custom_sticker_file_id
+            .as_deref(),
+        Some("sticker-file")
+    );
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM delivery_outbox WHERE delivery_id LIKE 'telegram-update:201:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let clear = json!({"update_id":202,"callback_query":{"id":"cb2","from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":"settings:pers_clear_sticker"}});
+    assert!(matches!(
+        engine.handle(&mut db, &clear, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(misis_rasp_core::database::get_user(&db, "telegram", 42)
+        .unwrap()
+        .unwrap()
+        .custom_sticker_file_id
+        .is_none());
+}
+
+#[test]
+fn cancelling_sticker_selection_leaves_existing_sticker_unchanged() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    use serde_json::json;
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    db.execute("INSERT INTO users(platform,user_id,custom_sticker_file_id,created_at,last_seen_at) VALUES ('telegram',42,'existing','now','now')",[]).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let mut engine = TelegramEngine::default();
+    let callback = |id: i64, data: &str| json!({"update_id":id,"callback_query":{"id":format!("cb{id}"),"from":{"id":42},"message":{"message_id":7,"chat":{"id":42}},"data":data}});
+    assert!(matches!(
+        engine
+            .handle(
+                &mut db,
+                &callback(210, "settings:pers_set_sticker"),
+                &context
+            )
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert!(matches!(
+        engine
+            .handle(
+                &mut db,
+                &callback(211, "settings:personalization"),
+                &context
+            )
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    let sticker = json!({"update_id":212,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"sticker":{"file_id":"replacement"}}});
+    assert!(matches!(
+        engine.handle(&mut db, &sticker, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", 42)
+            .unwrap()
+            .unwrap()
+            .custom_sticker_file_id
+            .as_deref(),
+        Some("existing")
+    );
+    assert!(matches!(
+        engine
+            .handle(
+                &mut db,
+                &callback(213, "settings:pers_set_sticker"),
+                &context
+            )
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    let start = json!({"update_id":214,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"/start"}});
+    assert!(matches!(
+        engine.handle(&mut db, &start, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    let after_start = json!({"update_id":215,"message":{"chat":{"id":42,"type":"private"},"from":{"id":42},"sticker":{"file_id":"replacement"}}});
+    assert!(matches!(
+        engine.handle(&mut db, &after_start, &context).unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert_eq!(
+        misis_rasp_core::database::get_user(&db, "telegram", 42)
+            .unwrap()
+            .unwrap()
+            .custom_sticker_file_id
+            .as_deref(),
+        Some("existing")
+    );
+    assert!(matches!(
+        engine
+            .handle(
+                &mut db,
+                &callback(216, "settings:pers_preview_sticker"),
+                &context
+            )
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert_eq!(
+        misis_rasp_core::outbox::get(&db, "telegram-update:216:0")
+            .unwrap()
+            .unwrap()
+            .method,
+        "sendSticker"
+    );
+    assert_eq!(
+        misis_rasp_core::outbox::get(&db, "telegram-update:216:1")
+            .unwrap()
+            .unwrap()
+            .method,
+        "sendMessage"
+    );
+    assert_eq!(
+        misis_rasp_core::outbox::get(&db, "telegram-update:216:2")
+            .unwrap()
+            .unwrap()
+            .method,
+        "answerCallbackQuery"
+    );
+}
+
+#[test]
+fn personalization_callback_without_message_is_acknowledged() {
+    use misis_rasp_core::{
+        config::Settings,
+        group_catalog::GroupCatalog,
+        search::SearchCatalog,
+        telegram_engine::{EngineContext, HandleOutcome, TelegramEngine},
+    };
+    let mut db = rusqlite::Connection::open_in_memory().unwrap();
+    misis_rasp_core::database::initialize(&mut db).unwrap();
+    let settings = Settings::from_map(&Default::default()).unwrap();
+    let groups = GroupCatalog::default();
+    let search = SearchCatalog::default();
+    let context = EngineContext {
+        settings: &settings,
+        groups: &groups,
+        search: &search,
+        group_snapshots: &[],
+        now: chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+        timestamp: 100.0,
+    };
+    let update = serde_json::json!({"update_id":220,"callback_query":{"id":"cb","from":{"id":42},"data":"settings:personalization"}});
+    assert!(matches!(
+        TelegramEngine::default()
+            .handle(&mut db, &update, &context)
+            .unwrap(),
+        HandleOutcome::Handled
+    ));
+    assert_eq!(
+        misis_rasp_core::outbox::get(&db, "telegram-update:220:0")
+            .unwrap()
+            .unwrap()
+            .method,
+        "answerCallbackQuery"
+    );
+}
+
 #[tokio::test]
 async fn http_retry_then_parses_college_page() {
     use std::io::{Read, Write};

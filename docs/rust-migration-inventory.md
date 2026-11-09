@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [`handle_teacher_choice`](../src/telegram_bot.py#L2332) | `dispatcher.callback_query(F.data.startswith('teacher:'))` | частично |
 | [`handle_start`](../src/telegram_bot.py#L2684) | `dispatcher.message(CommandStart())` | частично |
-| [`handle_sticker_message`](../src/telegram_bot.py#L2728) | `dispatcher.message(F.sticker)` | не перенесено |
+| [`handle_sticker_message`](../src/telegram_bot.py#L2728) | `dispatcher.message(F.sticker)` | частично: сохранение стикера при активном выборе перенесено; нужен полный сквозной тест и сверка обработки ошибок |
 | [`handle_donate_command`](../src/telegram_bot.py#L2744) | `dispatcher.message(Command('donate'))` | не перенесено |
 | [`handle_cleandb_command`](../src/telegram_bot.py#L2767) | `dispatcher.message(Command('cleandb'))` | не перенесено |
 | [`handle_dnremove_command`](../src/telegram_bot.py#L2782) | `dispatcher.message(Command('dnremove'))` | не перенесено |
