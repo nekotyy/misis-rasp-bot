@@ -12,7 +12,7 @@
 | [`handle_start`](../src/telegram_bot.py#L2684) | `dispatcher.message(CommandStart())` | частично |
 | [`handle_sticker_message`](../src/telegram_bot.py#L2728) | `dispatcher.message(F.sticker)` | частично: сохранение стикера при активном выборе перенесено; нужен полный сквозной тест и сверка обработки ошибок |
 | [`handle_donate_command`](../src/telegram_bot.py#L2744) | `dispatcher.message(Command('donate'))` | частично: перенесена команда /donate, инлайн-клавиатура сумм и диалог ввода произвольного количества звезд |
-| [`handle_cleandb_command`](../src/telegram_bot.py#L2767) | `dispatcher.message(Command('cleandb'))` | не перенесено |
+| [`handle_cleandb_command`](../src/telegram_bot.py#L2767) | `dispatcher.message(Command('cleandb'))` | частично: перенесена команда /cleandb для очистки старых записей outbox и processed_updates |
 | [`handle_dnremove_command`](../src/telegram_bot.py#L2782) | `dispatcher.message(Command('dnremove'))` | частично: перенесена админская команда /dnremove, вызов refundStarPayment и отметка возврата в БД |
 | [`process_pre_checkout`](../src/telegram_bot.py#L2865) | `dispatcher.pre_checkout_query()` | частично: перенесен ответ answerPreCheckoutQuery(ok=true) |
 | [`process_successful_payment`](../src/telegram_bot.py#L2869) | `dispatcher.message(F.successful_payment)` | частично: перенесена запись транзакции в star_donations и благодарственное сообщение |
@@ -25,7 +25,7 @@
 | [`handle_bugreport_command`](../src/telegram_bot.py#L3155) | `dispatcher.message(Command('bugreport'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
 | [`handle_feedback_command`](../src/telegram_bot.py#L3167) | `dispatcher.message(Command('feedback', 'support'))` | частично: перенесён ввод черновика, сохранение в feedback_messages и оповещение администраторов |
 | [`handle_reply_command`](../src/telegram_bot.py#L3181) | `dispatcher.message(Command('reply'))` | частично: перенесён ответ по ID пользователя/обращения и цитированием сообщения бота администратором |
-| [`handle_admin_command`](../src/telegram_bot.py#L3240) | `dispatcher.message(Command('admin'))` | не перенесено |
+| [`handle_admin_command`](../src/telegram_bot.py#L3240) | `dispatcher.message(Command('admin'))` | частично: перенесена команда /admin с показом панели полного и ограниченного администратора |
 | [`handle_ocr_command`](../src/telegram_bot.py#L3255) | `dispatcher.message(Command('ocr'))` | не перенесено |
 | [`handle_group_setup_command`](../src/telegram_bot.py#L3271) | `dispatcher.message(Command('group_setup'))` | частично |
 | [`handle_group_set_command`](../src/telegram_bot.py#L3289) | `dispatcher.message(Command('group_set'))` | частично |
@@ -42,7 +42,7 @@
 | [`handle_bot_added_to_chat`](../src/telegram_bot.py#L3639) | `dispatcher.my_chat_member()` | частично |
 | [`handle_startgroup_command`](../src/telegram_bot.py#L3659) | `dispatcher.message(F.text.func(is_group_setup_command))` | частично |
 | [`handle_donate_callback`](../src/telegram_bot.py#L3695) | `dispatcher.callback_query(F.data.startswith('donate:'))` | частично: обработка donate:stars:*, donate:stars:custom и donate:stars:cancel |
-| [`handle_admin_callback`](../src/telegram_bot.py#L3734) | `dispatcher.callback_query(F.data.startswith('admin:'))` | не перенесено |
+| [`handle_admin_callback`](../src/telegram_bot.py#L3734) | `dispatcher.callback_query(F.data.startswith('admin:'))` | частично: перенесены секции monitor/schedule/counters/people/service, статус, статистика, очистка БД, эталоны, перепарсинг, синхронизация счетчиков, список пользователей с пагинацией и массовая рассылка |
 | [`handle_editor_toggle`](../src/telegram_bot.py#L4637) | `dispatcher.callback_query(F.data.startswith('editor:toggle:'))` | не перенесено |
 | [`handle_admin_ocr_photo`](../src/telegram_bot.py#L4657) | `dispatcher.message(F.photo \| F.document)` | не перенесено |
 | [`handle_text_message`](../src/telegram_bot.py#L5065) | `dispatcher.message(F.text)` | частично |
@@ -146,12 +146,12 @@
 | `settings:lesson_counters` | Статистика занятий | частично: перенесён экран счетчиков занятий |
 | `settings:bugreport`, `settings:feedback`, `settings:support`, `report:*` | Обращение, черновик, отмена и отправка | частично: перенесён ввод черновика, подтверждение, отправка и ответы админа; требуется сквозной тест в Telegram |
 | `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | частично: перенесены выбор суммы, инвойс, pre_checkout и successful_payment |
-| `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | не перенесено |
-| `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | не перенесено |
+| `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | частично: перенесены обработчики действий администратора |
+| `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | частично: перенесены ввод текста, фильтрация по платформе и аудитории и запуск рассылки |
 | `admin:import_lessons*`, `admin:ocr_*` | Импорт занятий и OCR-диалоги | не перенесено |
 | `admin:lesson_*`, `editor:toggle:*` | Добавление, редактирование и удаление занятий, права редактора | не перенесено |
-| `admin:status`, `admin:daily_errors`, `admin:gemini_status`, `admin:users*`, `admin:editors` | Мониторинг, ошибки, Gemini, пользователи и редакторы | не перенесено |
-| `admin:last_change`, `admin:group_info`, `admin:course_stats`, `admin:miniapp_stats`, `admin:back`, `admin:close` | История, сведения и статистика, навигация админки | не перенесено |
+| `admin:status`, `admin:daily_errors`, `admin:gemini_status`, `admin:users*`, `admin:editors` | Мониторинг, ошибки, Gemini, пользователи и редакторы | частично: перенесены статус, ошибки за день, список пользователей с пагинацией |
+| `admin:last_change`, `admin:group_info`, `admin:course_stats`, `admin:miniapp_stats`, `admin:back`, `admin:close` | История, сведения и статистика, навигация админки | частично: перенесены статистика Mini App, разделы sec:* и навигация |
 
 Здесь перечислены основные явно обнаруженные ветви; вложенные фильтры, текстовые состояния и варианты внутри `admin:*` и VK по-прежнему нужно сверять с полным исходным кодом и тестами.
 

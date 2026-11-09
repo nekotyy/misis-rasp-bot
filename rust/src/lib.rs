@@ -115,6 +115,7 @@ pub mod notification;
 pub mod search;
 pub mod snapshot_resolver;
 pub mod sync;
+pub mod telegram_admin;
 pub mod telegram_audience;
 pub mod telegram_donate;
 pub mod telegram_engine;

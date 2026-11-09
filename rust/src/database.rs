@@ -951,6 +951,126 @@ pub fn collect_miniapp_stats(
     Ok(summary)
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AdminStatusSummary {
+    pub total_users: i64,
+    pub telegram_users: i64,
+    pub vk_users: i64,
+    pub telegram_personal: i64,
+    pub telegram_chats: i64,
+    pub vk_personal: i64,
+    pub vk_chats: i64,
+    pub group_subscriptions: i64,
+    pub teacher_subscriptions: i64,
+    pub outbox_pending: i64,
+    pub outbox_sent: i64,
+    pub outbox_failed: i64,
+}
+
+pub fn list_all_users(conn: &Connection) -> rusqlite::Result<Vec<UserRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT platform, user_id, username, full_name, subscription_type, subscription_key,
+                subscription_title, subscription_url, audience_subscription_key,
+                audience_subscription_title, audience_subscription_url, group_name,
+                schedule_id, is_admin, is_editor, homework_notifications_enabled,
+                delivery_disabled_auto, created_at, last_seen_at, custom_sticker_file_id,
+                university_subgroup
+         FROM users
+         ORDER BY platform, user_id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(UserRecord {
+            platform: row.get(0)?,
+            user_id: row.get(1)?,
+            username: row.get(2)?,
+            full_name: row.get(3)?,
+            subscription_type: row.get(4)?,
+            subscription_key: row.get(5)?,
+            subscription_title: row.get(6)?,
+            subscription_url: row.get(7)?,
+            audience_subscription_key: row.get(8)?,
+            audience_subscription_title: row.get(9)?,
+            audience_subscription_url: row.get(10)?,
+            group_name: row.get(11)?,
+            schedule_id: row.get(12)?,
+            is_admin: row.get::<_, i64>(13)? != 0,
+            is_editor: row.get::<_, i64>(14)? != 0,
+            homework_notifications_enabled: row.get::<_, i64>(15)? != 0,
+            delivery_disabled_auto: row.get::<_, i64>(16)? != 0,
+            created_at: row.get(17)?,
+            last_seen_at: row.get(18)?,
+            custom_sticker_file_id: row.get(19)?,
+            university_subgroup: row.get(20)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn collect_admin_status(conn: &Connection) -> rusqlite::Result<AdminStatusSummary> {
+    let mut summary = AdminStatusSummary::default();
+    let _ = conn.query_row(
+        "SELECT
+            COUNT(*),
+            COUNT(CASE WHEN platform = 'telegram' THEN 1 END),
+            COUNT(CASE WHEN platform = 'vk' THEN 1 END),
+            COUNT(CASE WHEN platform = 'telegram' AND user_id > 0 THEN 1 END),
+            COUNT(CASE WHEN platform = 'telegram' AND user_id < 0 THEN 1 END),
+            COUNT(CASE WHEN platform = 'vk' AND user_id < 2000000000 THEN 1 END),
+            COUNT(CASE WHEN platform = 'vk' AND user_id >= 2000000000 THEN 1 END),
+            COUNT(CASE WHEN subscription_type = 'group' THEN 1 END),
+            COUNT(CASE WHEN subscription_type = 'teacher' THEN 1 END)
+         FROM users",
+        [],
+        |row| {
+            summary.total_users = row.get(0)?;
+            summary.telegram_users = row.get(1)?;
+            summary.vk_users = row.get(2)?;
+            summary.telegram_personal = row.get(3)?;
+            summary.telegram_chats = row.get(4)?;
+            summary.vk_personal = row.get(5)?;
+            summary.vk_chats = row.get(6)?;
+            summary.group_subscriptions = row.get(7)?;
+            summary.teacher_subscriptions = row.get(8)?;
+            Ok(())
+        },
+    );
+    let _ = conn.query_row(
+        "SELECT
+            COUNT(CASE WHEN status = 'pending' THEN 1 END),
+            COUNT(CASE WHEN status = 'sent' THEN 1 END),
+            COUNT(CASE WHEN status = 'failed' THEN 1 END)
+         FROM delivery_outbox",
+        [],
+        |row| {
+            summary.outbox_pending = row.get(0)?;
+            summary.outbox_sent = row.get(1)?;
+            summary.outbox_failed = row.get(2)?;
+            Ok(())
+        },
+    );
+    Ok(summary)
+}
+
+pub fn cleanup_database(
+    conn: &Connection,
+    max_age_days: i64,
+    now: &str,
+) -> rusqlite::Result<usize> {
+    let threshold = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S")
+        .map(|dt| dt - chrono::Duration::days(max_age_days))
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_else(|_| now.to_string());
+    let deleted_outbox = conn.execute(
+        "DELETE FROM delivery_outbox WHERE status IN ('sent', 'failed') AND created_at < ?",
+        [&threshold],
+    )?;
+    let deleted_updates = conn.execute(
+        "DELETE FROM telegram_processed_updates WHERE processed_at < ?",
+        [&threshold],
+    )?;
+    Ok(deleted_outbox + deleted_updates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1245,6 +1365,47 @@ mod tests {
         assert_eq!(stats.total_tg_unique, 1);
         assert_eq!(stats.total_sessions, 1);
         assert_eq!(stats.sessions_today, 1);
+
+        upsert_user(
+            &db,
+            &UserRecord {
+                platform: "telegram".into(),
+                user_id: 77,
+                username: Some("user77".into()),
+                full_name: Some("User 77".into()),
+                subscription_type: Some("group".into()),
+                subscription_key: Some("group:1".into()),
+                subscription_title: Some("ИСП-25-1".into()),
+                subscription_url: None,
+                audience_subscription_key: None,
+                audience_subscription_title: None,
+                audience_subscription_url: None,
+                group_name: Some("ИСП-25-1".into()),
+                schedule_id: Some(1),
+                is_admin: false,
+                is_editor: false,
+                homework_notifications_enabled: true,
+                delivery_disabled_auto: false,
+                created_at: "2026-11-09T11:00:00".into(),
+                last_seen_at: "2026-11-09T11:00:00".into(),
+                custom_sticker_file_id: None,
+                university_subgroup: None,
+            },
+            "2026-11-09T11:00:00",
+        )
+        .unwrap();
+
+        let users = list_all_users(&db).unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].user_id, 77);
+
+        let admin_stats = collect_admin_status(&db).unwrap();
+        assert_eq!(admin_stats.total_users, 1);
+        assert_eq!(admin_stats.telegram_users, 1);
+        assert_eq!(admin_stats.vk_users, 0);
+
+        let cleaned = cleanup_database(&db, 7, "2026-11-20T12:00:00").unwrap();
+        assert_eq!(cleaned, 0);
     }
 }
 
