@@ -43,6 +43,7 @@ pub mod archive;
 pub mod calendar;
 pub mod diff;
 pub mod format;
+pub mod json_import;
 pub mod parser;
 pub mod search_preview;
 pub mod sources;

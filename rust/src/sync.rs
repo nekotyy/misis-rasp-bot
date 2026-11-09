@@ -191,7 +191,7 @@ pub enum AtomicApplyResult {
         duplicate: bool,
     },
 }
-fn save_in_transaction(
+pub fn save_in_transaction(
     tx: &rusqlite::Transaction<'_>,
     source: &Source<'_>,
     snapshot: &ScheduleSnapshot,
@@ -230,8 +230,8 @@ fn save_in_transaction(
     )?;
     Ok(())
 }
-pub fn apply_and_enqueue(
-    db: &mut rusqlite::Connection,
+pub fn apply_and_enqueue_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
     source: &Source<'_>,
     snapshot: &ScheduleSnapshot,
     hash: &str,
@@ -239,15 +239,14 @@ pub fn apply_and_enqueue(
     platforms: &DeliveryPlatforms,
     now_timestamp: f64,
 ) -> Result<AtomicApplyResult, Box<dyn std::error::Error>> {
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let previous = crate::database::latest_snapshot(
-        &tx,
+        tx,
         "current",
         source.schedule_id,
         Some(source.source_key),
     )?;
     let baseline = crate::database::latest_snapshot(
-        &tx,
+        tx,
         "daily_baseline",
         source.schedule_id,
         Some(source.source_key),
@@ -264,11 +263,11 @@ pub fn apply_and_enqueue(
     if matches!(decision, SnapshotDecision::RejectStaleEmpty) {
         return Ok(AtomicApplyResult::RejectedEmpty);
     }
-    save_in_transaction(&tx, source, snapshot, hash, "current", options)?;
+    save_in_transaction(tx, source, snapshot, hash, "current", options)?;
     let result = match decision {
         SnapshotDecision::RejectStaleEmpty => unreachable!(),
         SnapshotDecision::FirstBaseline => {
-            save_in_transaction(&tx, source, snapshot, hash, "daily_baseline", options)?;
+            save_in_transaction(tx, source, snapshot, hash, "daily_baseline", options)?;
             AtomicApplyResult::FirstBaseline
         }
         SnapshotDecision::Unchanged => AtomicApplyResult::Unchanged,
@@ -278,7 +277,7 @@ pub fn apply_and_enqueue(
             if options.notify {
                 let created = options.now.format("%Y-%m-%dT%H:%M:%S").to_string();
                 let recorded = crate::database::record_change(
-                    &tx,
+                    tx,
                     &crate::database::ChangeInput {
                         hash,
                         summary: &summary,
@@ -306,7 +305,7 @@ pub fn apply_and_enqueue(
                                  suffix: &str|
                      -> rusqlite::Result<usize> {
                         crate::notification::enqueue_broadcast_in_transaction(
-                            &tx,
+                            tx,
                             &crate::notification::Broadcast {
                                 event_id: &format!("{event_id}:{suffix}"),
                                 plain: &summary.message,
@@ -325,7 +324,7 @@ pub fn apply_and_enqueue(
                     if university {
                         let baseline = baseline.as_ref().expect("changed requires baseline");
                         for group in crate::database::university_notification_subgroups(
-                            &tx,
+                            tx,
                             source.source_key,
                         )? {
                             let subgroup = group.and_then(|v| u32::try_from(v).ok());
@@ -348,7 +347,7 @@ pub fn apply_and_enqueue(
                     }
                 }
             }
-            save_in_transaction(&tx, source, snapshot, hash, "daily_baseline", options)?;
+            save_in_transaction(tx, source, snapshot, hash, "daily_baseline", options)?;
             AtomicApplyResult::Changed {
                 summary,
                 queued,
@@ -356,6 +355,28 @@ pub fn apply_and_enqueue(
             }
         }
     };
+    Ok(result)
+}
+
+pub fn apply_and_enqueue(
+    db: &mut rusqlite::Connection,
+    source: &Source<'_>,
+    snapshot: &ScheduleSnapshot,
+    hash: &str,
+    options: &ApplyOptions<'_>,
+    platforms: &DeliveryPlatforms,
+    now_timestamp: f64,
+) -> Result<AtomicApplyResult, Box<dyn std::error::Error>> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let result = apply_and_enqueue_in_transaction(
+        &tx,
+        source,
+        snapshot,
+        hash,
+        options,
+        platforms,
+        now_timestamp,
+    )?;
     tx.commit()?;
     Ok(result)
 }

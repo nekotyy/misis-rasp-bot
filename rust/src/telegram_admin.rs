@@ -28,6 +28,8 @@ impl Default for BroadcastDraft {
 pub struct AdminFlow {
     pub awaiting_broadcast: HashSet<i64>,
     pub broadcast_drafts: HashMap<i64, BroadcastDraft>,
+    pub awaiting_json_import: HashSet<i64>,
+    pub json_import_drafts: HashMap<i64, crate::json_import::ImportResult>,
 }
 
 impl AdminFlow {
@@ -57,7 +59,8 @@ impl AdminFlow {
                 return true;
             }
             if let Some(id) = from_id {
-                if self.awaiting_broadcast.contains(&id) {
+                if self.awaiting_broadcast.contains(&id) || self.awaiting_json_import.contains(&id)
+                {
                     return true;
                 }
             }
@@ -67,12 +70,17 @@ impl AdminFlow {
     }
 
     pub fn has_user(&self, user_id: i64) -> bool {
-        self.awaiting_broadcast.contains(&user_id) || self.broadcast_drafts.contains_key(&user_id)
+        self.awaiting_broadcast.contains(&user_id)
+            || self.broadcast_drafts.contains_key(&user_id)
+            || self.awaiting_json_import.contains(&user_id)
+            || self.json_import_drafts.contains_key(&user_id)
     }
 
     pub fn reset_user(&mut self, user_id: i64) {
         self.awaiting_broadcast.remove(&user_id);
         self.broadcast_drafts.remove(&user_id);
+        self.awaiting_json_import.remove(&user_id);
+        self.json_import_drafts.remove(&user_id);
     }
 
     pub fn handle(
@@ -193,6 +201,57 @@ impl AdminFlow {
                     &draft.target_audience,
                 );
                 return Ok(Some(vec![send_message(chat_id, &preview, Some(kb))]));
+            }
+
+            // Если администратор отправляет JSON расписания (OCR)
+            if self.awaiting_json_import.contains(&user.user_id) && !text.starts_with('/') {
+                match crate::json_import::parse_schedule_json(text) {
+                    Ok(import_result) => {
+                        self.awaiting_json_import.remove(&user.user_id);
+                        let groups_list = import_result
+                            .snapshots
+                            .iter()
+                            .map(|s| {
+                                format!(
+                                    "• <b>{}</b> (пар: {})",
+                                    crate::format::escape_html(&s.group_name),
+                                    s.days.iter().map(|d| d.lessons.len()).sum::<usize>()
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let preview = format!(
+                            "<b>Предпросмотр импорта расписания (OCR JSON)</b>\n───────────────────────────\n\n\
+                            Групп в импорте: <b>{}</b>\nВсего пар: <b>{}</b>\n\n\
+                            {}\n\n\
+                            Выбери действие для применения:",
+                            import_result.snapshots.len(),
+                            import_result.total_lessons,
+                            groups_list,
+                        );
+                        self.json_import_drafts.insert(user.user_id, import_result);
+                        let kb = json!({
+                            "inline_keyboard": [
+                                [{"text": "📢 Подтвердить и разослать", "callback_data": "admin:ocr_summary_confirm"}],
+                                [{"text": "💾 Сохранить без рассылки", "callback_data": "admin:ocr_summary_confirm_silent"}],
+                                [{"text": "◀️ Отменить", "callback_data": "admin:sec:schedule"}]
+                            ]
+                        });
+                        return Ok(Some(vec![send_message(chat_id, &preview, Some(kb))]));
+                    }
+                    Err(err) => {
+                        let err_text = format!(
+                            "❌ <b>Ошибка при разборе JSON:</b>\n\n<code>{}</code>\n\nПришли исправленный JSON или отмени импорт:",
+                            crate::format::escape_html(&err)
+                        );
+                        let kb = json!({
+                            "inline_keyboard": [
+                                [{"text": "◀️ Отменить", "callback_data": "admin:sec:schedule"}]
+                            ]
+                        });
+                        return Ok(Some(vec![send_message(chat_id, &err_text, Some(kb))]));
+                    }
+                }
             }
         }
 
@@ -397,6 +456,81 @@ impl AdminFlow {
                 edit_or_send(chat_id, message_id, &text, Some(kb)),
                 answer_callback(callback_id, None, false),
             ]);
+        }
+
+        // Импорт OCR JSON
+        if action == "ocr_json_import" {
+            self.awaiting_json_import.insert(user.user_id);
+            self.json_import_drafts.remove(&user.user_id);
+            let prompt = concat!(
+                "<b>Импорт готового JSON расписания (OCR)</b>\n───────────────────────────\n\n",
+                "Пришли готовый JSON-текст расписания сообщением.\n\n",
+                "Поддерживаются форматы:\n",
+                "• Одиночная группа: <code>{\"group_name\": \"...\", \"days\": [...]}</code>\n",
+                "• Сводное расписание: <code>{\"date_iso\": \"...\", \"groups\": [...]}</code>\n",
+                "• Массив групп: <code>[{\"group_name\": \"...\", ...}]</code>\n"
+            );
+            let kb = json!({
+                "inline_keyboard": [
+                    [{"text": "◀️ Отменить", "callback_data": "admin:sec:schedule"}]
+                ]
+            });
+            return Ok(vec![
+                edit_or_send(chat_id, message_id, prompt, Some(kb)),
+                answer_callback(callback_id, None, false),
+            ]);
+        }
+
+        if action == "ocr_summary_confirm" || action == "ocr_summary_confirm_silent" {
+            let notify = action == "ocr_summary_confirm";
+            if let Some(draft) = self.json_import_drafts.remove(&user.user_id) {
+                let now_ts = context.timestamp;
+                match crate::json_import::apply_import_in_transaction(
+                    tx,
+                    &draft.snapshots,
+                    notify,
+                    now,
+                    now_ts,
+                ) {
+                    Ok(count) => {
+                        let text = format!(
+                            "✅ <b>Импорт успешно завершён!</b>\n\n• Обновлено групп: <b>{count}</b>\n• Всего пар: <b>{}</b>\n• Оповещение подписчиков: <b>{}</b>",
+                            draft.total_lessons,
+                            if notify { "Да" } else { "Нет (тихий режим)" },
+                        );
+                        return Ok(vec![
+                            edit_or_send(
+                                chat_id,
+                                message_id,
+                                &text,
+                                Some(admin_schedule_keyboard()),
+                            ),
+                            answer_callback(callback_id, Some("Расписание применено"), false),
+                        ]);
+                    }
+                    Err(err) => {
+                        let text = format!(
+                            "❌ <b>Ошибка при сохранении расписания:</b>\n\n<code>{}</code>",
+                            crate::format::escape_html(&err.to_string())
+                        );
+                        return Ok(vec![
+                            edit_or_send(
+                                chat_id,
+                                message_id,
+                                &text,
+                                Some(admin_schedule_keyboard()),
+                            ),
+                            answer_callback(callback_id, Some("Ошибка сохранения"), false),
+                        ]);
+                    }
+                }
+            } else {
+                let text = "⚠️ Данные импорта устарели. Пришлите JSON заново.";
+                return Ok(vec![
+                    edit_or_send(chat_id, message_id, text, Some(admin_schedule_keyboard())),
+                    answer_callback(callback_id, None, false),
+                ]);
+            }
         }
 
         // Рассылка (Broadcast)
@@ -661,6 +795,9 @@ pub fn admin_schedule_keyboard() -> Value {
             [
                 {"text": "🔄 Перепарсить", "callback_data": "admin:refresh"},
                 {"text": "💾 Сохранить эталон", "callback_data": "admin:baseline"}
+            ],
+            [
+                {"text": "📥 Импорт OCR JSON", "callback_data": "admin:ocr_json_import"}
             ],
             [
                 {"text": "◀️ Назад в админку", "callback_data": "admin:back"}
@@ -1035,5 +1172,113 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(conf_row.payload_json.contains("Рассылка запущена"));
+    }
+
+    #[test]
+    fn admin_ocr_json_import_flow() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+
+        let mut settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        settings.admin_telegram_ids = vec![999];
+
+        let groups = crate::group_catalog::GroupCatalog::default();
+        let search = crate::search::SearchCatalog::default();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            timestamp: 1700000000.0,
+            now,
+        };
+
+        let mut engine = crate::telegram_engine::TelegramEngine::default();
+
+        // 1. Callback admin:ocr_json_import
+        let start_import = json!({
+            "update_id": 701,
+            "callback_query": {
+                "id": "cb_import",
+                "from": {"id": 999},
+                "message": {"message_id": 1, "chat": {"id": 999}},
+                "data": "admin:ocr_json_import"
+            }
+        });
+        assert!(matches!(
+            engine.handle(&mut db, &start_import, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let prompt_row = crate::outbox::get(&db, "telegram-update:701:0")
+            .unwrap()
+            .unwrap();
+        assert!(prompt_row.payload_json.contains("Импорт готового JSON"));
+
+        // 2. Отправка JSON расписания
+        let json_data = r#"{
+            "group_name": "БПИ-24",
+            "days": [
+                {
+                    "date_iso": "2026-09-01",
+                    "date_label": "Вторник",
+                    "lessons": [
+                        {"number": 1, "subject": "Архитектура компьютеров"}
+                    ]
+                }
+            ]
+        }"#;
+        let msg_json = json!({
+            "update_id": 702,
+            "message": {
+                "message_id": 2,
+                "chat": {"id": 999, "type": "private"},
+                "from": {"id": 999, "first_name": "Админ"},
+                "text": json_data
+            }
+        });
+        assert!(matches!(
+            engine.handle(&mut db, &msg_json, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let prev_row = crate::outbox::get(&db, "telegram-update:702:0")
+            .unwrap()
+            .unwrap();
+        assert!(prev_row
+            .payload_json
+            .contains("Предпросмотр импорта расписания"));
+        assert!(prev_row.payload_json.contains("БПИ-24"));
+
+        // 3. Подтверждение импорта admin:ocr_summary_confirm
+        let confirm_cb = json!({
+            "update_id": 703,
+            "callback_query": {
+                "id": "cb_conf",
+                "from": {"id": 999},
+                "message": {"message_id": 3, "chat": {"id": 999}},
+                "data": "admin:ocr_summary_confirm"
+            }
+        });
+        assert!(matches!(
+            engine.handle(&mut db, &confirm_cb, &context).unwrap(),
+            HandleOutcome::Handled
+        ));
+        let res_row = crate::outbox::get(&db, "telegram-update:703:0")
+            .unwrap()
+            .unwrap();
+        assert!(res_row.payload_json.contains("Импорт успешно завершён"));
+
+        // Проверяем сохранение снимка
+        let snap = crate::database::latest_snapshot(&db, "current", None, Some("group:БПИ-24"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snap.content.group_name, "БПИ-24");
+        assert_eq!(
+            snap.content.days[0].lessons[0].subject,
+            "Архитектура компьютеров"
+        );
     }
 }

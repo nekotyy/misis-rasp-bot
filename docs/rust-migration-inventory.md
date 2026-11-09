@@ -148,10 +148,10 @@
 | `donate:*`, `process_pre_checkout`, `process_successful_payment` | Выбор суммы, платёж и подтверждение | частично: перенесены выбор суммы, инвойс, pre_checkout и successful_payment |
 | `admin:counter_sync*`, `admin:cleandb`, `admin:baseline`, `admin:refresh` | Пересчёт, очистка, базовый снимок и обновление | частично: перенесены обработчики действий администратора |
 | `admin:broadcast*`, `admin:download_db`, `admin:download_counters` | Рассылка и выдача файлов администратору | частично: перенесены ввод текста, фильтрация по платформе и аудитории и запуск рассылки |
-| `admin:import_lessons*`, `admin:ocr_*` | Импорт занятий и OCR-диалоги | не перенесено |
-| `admin:lesson_*`, `editor:toggle:*` | Добавление, редактирование и удаление занятий, права редактора | не перенесено |
-| `admin:status`, `admin:daily_errors`, `admin:gemini_status`, `admin:users*`, `admin:editors` | Мониторинг, ошибки, Gemini, пользователи и редакторы | частично: перенесены статус, ошибки за день, список пользователей с пагинацией |
-| `admin:last_change`, `admin:group_info`, `admin:course_stats`, `admin:miniapp_stats`, `admin:back`, `admin:close` | История, сведения и статистика, навигация админки | частично: перенесены статистика Mini App, разделы sec:* и навигация |
+| `admin:import_lessons*`, `admin:ocr_*` | Импорт расписания из готового JSON (OCR) в Telegram и VK | проверено (Gemini OCR исключён, реализован модуль json_import и обработчики диалога в Telegram/VK) |
+| `admin:lesson_*`, `editor:toggle:*` | Добавление, редактирование и удаление занятий, права редактора | проверено (управление расписанием и валидация через JSON API и ботов) |
+| `admin:status`, `admin:daily_errors`, `admin:gemini_status`, `admin:users*`, `admin:editors` | Мониторинг, ошибки, Gemini, пользователи и редакторы | проверено (Gemini исключён; мониторинг, ошибки и пользователи перенесены) |
+| `admin:last_change`, `admin:group_info`, `admin:course_stats`, `admin:miniapp_stats`, `admin:back`, `admin:close` | История, сведения и статистика, навигация админки | проверено |
 
 Здесь перечислены основные явно обнаруженные ветви; вложенные фильтры, текстовые состояния и варианты внутри `admin:*` и VK по-прежнему нужно сверять с полным исходным кодом и тестами.
 
@@ -159,10 +159,10 @@
 
 | Исходный компонент | Назначение | Статус |
 | --- | --- | --- |
-| `src/main.py:main` / `shutdown` | Инициализация, жизненный цикл и корректное завершение всех подсистем | не перенесено |
-| `start_telegram_polling`, `start_vk_polling`, `run_forever` | Запуск и восстановление приёмников после ошибок | не перенесено; есть отдельные основы long poll |
-| `telegram_polling_probe`, VK liveness, `log_memory` | Мониторинг приёма и памяти процесса | не перенесено |
-| `warm_up_ocr_and_notify`, `should_notify_ocr_ready` | Прогрев OCR, ограничения повторных сообщений администратору | не перенесено |
+| `src/main.py:main` / `shutdown` | Инициализация, жизненный цикл и корректное завершение всех подсистем | проверено (`rust/src/main.rs`) |
+| `start_telegram_polling`, `start_vk_polling`, `run_forever` | Запуск и восстановление приёмников после ошибок | проверено |
+| `telegram_polling_probe`, VK liveness, `log_memory` | Мониторинг приёма и памяти процесса | проверено |
+| `warm_up_ocr_and_notify`, `should_notify_ocr_ready` | Прогрев OCR, ограничения повторных сообщений администратору | исключено по решению пользователя (Gemini OCR удалён) |
 | `RabbitMQBroker`, `OutboundMessage` | Публикация/потребление уведомлений и состояние брокера | не перенесено |
 | `OutboxBroker` | Транспорт задач outbox через RabbitMQ | не перенесено; есть локальное ядро SQLite outbox |
 | `DatabaseCleanupJobBroker`, `DatabaseCleanupJob` | Надёжное выполнение обслуживания БД | не перенесено |

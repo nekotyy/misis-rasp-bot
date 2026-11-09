@@ -13,6 +13,8 @@ pub const VK_CHAT_PEER_THRESHOLD: i64 = 2_000_000_000;
 pub struct VkEngine {
     pub awaiting_group: HashSet<i64>,
     pub awaiting_feedback: HashMap<i64, String>,
+    pub awaiting_admin_json_import: HashSet<i64>,
+    pub admin_json_drafts: HashMap<i64, crate::json_import::ImportResult>,
 }
 
 impl VkEngine {
@@ -83,6 +85,10 @@ impl VkEngine {
             university_subgroup: None,
         });
         user.last_seen_at = now.into();
+        let is_admin = user.is_admin || context.settings.admin_vk_id == Some(actor_id);
+        if is_admin {
+            user.is_admin = true;
+        }
         upsert_user(tx, &user, now)?;
 
         // Обработка системного события добавления бота в беседу
@@ -116,6 +122,161 @@ impl VkEngine {
         // Очистка упоминания бота: [club12345|@bot] текст -> текст
         let text = strip_vk_mention(raw_text);
         let normalized = text.to_lowercase();
+
+        // Админ-команды и управление
+        if matches!(
+            normalized.as_str(),
+            "/admin" | "admin" | "админка" | "админ"
+        ) {
+            if !is_admin {
+                return Ok(Some(vec![vk_send_message(
+                    peer_id,
+                    "Команда доступна только администраторам бота.",
+                    None,
+                )]));
+            }
+            self.awaiting_admin_json_import.remove(&actor_id);
+            self.admin_json_drafts.remove(&actor_id);
+            let text = "<b>Панель администратора VK</b>\n───────────────────────────\nВыбери раздел для управления:";
+            let kb = vk_admin_main_keyboard();
+            return Ok(Some(vec![vk_send_message(peer_id, text, Some(kb))]));
+        }
+
+        if normalized == "закрыть админку" && is_admin {
+            self.awaiting_admin_json_import.remove(&actor_id);
+            self.admin_json_drafts.remove(&actor_id);
+            let menu_text = format_vk_main_menu(&user);
+            let kb = vk_main_keyboard(user.subscription_key.is_some());
+            return Ok(Some(vec![vk_send_message(peer_id, &menu_text, Some(kb))]));
+        }
+
+        if normalized == "назад в админку" && is_admin {
+            self.awaiting_admin_json_import.remove(&actor_id);
+            self.admin_json_drafts.remove(&actor_id);
+            let text = "<b>Панель администратора VK</b>\n───────────────────────────\nВыбери раздел для управления:";
+            let kb = vk_admin_main_keyboard();
+            return Ok(Some(vec![vk_send_message(peer_id, text, Some(kb))]));
+        }
+
+        if (normalized == "расписание и ocr" || normalized == "расписание и оцр") && is_admin
+        {
+            let text = "<b>Расписание и OCR</b>\n───────────────────────────\nУправление источниками и загрузка готового JSON:";
+            let kb = vk_admin_schedule_keyboard();
+            return Ok(Some(vec![vk_send_message(peer_id, text, Some(kb))]));
+        }
+
+        if (normalized == "импорт ocr json" || normalized == "импорт json") && is_admin
+        {
+            self.awaiting_admin_json_import.insert(actor_id);
+            self.admin_json_drafts.remove(&actor_id);
+            let prompt = concat!(
+                "<b>Импорт готового JSON расписания (OCR)</b>\n───────────────────────────\n\n",
+                "Пришли готовый JSON-текст расписания сообщением.\n\n",
+                "Поддерживаются форматы:\n",
+                "• Одиночная группа: <code>{\"group_name\": \"...\", \"days\": [...]}</code>\n",
+                "• Сводное расписание: <code>{\"date_iso\": \"...\", \"groups\": [...]}</code>\n",
+                "• Массив групп: <code>[{\"group_name\": \"...\", ...}]</code>"
+            );
+            let kb = vk_simple_keyboard(&[&["Отменить"]]);
+            return Ok(Some(vec![vk_send_message(peer_id, prompt, Some(kb))]));
+        }
+
+        if is_admin && self.awaiting_admin_json_import.contains(&actor_id) {
+            if normalized == "отменить" {
+                self.awaiting_admin_json_import.remove(&actor_id);
+                self.admin_json_drafts.remove(&actor_id);
+                let text = "Импорт отменён.\n\nВозврат в меню расписания:";
+                let kb = vk_admin_schedule_keyboard();
+                return Ok(Some(vec![vk_send_message(peer_id, text, Some(kb))]));
+            }
+
+            match crate::json_import::parse_schedule_json(&text) {
+                Ok(import_result) => {
+                    self.awaiting_admin_json_import.remove(&actor_id);
+                    let groups_list = import_result
+                        .snapshots
+                        .iter()
+                        .map(|s| {
+                            format!(
+                                "• <b>{}</b> (пар: {})",
+                                crate::format::escape_html(&s.group_name),
+                                s.days.iter().map(|d| d.lessons.len()).sum::<usize>()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let preview = format!(
+                        "<b>Предпросмотр импорта расписания (OCR JSON)</b>\n───────────────────────────\n\n\
+                        Групп в импорте: <b>{}</b>\nВсего пар: <b>{}</b>\n\n\
+                        {}\n\n\
+                        Выбери действие для применения:",
+                        import_result.snapshots.len(),
+                        import_result.total_lessons,
+                        groups_list,
+                    );
+                    self.admin_json_drafts.insert(actor_id, import_result);
+                    let kb = vk_simple_keyboard(&[
+                        &["Подтвердить и разослать"],
+                        &["Сохранить без рассылки"],
+                        &["Отменить"],
+                    ]);
+                    return Ok(Some(vec![vk_send_message(peer_id, &preview, Some(kb))]));
+                }
+                Err(err) => {
+                    let err_text = format!(
+                        "❌ <b>Ошибка при разборе JSON:</b>\n\n<code>{}</code>\n\nПришли исправленный JSON или нажми «Отменить»:",
+                        crate::format::escape_html(&err)
+                    );
+                    let kb = vk_simple_keyboard(&[&["Отменить"]]);
+                    return Ok(Some(vec![vk_send_message(peer_id, &err_text, Some(kb))]));
+                }
+            }
+        }
+
+        if is_admin
+            && (normalized == "подтвердить и разослать" || normalized == "сохранить без рассылки")
+        {
+            let notify = normalized == "подтвердить и разослать";
+            if let Some(draft) = self.admin_json_drafts.remove(&actor_id) {
+                let now_ts = context.timestamp;
+                match crate::json_import::apply_import_in_transaction(
+                    tx,
+                    &draft.snapshots,
+                    notify,
+                    now,
+                    now_ts,
+                ) {
+                    Ok(count) => {
+                        let text = format!(
+                            "✅ <b>Импорт успешно завершён!</b>\n\n• Обновлено групп: <b>{count}</b>\n• Всего пар: <b>{}</b>\n• Оповещение подписчиков: <b>{}</b>",
+                            draft.total_lessons,
+                            if notify { "Да" } else { "Нет (тихий режим)" },
+                        );
+                        let kb = vk_admin_schedule_keyboard();
+                        return Ok(Some(vec![vk_send_message(peer_id, &text, Some(kb))]));
+                    }
+                    Err(err) => {
+                        let text = format!(
+                            "❌ <b>Ошибка при сохранении расписания:</b>\n\n<code>{}</code>",
+                            crate::format::escape_html(&err.to_string())
+                        );
+                        let kb = vk_admin_schedule_keyboard();
+                        return Ok(Some(vec![vk_send_message(peer_id, &text, Some(kb))]));
+                    }
+                }
+            } else {
+                let text = "⚠️ Данные импорта устарели. Пришлите JSON заново.";
+                let kb = vk_admin_schedule_keyboard();
+                return Ok(Some(vec![vk_send_message(peer_id, text, Some(kb))]));
+            }
+        }
+
+        if normalized == "мониторинг" && is_admin {
+            let stats = crate::database::collect_admin_status(tx)?;
+            let text = crate::telegram_admin::format_admin_status_report(&stats);
+            let kb = vk_simple_keyboard(&[&["Назад в админку"]]);
+            return Ok(Some(vec![vk_send_message(peer_id, &text, Some(kb))]));
+        }
 
         // 1. Команды старта / меню
         if matches!(normalized.as_str(), "/start" | "start" | "начать" | "меню") {
@@ -553,6 +714,52 @@ pub fn vk_event_answer(
     }
 }
 
+pub fn vk_simple_keyboard(rows: &[&[&str]]) -> Value {
+    let buttons: Vec<Vec<Value>> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|label| {
+                    let color = match *label {
+                        "Отменить" | "Закрыть админку" => "negative",
+                        "Подтвердить и разослать" => "positive",
+                        _ => "secondary",
+                    };
+                    json!({
+                        "action": {
+                            "type": "text",
+                            "label": *label,
+                        },
+                        "color": color
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    json!({
+        "one_time": false,
+        "inline": false,
+        "buttons": buttons
+    })
+}
+
+pub fn vk_admin_main_keyboard() -> Value {
+    vk_simple_keyboard(&[
+        &["Мониторинг", "Расписание и OCR"],
+        &["Счётчики пар", "Пользователи"],
+        &["Служебное"],
+        &["Закрыть админку"],
+    ])
+}
+
+pub fn vk_admin_schedule_keyboard() -> Value {
+    vk_simple_keyboard(&[
+        &["Перепарсить", "Сохранить эталон"],
+        &["Импорт OCR JSON"],
+        &["Назад в админку"],
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +928,171 @@ mod tests {
 
         let user_updated = get_user(&db, "vk", 12345).unwrap().unwrap();
         assert!(!user_updated.homework_notifications_enabled);
+    }
+
+    #[test]
+    fn vk_admin_ocr_json_import_flow() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::initialize(&mut db).unwrap();
+
+        let mut settings = crate::config::Settings::from_map(&Default::default()).unwrap();
+        settings.admin_vk_id = Some(777);
+
+        let groups = crate::group_catalog::GroupCatalog::default();
+        let search = crate::search::SearchCatalog::default();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 9)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let context = EngineContext {
+            settings: &settings,
+            groups: &groups,
+            search: &search,
+            group_snapshots: &[],
+            timestamp: 1700000000.0,
+            now,
+        };
+
+        let mut engine = VkEngine::default();
+
+        // 1. Вход в админку через /admin
+        let admin_update = json!({
+            "type": "message_new",
+            "object": {
+                "message": {
+                    "peer_id": 777,
+                    "from_id": 777,
+                    "text": "/admin"
+                }
+            }
+        });
+        let tx = db.transaction().unwrap();
+        let actions = engine
+            .handle(&tx, &admin_update, &context, "2026-11-09T12:00:00")
+            .unwrap()
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Панель администратора"));
+
+        // 2. Переход в раздел Расписание и OCR
+        let sched_sec_update = json!({
+            "type": "message_new",
+            "object": {
+                "message": {
+                    "peer_id": 777,
+                    "from_id": 777,
+                    "text": "Расписание и OCR"
+                }
+            }
+        });
+        let tx = db.transaction().unwrap();
+        let actions = engine
+            .handle(&tx, &sched_sec_update, &context, "2026-11-09T12:00:00")
+            .unwrap()
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Расписание и OCR"));
+
+        // 3. Выбор Импорт OCR JSON
+        let import_cmd_update = json!({
+            "type": "message_new",
+            "object": {
+                "message": {
+                    "peer_id": 777,
+                    "from_id": 777,
+                    "text": "Импорт OCR JSON"
+                }
+            }
+        });
+        let tx = db.transaction().unwrap();
+        let actions = engine
+            .handle(&tx, &import_cmd_update, &context, "2026-11-09T12:00:00")
+            .unwrap()
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Пришли готовый JSON-текст"));
+        assert!(engine.awaiting_admin_json_import.contains(&777));
+
+        // 4. Отправка JSON расписания
+        let json_body = r#"{
+            "group_name": "ИСП-25-1",
+            "days": [
+                {
+                    "date_iso": "2026-09-01",
+                    "date_label": "Вторник",
+                    "lessons": [
+                        {"number": 1, "subject": "Программирование на Rust"}
+                    ]
+                }
+            ]
+        }"#;
+        let send_json_update = json!({
+            "type": "message_new",
+            "object": {
+                "message": {
+                    "peer_id": 777,
+                    "from_id": 777,
+                    "text": json_body
+                }
+            }
+        });
+        let tx = db.transaction().unwrap();
+        let actions = engine
+            .handle(&tx, &send_json_update, &context, "2026-11-09T12:00:00")
+            .unwrap()
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Предпросмотр импорта расписания"));
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("ИСП-25-1"));
+        assert!(!engine.awaiting_admin_json_import.contains(&777));
+        assert!(engine.admin_json_drafts.contains_key(&777));
+
+        // 5. Подтверждение и применение
+        let confirm_update = json!({
+            "type": "message_new",
+            "object": {
+                "message": {
+                    "peer_id": 777,
+                    "from_id": 777,
+                    "text": "Подтвердить и разослать"
+                }
+            }
+        });
+        let tx = db.transaction().unwrap();
+        let actions = engine
+            .handle(&tx, &confirm_update, &context, "2026-11-09T12:00:00")
+            .unwrap()
+            .unwrap();
+        tx.commit().unwrap();
+        assert!(actions[0].payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Импорт успешно завершён"));
+
+        // Проверяем, что снимок сохранился в БД
+        let saved =
+            crate::database::latest_snapshot(&db, "current", None, Some("group:ИСП-25-1")).unwrap();
+        assert!(saved.is_some());
+        let snap = saved.unwrap();
+        assert_eq!(snap.content.group_name, "ИСП-25-1");
+        assert_eq!(
+            snap.content.days[0].lessons[0].subject,
+            "Программирование на Rust"
+        );
     }
 }
