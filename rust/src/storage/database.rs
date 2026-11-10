@@ -7,6 +7,13 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
     db.busy_timeout(Duration::from_secs(30))?;
     Ok(db)
 }
+
+/// Открывает уже инициализированную БД без создания нового файла.
+pub fn connect_existing(path: &Path) -> rusqlite::Result<Connection> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    db.busy_timeout(Duration::from_secs(30))?;
+    Ok(db)
+}
 pub fn upsert_user(db: &Connection, user: &UserRecord, now: &str) -> rusqlite::Result<()> {
     db.execute("INSERT INTO users (platform,user_id,username,full_name,subscription_type,subscription_key,subscription_title,subscription_url,audience_subscription_key,audience_subscription_title,audience_subscription_url,group_name,schedule_id,is_admin,is_editor,homework_notifications_enabled,delivery_disabled_auto,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(platform,user_id) DO UPDATE SET username=excluded.username,full_name=excluded.full_name,subscription_type=COALESCE(excluded.subscription_type,users.subscription_type),subscription_key=COALESCE(excluded.subscription_key,users.subscription_key),subscription_title=COALESCE(excluded.subscription_title,users.subscription_title),subscription_url=COALESCE(excluded.subscription_url,users.subscription_url),university_subgroup=CASE WHEN excluded.subscription_key IS NOT NULL AND excluded.subscription_key IS NOT users.subscription_key THEN NULL ELSE users.university_subgroup END,audience_subscription_key=COALESCE(excluded.audience_subscription_key,users.audience_subscription_key),audience_subscription_title=COALESCE(excluded.audience_subscription_title,users.audience_subscription_title),audience_subscription_url=COALESCE(excluded.audience_subscription_url,users.audience_subscription_url),group_name=COALESCE(excluded.group_name,users.group_name),schedule_id=COALESCE(excluded.schedule_id,users.schedule_id),is_admin=excluded.is_admin,is_editor=COALESCE(users.is_editor,excluded.is_editor),homework_notifications_enabled=CASE WHEN users.delivery_disabled_auto=1 THEN 1 ELSE users.homework_notifications_enabled END,delivery_disabled_auto=0,last_seen_at=excluded.last_seen_at",params![user.platform,user.user_id,user.username,user.full_name,user.subscription_type,user.subscription_key,user.subscription_title,user.subscription_url,user.audience_subscription_key,user.audience_subscription_title,user.audience_subscription_url,user.group_name,user.schedule_id,user.is_admin,user.is_editor,true,false,now,now])?;
     Ok(())

@@ -287,7 +287,8 @@ class MiniappApiTests(unittest.IsolatedAsyncioTestCase):
             completeness="complete",
         )
 
-        sched_resp = client.get(f"/api/miniapp/v1/schedule?subscription_id={sub_id}", headers=headers)
+        with patch("miniapp_api.app.today_in_timezone", return_value=today_dt):
+            sched_resp = client.get(f"/api/miniapp/v1/schedule?subscription_id={sub_id}", headers=headers)
         self.assertEqual(sched_resp.status_code, 200)
         sched_data = sched_resp.json()
         self.assertEqual(len(sched_data["days"]), 3)

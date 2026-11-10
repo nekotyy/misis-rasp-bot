@@ -30,8 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Подключение к базе данных {:?}", settings.database_path);
     let mut conn = rusqlite::Connection::open(&settings.database_path)?;
     database::initialize(&mut conn)?;
+    // Сеть каждого фонового задания не должна удерживать mutex веб-сервера.
+    // Все подключения работают с той же проверенной базой в режиме WAL.
+    let outbox_conn = database::connect_existing(&settings.database_path)?;
+    let schedule_conn = database::connect_existing(&settings.database_path)?;
 
     let db_mutex = Arc::new(Mutex::new(conn));
+    // Синхронизация и эталоны остаются последовательными, чтобы не менять
+    // порядок обработки расписания и сохранения контрольных точек.
+    let db_schedule = Arc::new(Mutex::new(schedule_conn));
     let settings_arc = Arc::new(settings);
 
     let transport = Arc::new(ApiTransport::new(
@@ -46,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Фоновый воркер доставки сообщений из outbox
     let sched_outbox = scheduler.clone();
-    let db_outbox = db_mutex.clone();
+    let db_outbox = Arc::new(Mutex::new(outbox_conn));
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -58,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Фоновый планировщик синхронизации расписания
     let sched_sync = scheduler.clone();
-    let db_sync = db_mutex.clone();
+    let db_sync = db_schedule.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(900)).await;
@@ -73,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Ежедневное сохранение эталонов и очистка БД
     let sched_daily = scheduler.clone();
-    let db_daily = db_mutex.clone();
+    let db_daily = db_schedule.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600 * 6)).await;
