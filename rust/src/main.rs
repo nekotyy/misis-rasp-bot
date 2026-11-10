@@ -5,8 +5,8 @@ use tokio::sync::Mutex;
 
 use misis_rasp_core::config::Settings;
 use misis_rasp_core::cron_sync::{
-    run_baseline_cron, run_sync_cron, BaselineKind, BaselineSchedule, BaselineTrigger,
-    SyncSchedule, SyncTrigger,
+    run_baseline_cron, run_cleanup_cron, run_sync_cron, BaselineKind, BaselineSchedule,
+    BaselineTrigger, CleanupSchedule, SyncSchedule, SyncTrigger,
 };
 use misis_rasp_core::database;
 use misis_rasp_core::notification::ApiTransport;
@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sync_schedule = SyncSchedule::new()?;
     let (_cron_shutdown_tx, cron_shutdown) = tokio::sync::watch::channel(false);
     let baseline_shutdown = cron_shutdown.clone();
+    let cleanup_shutdown = cron_shutdown.clone();
     let cron_trigger = sync_trigger.clone();
     let _sync_cron = tokio::spawn(async move {
         if run_sync_cron(sync_schedule, sync_timezone, cron_trigger, cron_shutdown)
@@ -141,15 +142,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Очистку пока оставляем по прежнему Rust-интервалу до отдельной сверки с Python.
+    // Еженедельная очистка журналов по понедельникам в 04:30.
     let sched_cleanup = scheduler.clone();
     let db_cleanup = db_schedule.clone();
+    let cleanup_schedule = CleanupSchedule::new()?;
+    let (cleanup_tx, mut cleanup_rx) = tokio::sync::mpsc::channel(1);
+    let cleanup_trigger = SyncTrigger::new(cleanup_tx);
+    let cron_cleanup_trigger = cleanup_trigger.clone();
+    let _cleanup_cron = tokio::spawn(async move {
+        if run_cleanup_cron(
+            cleanup_schedule,
+            sync_timezone,
+            cron_cleanup_trigger,
+            cleanup_shutdown,
+        )
+        .await
+        .is_err()
+        {
+            eprintln!("Не удалось вычислить время очистки журналов");
+        }
+    });
     tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(3600 * 6)).await;
+        while cleanup_rx.recv().await.is_some() {
             let db = db_cleanup.lock().await;
             let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-            let _ = sched_cleanup.cleanup_old_records(&db, 30, &now_str);
+            if sched_cleanup
+                .cleanup_old_records(&db, 90, &now_str)
+                .is_err()
+            {
+                eprintln!("Не удалось очистить устаревшие журналы");
+            }
+            cleanup_trigger.finished();
         }
     });
 

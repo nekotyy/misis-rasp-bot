@@ -264,7 +264,7 @@ impl Scheduler {
         Ok(saved)
     }
 
-    /// Очистка устаревших логов и записей outbox
+    /// Очистка устаревших технических журналов без затрагивания outbox.
     pub fn cleanup_old_records(
         &self,
         db: &rusqlite::Connection,

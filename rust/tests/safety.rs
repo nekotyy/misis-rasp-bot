@@ -90,7 +90,7 @@ async fn vk_miniapp_auth_uses_app_secret_instead_of_bot_token() {
 }
 
 #[test]
-fn cleanup_preserves_recent_records_and_rejects_invalid_dates() {
+fn log_cleanup_preserves_all_outbox_updates_and_rejects_invalid_dates() {
     let mut db = rusqlite::Connection::open_in_memory().unwrap();
     database::initialize(&mut db).unwrap();
     let now = chrono::NaiveDateTime::parse_from_str("2026-11-20T12:00:00", "%Y-%m-%dT%H:%M:%S")
@@ -121,24 +121,18 @@ fn cleanup_preserves_recent_records_and_rejects_invalid_dates() {
     assert!(database::cleanup_database(&db, -1, "2026-11-20T12:00:00").is_err());
     assert_eq!(
         database::cleanup_database(&db, 7, "2026-11-20T12:00:00").unwrap(),
-        2
+        0
     );
     let remaining: i64 = db
-        .query_row(
-            "SELECT count(*) FROM delivery_outbox WHERE delivery_id IN ('recent', 'within_retention', 'leased', 'pending')",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM delivery_outbox", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(remaining, 4);
+    assert_eq!(remaining, 5);
     let remaining_updates: i64 = db
-        .query_row(
-            "SELECT count(*) FROM telegram_processed_updates WHERE update_id = 2",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM telegram_processed_updates", [], |r| {
+            r.get(0)
+        })
         .unwrap();
-    assert_eq!(remaining_updates, 1);
+    assert_eq!(remaining_updates, 2);
 }
 
 #[tokio::test]

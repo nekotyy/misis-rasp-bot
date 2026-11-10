@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, watch};
 
 /// Формат: минута, час, день месяца, месяц, день недели.
 pub const SYNC_CRONS: [&str; 2] = ["10 * * * *", "40 9-13 * * *"];
+pub const CLEANUP_CRON: &str = "30 4 * * 1";
 pub const BASELINE_CRONS: [(&str, BaselineKind); 2] = [
     ("0 0 * * *", BaselineKind::Daily),
     ("0 5 * * *", BaselineKind::Fallback),
@@ -83,6 +84,28 @@ impl BaselineSchedule {
 
 pub struct SyncSchedule {
     patterns: Vec<Schedule>,
+}
+
+pub struct CleanupSchedule {
+    pattern: Schedule,
+}
+
+impl CleanupSchedule {
+    pub fn new() -> Result<Self, cron_parser::ParseError> {
+        Ok(Self {
+            pattern: Schedule::parse(CLEANUP_CRON)?,
+        })
+    }
+
+    pub fn next_after(
+        &self,
+        after: DateTime<Utc>,
+        timezone: chrono_tz::Tz,
+    ) -> Option<DateTime<Utc>> {
+        self.pattern
+            .next_after(&after.with_timezone(&timezone))
+            .map(|time| time.with_timezone(&Utc))
+    }
 }
 
 impl SyncSchedule {
@@ -223,6 +246,31 @@ pub async fn run_baseline_cron(
                     for due in schedule.due_since(next, now, timezone) { trigger.trigger(due); }
                 }
             },
+        }
+    }
+}
+
+pub async fn run_cleanup_cron(
+    schedule: CleanupSchedule,
+    timezone: chrono_tz::Tz,
+    trigger: SyncTrigger,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), &'static str> {
+    loop {
+        if *shutdown.borrow() {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let next = schedule
+            .next_after(now, timezone)
+            .ok_or("no next cleanup time")?;
+        let delay = (next - now)
+            .to_std()
+            .map_err(|_| "invalid cleanup time")?
+            .min(std::time::Duration::from_secs(60));
+        tokio::select! {
+            changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return Ok(()); },
+            _ = tokio::time::sleep(delay) => if !*shutdown.borrow() && Utc::now() >= next { trigger.trigger(); },
         }
     }
 }

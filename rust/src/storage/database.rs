@@ -1058,40 +1058,52 @@ pub fn collect_admin_status(conn: &Connection) -> rusqlite::Result<AdminStatusSu
     Ok(summary)
 }
 
-/// `now` is UTC in `%Y-%m-%dT%H:%M:%S` format, matching stored Unix timestamps.
+/// Удаляет только старые технические журналы; `now` передаётся в UTC.
+/// Снимки расписания, очередь доставки и отметки событий очищаются отдельно.
 pub fn cleanup_database(
     conn: &Connection,
     max_age_days: i64,
     now: &str,
 ) -> rusqlite::Result<usize> {
     let invalid = || rusqlite::Error::InvalidParameterName("invalid cleanup date or age".into());
-    let age = chrono::Duration::try_days(max_age_days)
+    let age = chrono::Duration::try_days(max_age_days.max(1))
         .filter(|_| max_age_days >= 0)
         .ok_or_else(invalid)?;
-    let current = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S")
+    let cutoff = chrono::NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S")
         .map_err(|_| invalid())?
-        .and_utc();
-    let requested = current.checked_sub_signed(age).ok_or_else(invalid)?;
-    // Never shorten the production retention windows, even when the caller
-    // requests a more aggressive general database cleanup.
-    let outbox_cutoff = crate::outbox::retention_cutoff(current)
+        .checked_sub_signed(age)
         .ok_or_else(invalid)?
-        .min(requested)
-        .timestamp() as f64;
-    let updates_cutoff = current
-        .checked_sub_signed(chrono::Duration::days(90))
-        .ok_or_else(invalid)?
-        .min(requested)
-        .timestamp() as f64;
-    let deleted_outbox = conn.execute(
-        "DELETE FROM delivery_outbox WHERE status IN ('sent', 'failed') AND created_at < ? AND lease_until <= ?",
-        [outbox_cutoff, current.timestamp() as f64],
-    )?;
-    let deleted_updates = conn.execute(
-        "DELETE FROM telegram_processed_updates WHERE processed_at < ?",
-        [updates_cutoff],
-    )?;
-    Ok(deleted_outbox + deleted_updates)
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    // SAVEPOINT работает также внутри транзакции админской команды.
+    conn.execute("SAVEPOINT rust_cleanup_logs", [])?;
+    let result = (|| -> rusqlite::Result<usize> {
+        let mut deleted = 0;
+        deleted += conn.execute(
+            "DELETE FROM delivery_events WHERE datetime(created_at) < datetime(?)",
+            [&cutoff],
+        )?;
+        deleted += conn.execute(
+            "DELETE FROM change_events WHERE datetime(created_at) < datetime(?)",
+            [&cutoff],
+        )?;
+        deleted += conn.execute(
+            "DELETE FROM system_errors WHERE datetime(created_at) < datetime(?)",
+            [&cutoff],
+        )?;
+        Ok(deleted)
+    })();
+    match result {
+        Ok(deleted) => {
+            conn.execute("RELEASE SAVEPOINT rust_cleanup_logs", [])?;
+            Ok(deleted)
+        }
+        Err(error) => {
+            conn.execute("ROLLBACK TO SAVEPOINT rust_cleanup_logs", [])?;
+            conn.execute("RELEASE SAVEPOINT rust_cleanup_logs", [])?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
