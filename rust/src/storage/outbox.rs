@@ -160,15 +160,65 @@ pub fn counts(db: &Connection) -> rusqlite::Result<std::collections::BTreeMap<St
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
     rows.collect()
 }
+/// Имена снимков вложений в Python-outbox — 32 строчные шестнадцатеричные цифры.
+pub fn valid_attachment_name(name: &str) -> bool {
+    name.len() == 32
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Консервативно собирает имена из всех строк и ключей JSON за один проход.
+/// Повреждённый JSON останавливает очистку, чтобы не потерять вложение.
+/// Для удаления вызывающий код обязан удерживать write-транзакцию от сбора
+/// ссылок до завершения удаления, чтобы параллельная постановка не изменила их.
+pub fn referenced_attachment_names(
+    db: &Connection,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let mut stmt = db.prepare("SELECT payload_json FROM delivery_outbox")?;
+    let mut rows = stmt.query([])?;
+    let mut names = std::collections::HashSet::new();
+    while let Some(row) = rows.next()? {
+        let payload: String = row.get(0)?;
+        let value: Value = serde_json::from_str(&payload).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+        let mut pending = vec![&value];
+        while let Some(item) = pending.pop() {
+            match item {
+                Value::String(text) if valid_attachment_name(text) => {
+                    names.insert(text.clone());
+                }
+                Value::Array(values) => pending.extend(values),
+                Value::Object(values) => {
+                    for (key, value) in values {
+                        if valid_attachment_name(key) {
+                            names.insert(key.clone());
+                        }
+                        pending.push(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(names)
+}
+
 pub fn file_in_use(db: &Connection, name: &str) -> rusqlite::Result<bool> {
-    Ok(db
-        .query_row(
-            "SELECT 1 FROM delivery_outbox WHERE payload_json LIKE ? LIMIT 1",
-            [format!("%\"{name}\"%")],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .is_some())
+    if !valid_attachment_name(name) {
+        return Ok(true);
+    }
+    // При повреждённом payload безопаснее сохранить файл, чем ошибочно удалить.
+    match referenced_attachment_names(db) {
+        Ok(names) => Ok(names.contains(name)),
+        Err(rusqlite::Error::FromSqlConversionFailure(..)) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug)]

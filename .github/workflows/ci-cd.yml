@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - development
+      - rust-main
   push:
     branches:
       - main
       - development
+      - rust-main
 
 permissions:
   contents: read
