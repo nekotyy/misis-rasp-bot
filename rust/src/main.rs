@@ -69,8 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(900)).await;
-            let now_dt = chrono::Local::now().naive_local();
-            let now_ts = chrono::Utc::now().timestamp() as f64;
+            let now = chrono::Utc::now();
+            let now_dt = sched_sync.local_time(now);
+            let now_ts = now.timestamp() as f64;
             let mut db = db_sync.lock().await;
             let _ = sched_sync
                 .sync_active_sources(&mut db, now_dt, now_ts)
@@ -84,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600 * 6)).await;
-            let now_dt = chrono::Local::now().naive_local();
+            let now_dt = sched_daily.local_time(chrono::Utc::now());
             let mut db = db_daily.lock().await;
             let _ = sched_daily.save_daily_baselines(&mut db, now_dt).await;
             let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();

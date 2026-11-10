@@ -13,6 +13,7 @@ use crate::sync::{
 
 pub struct Scheduler {
     pub settings: Settings,
+    timezone: chrono_tz::Tz,
     pub parser: ScheduleParser,
     pub transport: Arc<ApiTransport>,
     pub sync_lock: Arc<Mutex<()>>,
@@ -24,6 +25,7 @@ impl Scheduler {
         settings: Settings,
         transport: Arc<ApiTransport>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let timezone = settings.app_timezone.parse::<chrono_tz::Tz>()?;
         let schedule_url = if settings.schedule_url.is_empty() {
             "http://asu.sf-misis.ru/rasp/600".to_string()
         } else {
@@ -43,11 +45,16 @@ impl Scheduler {
         )?;
         Ok(Self {
             settings,
+            timezone,
             parser,
             transport,
             sync_lock: Arc::new(Mutex::new(())),
             baseline_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub fn local_time(&self, now: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDateTime {
+        now.with_timezone(&self.timezone).naive_local()
     }
 
     /// Один шаг воркера доставки из `delivery_outbox` для Telegram и VK
@@ -89,7 +96,7 @@ impl Scheduler {
             trust_empty: false,
             observed_dates: None,
             manual_origin: "scheduler",
-            timezone: chrono_tz::Europe::Moscow,
+            timezone: self.timezone,
             now: now_dt,
         };
 
@@ -176,7 +183,7 @@ impl Scheduler {
             trust_empty: false,
             observed_dates: None,
             manual_origin: "daily_baseline",
-            timezone: chrono_tz::Europe::Moscow,
+            timezone: self.timezone,
             now: now_dt,
         };
 
