@@ -76,6 +76,7 @@ pub struct UserRecord {
 }
 
 pub mod config;
+pub mod cron_sync;
 pub mod storage;
 pub mod web;
 pub use storage::{database, outbox};

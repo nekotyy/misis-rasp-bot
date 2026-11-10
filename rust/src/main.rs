@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use misis_rasp_core::config::Settings;
+use misis_rasp_core::cron_sync::{run_sync_cron, SyncSchedule, SyncTrigger};
 use misis_rasp_core::database;
 use misis_rasp_core::notification::ApiTransport;
 use misis_rasp_core::scheduler::Scheduler;
@@ -66,16 +67,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Фоновый планировщик синхронизации расписания
     let sched_sync = scheduler.clone();
     let db_sync = db_schedule.clone();
+    let (sync_tx, mut sync_rx) = tokio::sync::mpsc::channel(1);
+    let sync_trigger = SyncTrigger::new(sync_tx);
+    let sync_timezone = settings_arc.app_timezone.parse::<chrono_tz::Tz>()?;
+    let sync_schedule = SyncSchedule::new()?;
+    let (_cron_shutdown_tx, cron_shutdown) = tokio::sync::watch::channel(false);
+    let cron_trigger = sync_trigger.clone();
+    let _sync_cron = tokio::spawn(async move {
+        if run_sync_cron(sync_schedule, sync_timezone, cron_trigger, cron_shutdown)
+            .await
+            .is_err()
+        {
+            eprintln!("Не удалось вычислить время следующей синхронизации");
+        }
+    });
     tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(900)).await;
+        while sync_rx.recv().await.is_some() {
             let now = chrono::Utc::now();
             let now_dt = sched_sync.local_time(now);
             let now_ts = now.timestamp() as f64;
             let mut db = db_sync.lock().await;
-            let _ = sched_sync
+            if sched_sync
                 .sync_active_sources(&mut db, now_dt, now_ts)
-                .await;
+                .await
+                .is_err()
+            {
+                eprintln!("Не удалось выполнить синхронизацию расписания");
+            }
+            sync_trigger.finished();
         }
     });
 

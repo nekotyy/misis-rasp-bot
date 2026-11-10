@@ -224,6 +224,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cron-parser"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c4407ef20f58de436de48f3e96c8885337d236a13584d45017ae8c567c7a0b3"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -888,6 +897,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
+ "cron-parser",
  "difflib",
  "dotenvy",
  "getrandom 0.2.17",
