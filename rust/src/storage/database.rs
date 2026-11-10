@@ -1105,6 +1105,17 @@ pub struct SourceRow {
     pub users_count: i64,
 }
 
+/// Источники с эталоном за локальную дату; один проход по истории вместо N запросов.
+pub fn daily_baseline_source_keys(
+    conn: &Connection,
+    date: chrono::NaiveDate,
+) -> rusqlite::Result<std::collections::HashSet<String>> {
+    let prefix = format!("{}%", date.format("%Y-%m-%d"));
+    let mut stmt = conn.prepare("SELECT DISTINCT source_key FROM schedule_snapshots WHERE snapshot_type = 'daily_baseline' AND source_key IS NOT NULL AND created_at LIKE ?")?;
+    let keys = stmt.query_map([prefix], |row| row.get(0))?.collect();
+    keys
+}
+
 pub fn get_active_sources(conn: &Connection) -> rusqlite::Result<Vec<SourceRow>> {
     let mut stmt = conn.prepare(
         "SELECT source_type, source_key, source_title, source_url, schedule_id, group_name, SUM(users_count)

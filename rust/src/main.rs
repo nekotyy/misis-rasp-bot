@@ -4,7 +4,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use misis_rasp_core::config::Settings;
-use misis_rasp_core::cron_sync::{run_sync_cron, SyncSchedule, SyncTrigger};
+use misis_rasp_core::cron_sync::{
+    run_baseline_cron, run_sync_cron, BaselineKind, BaselineSchedule, BaselineTrigger,
+    SyncSchedule, SyncTrigger,
+};
 use misis_rasp_core::database;
 use misis_rasp_core::notification::ApiTransport;
 use misis_rasp_core::scheduler::Scheduler;
@@ -72,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sync_timezone = settings_arc.app_timezone.parse::<chrono_tz::Tz>()?;
     let sync_schedule = SyncSchedule::new()?;
     let (_cron_shutdown_tx, cron_shutdown) = tokio::sync::watch::channel(false);
+    let baseline_shutdown = cron_shutdown.clone();
     let cron_trigger = sync_trigger.clone();
     let _sync_cron = tokio::spawn(async move {
         if run_sync_cron(sync_schedule, sync_timezone, cron_trigger, cron_shutdown)
@@ -98,17 +102,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // 3. Ежедневное сохранение эталонов и очистка БД
+    // 3. Эталон в полночь и попытка восстановить пропущенные источники в 05:00.
+    let baseline_schedule = BaselineSchedule::new()?;
+    let (baseline_tx, mut baseline_rx) = tokio::sync::mpsc::channel(1);
+    let baseline_trigger = BaselineTrigger::new(baseline_tx);
+    let cron_baseline_trigger = baseline_trigger.clone();
+    let _baseline_cron = tokio::spawn(async move {
+        if run_baseline_cron(
+            baseline_schedule,
+            sync_timezone,
+            cron_baseline_trigger,
+            baseline_shutdown,
+        )
+        .await
+        .is_err()
+        {
+            eprintln!("Не удалось вычислить время сохранения эталонов");
+        }
+    });
     let sched_daily = scheduler.clone();
     let db_daily = db_schedule.clone();
     tokio::spawn(async move {
+        while let Some(kind) = baseline_rx.recv().await {
+            let mut db = db_daily.lock().await;
+            let now_dt = sched_daily.local_time(chrono::Utc::now());
+            let result = match kind {
+                BaselineKind::Daily => sched_daily.save_daily_baselines(&mut db, now_dt).await,
+                BaselineKind::Fallback => {
+                    sched_daily
+                        .save_missing_daily_baselines(&mut db, now_dt)
+                        .await
+                }
+            };
+            if result.is_err() {
+                eprintln!("Не удалось сохранить эталоны расписания");
+            }
+            baseline_trigger.finished();
+        }
+    });
+
+    // Очистку пока оставляем по прежнему Rust-интервалу до отдельной сверки с Python.
+    let sched_cleanup = scheduler.clone();
+    let db_cleanup = db_schedule.clone();
+    tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(3600 * 6)).await;
-            let now_dt = sched_daily.local_time(chrono::Utc::now());
-            let mut db = db_daily.lock().await;
-            let _ = sched_daily.save_daily_baselines(&mut db, now_dt).await;
+            let db = db_cleanup.lock().await;
             let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-            let _ = sched_daily.cleanup_old_records(&db, 30, &now_str);
+            let _ = sched_cleanup.cleanup_old_records(&db, 30, &now_str);
         }
     });
 

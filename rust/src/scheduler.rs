@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::config::Settings;
-use crate::database::{cleanup_database, get_active_sources};
+use crate::database::{cleanup_database, daily_baseline_source_keys, get_active_sources};
 use crate::notification::{drain_once, ApiTransport, ProcessOutcome};
 use crate::parser::ScheduleParser;
 use crate::sync::{
@@ -170,12 +170,35 @@ impl Scheduler {
         db: &mut rusqlite::Connection,
         now_dt: chrono::NaiveDateTime,
     ) -> Result<usize, Box<dyn std::error::Error>> {
+        self.save_baselines(db, now_dt, false).await
+    }
+
+    /// Повторная утренняя попытка только для источников без сегодняшнего эталона.
+    pub async fn save_missing_daily_baselines(
+        &self,
+        db: &mut rusqlite::Connection,
+        now_dt: chrono::NaiveDateTime,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        self.save_baselines(db, now_dt, true).await
+    }
+
+    async fn save_baselines(
+        &self,
+        db: &mut rusqlite::Connection,
+        now_dt: chrono::NaiveDateTime,
+        only_missing: bool,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let _guard = match self.baseline_lock.try_lock() {
             Ok(g) => g,
             Err(_) => return Ok(0),
         };
 
         let sources = get_active_sources(db)?;
+        let existing = if only_missing {
+            Some(daily_baseline_source_keys(db, now_dt.date())?)
+        } else {
+            None
+        };
         let mut saved = 0;
 
         let options = ApplyOptions {
@@ -188,6 +211,12 @@ impl Scheduler {
         };
 
         for source_row in sources {
+            if existing
+                .as_ref()
+                .is_some_and(|keys| keys.contains(&source_row.source_key))
+            {
+                continue;
+            }
             let sync_source = SyncSource {
                 source_type: &source_row.source_type,
                 source_key: &source_row.source_key,
