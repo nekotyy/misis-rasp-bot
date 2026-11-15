@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aiogram.enums import ParseMode
+
 from src.config import Settings
 from src.db import Database
 from src.models import DaySchedule, Lesson
@@ -63,8 +65,8 @@ class HistoryBotsTests(unittest.IsolatedAsyncioTestCase):
         await click(history, "history:date")
         message.text = "02.11.2026"
         await text_handler(message)
-        self.assertIn("1. в 101 по Физика у Иванов", bot.send_message.call_args.args[1])
-        self.assertTrue(any(entity.type == "bold" for entity in bot.send_message.call_args.kwargs["entities"]))
+        self.assertIn("<b>1.</b> в <b>101</b> по <b>Физика</b> у <b>Иванов</b>", bot.send_message.call_args.args[1])
+        self.assertEqual(bot.send_message.call_args.kwargs.get("parse_mode"), ParseMode.HTML)
         buttons = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard
         self.assertTrue(any(button.text == "Следующая неделя" for row in buttons for button in row))
         await click(history, "history:group")

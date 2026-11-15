@@ -65,6 +65,17 @@ class HistoryViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Пар нет.", text)
         self.assertIn("Расписание за этот день не сохранено.", text)
 
+    async def test_html_formatting_escapes_and_formats_like_bot_cards(self) -> None:
+        day = DaySchedule("Пн", "2026-11-02", [Lesson(1, "Химия & Биология", "Иванов <ст.>", "101/A")])
+        await self.archive.save_day("group:1", "group", day, observed_at=datetime(2026, 11, 2, tzinfo=UTC),
+                                    origin="site", completeness="complete")
+        text, _, _ = await history_week(
+            self.archive, "group:1", "Группа <1>", date(2026, 11, 2), date(2026, 11, 15), html=True
+        )
+        self.assertIn("<b>История расписания:</b> Группа &lt;1&gt;", text)
+        self.assertIn("<b>Понедельник, 02.11.2026</b>", text)
+        self.assertIn("<b>1.</b> в <b>101/A</b> по <b>Химия &amp; Биология</b> у <b>Иванов &lt;ст.&gt;</b>", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,7 +37,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     LabeledPrice,
     Message,
-    MessageEntity,
     PreCheckoutQuery,
     WebAppInfo,
 )
@@ -2064,12 +2063,11 @@ def build_dispatcher(
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
         parse_mode: str | None = ParseMode.HTML,
-        entities: list[MessageEntity] | None = None,
     ) -> Message | None:
         retries = telegram_retry_attempts(bot)
         for attempt in range(1, retries + 1):
             try:
-                return await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode, **({"entities": entities} if entities else {}))
+                return await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
             except TelegramBadRequest as exc:
                 logger.warning("Telegram send_message rejected for chat %s: %s", chat_id, exc)
                 return None
@@ -2644,7 +2642,7 @@ def build_dispatcher(
             return
         today = today_in_timezone(settings.app_timezone)
         text, previous, following = await history_week(
-            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today
+            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today, html=True
         )
         navigation = []
         if previous:
@@ -2660,13 +2658,13 @@ def build_dispatcher(
         chunks = split_vk_text(text, TELEGRAM_MESSAGE_LIMIT)
         sent_ids = []
         for index, chunk in enumerate(chunks):
-            entities = []
-            for match in re.finditer(r"(?m)^(?:История расписания:.*|(?:Понедельник|Вторник|Среда|Четверг|Пятница|Суббота),.*|\d+\. в .*)$", chunk):
-                offset = len(chunk[:match.start()].encode("utf-16-le")) // 2
-                length = len(match.group().encode("utf-16-le")) // 2
-                entities.append(MessageEntity(type="bold", offset=offset, length=length))
-            sent = await safe_send_message(bot, chat_id, chunk, parse_mode=None, entities=entities,
-                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if index == len(chunks) - 1 else None)
+            sent = await safe_send_message(
+                bot,
+                chat_id,
+                chunk,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if index == len(chunks) - 1 else None,
+            )
             if sent is not None:
                 sent_ids.append(sent.message_id)
         context_messages[chat_id]["schedule"] = sent_ids
