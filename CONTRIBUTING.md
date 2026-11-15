@@ -43,11 +43,14 @@ uv sync
 ### Запуск полного набора проверок:
 
 ```bash
-# 1. Проверка синтаксиса компиляцией
-uv run python -m compileall src web_configurator tests scripts
+# 1. Проверка стиля и импортов
+uv run --frozen ruff check src web_configurator tests scripts --output-format=github
 
-# 2. Запуск всех модульных и smoke тестов
-uv run python -m unittest discover -s tests -p "test_*.py" -v
+# 2. Проверка синтаксиса компиляцией
+uv run --frozen python -m compileall -q src web_configurator tests scripts
+
+# 3. Запуск всех модульных и smoke тестов
+uv run --frozen python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 ---
@@ -67,8 +70,8 @@ uv run python -m unittest discover -s tests -p "test_*.py" -v
 
 - [ ] Код написан лаконично, без косметологического массового рефакторинга.
 - [ ] Написаны Unit/Smoke тесты в папке `tests/` для всей новой логики.
-- [ ] Все 180+ автоматических тестов успешно проходят (`OK`).
-- [ ] Документация (`README.md` / `.env.example`) обновлена, если добавились новые переменные окружения.
+- [ ] Все автоматические проверки и тесты успешно проходят.
+- [ ] Документация (`README.md`, `.env.example` и другие применимые файлы) обновлена при изменении поведения, настройки или деплоя.
 - [ ] Веб-админка и боты проверены на отсутствие регрессий.
 
 ---

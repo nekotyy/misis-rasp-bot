@@ -23,6 +23,7 @@ from src.course_stats import collect_course_stats, format_course_stats_report
 from src.db import Database
 from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
+from src.history_view import history_week, parse_history_date
 from src.lesson_counters import (
     LessonCounterService,
     format_counter_sync_report,
@@ -36,6 +37,7 @@ from src.lesson_counters import (
     teacher_matches,
 )
 from src.message_broker import OutboundMessage
+from src.miniapp_calendar import today_in_timezone, week_start
 from src.miniapp_stats import collect_miniapp_stats, format_miniapp_stats_report
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
@@ -54,6 +56,7 @@ from src.ocr_schedule import (
     compress_image_for_ocr,
 )
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
+from src.schedule_archive import ScheduleDayArchive
 from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choice_label
 from src.schedule_service import (
     ScheduleFormatter,
@@ -764,6 +767,7 @@ def build_vk_bot(
     search_results: dict[int, dict[str, object]] = {}
     teacher_choices: dict[int, tuple[str, list[SearchTarget], int]] = {}
     peer_modes: dict[int, str] = {}
+    history_sessions: dict[int, dict[str, Any]] = {}
     peer_pages: dict[int, dict[str, int]] = defaultdict(dict)
     admin_user_search_state: dict[int, dict[str, str]] = {}
     vk_report_drafts: dict[int, dict[str, str]] = {}
@@ -1139,9 +1143,29 @@ def build_vk_bot(
                 ["Расписание на 2 дня"],
                 ["Расписание звонков"],
                 ["Найти расписание"],
+                ["История расписания"],
                 ["Назад в меню"],
             ]
         )
+
+    async def show_history(peer_id: int) -> None:
+        session = history_sessions.get(peer_id)
+        if not session:
+            peer_modes[peer_id] = "history_group"
+            await show_screen(peer_id, "Введи название группы для поиска истории.", keyboard=make_keyboard([["Назад к расписанию"]]))
+            return
+        today = today_in_timezone(settings.app_timezone)
+        text, previous, following = await history_week(
+            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today
+        )
+        navigation = []
+        if previous:
+            navigation.append("← Предыдущая неделя")
+        if following:
+            navigation.append("Следующая неделя →")
+        rows = ([navigation] if navigation else []) + [["Выбрать дату", "Другая группа"], ["Назад к расписанию"]]
+        peer_modes[peer_id] = "history_view"
+        await show_screen(peer_id, text, keyboard=make_keyboard(rows))
 
     async def show_bells_schedule(peer_id: int, user_id: int) -> None:
         user = await db.get_user("vk", user_id)
@@ -2986,7 +3010,7 @@ def build_vk_bot(
                 await show_screen(peer_id, "Пара удалена.", keyboard=admin_keyboard())
                 return
 
-        if is_group_setup_command(text):
+        if mode != "history_group" and is_group_setup_command(text):
             if peer_id < VK_CHAT_PEER_ID_THRESHOLD:
                 msg_text = (
                     "Настройка бота в беседах ВКонтакте\n\n"
@@ -3047,6 +3071,7 @@ def build_vk_bot(
 
         if text in {"Назад в меню", "Закрыть админку"}:
             search_results.pop(peer_id, None)
+            history_sessions.pop(peer_id, None)
             admin_user_search_state.pop(peer_id, None)
             peer_pages[peer_id].pop("admin_user_search", None)
             admin_broadcast_drafts.pop(peer_id, None)
@@ -3058,6 +3083,81 @@ def build_vk_bot(
             admin_ocr_summary_drafts.pop(peer_id, None)
             admin_ocr_summary_images.pop(peer_id, None)
             await show_main_menu(peer_id, user_id)
+            return
+
+        if text == "История расписания":
+            history_sessions.pop(peer_id, None)
+            if user and user.subscription_type == "group" and user.subscription_key:
+                history_sessions[peer_id] = {"key": user.subscription_key, "title": user.subscription_title or user.group_name or "Группа",
+                                             "monday": week_start(today_in_timezone(settings.app_timezone))}
+            await show_history(peer_id)
+            return
+
+        if not mode.startswith("history_") and text in {
+            "← Предыдущая неделя", "Следующая неделя →", "Выбрать дату", "Другая группа", "Назад к истории", "Назад к расписанию",
+        }:
+            peer_modes[peer_id] = "schedule_menu"
+            await show_screen(peer_id, "Открой историю расписания заново.", keyboard=schedule_keyboard())
+            return
+
+        history_exit_actions = {
+            "Расписание на сегодня", "Расписание на завтра", "Расписание на 2 дня", "Расписание звонков",
+            "Найти расписание", "Дополнительно", "Настройки",
+        }
+        if mode.startswith("history_") and text in history_exit_actions:
+            peer_modes[peer_id] = mode = "schedule_menu"
+            history_sessions.pop(peer_id, None)
+
+        if mode.startswith("history_"):
+            if text == "Назад к расписанию":
+                history_sessions.pop(peer_id, None)
+                peer_modes[peer_id] = "schedule_menu"
+                await show_screen(peer_id, "Выбери нужный вариант расписания.", keyboard=schedule_keyboard())
+                return
+            if text == "Назад к истории":
+                await show_history(peer_id)
+                return
+            if text in {"Другая группа", "Выбрать дату"}:
+                peer_modes[peer_id] = "history_group" if text == "Другая группа" else "history_date"
+                await show_screen(peer_id, "Введи название группы." if text == "Другая группа" else "Введи дату в формате ДД.ММ.ГГГГ.",
+                                  keyboard=make_keyboard([["Назад к истории"], ["Назад к расписанию"]]))
+                return
+            if mode == "history_group":
+                try:
+                    group = await group_catalog.find_group(text.strip()) if group_catalog else None
+                except Exception as exc:
+                    logger.warning("Не удалось найти группу для истории: %s", exc)
+                    await show_screen(peer_id, "Не удалось проверить группу. Попробуй ещё раз позже.",
+                                      keyboard=make_keyboard([["Назад к истории"], ["Назад к расписанию"]]))
+                    return
+                if group is None:
+                    await show_screen(peer_id, "Группа не найдена. Попробуй ещё раз.", keyboard=make_keyboard([["Назад к истории"], ["Назад к расписанию"]]))
+                    return
+                subscription = make_group_subscription(group.group_name, group.schedule_id)
+                history_sessions[peer_id] = {"key": subscription["subscription_key"], "title": group.group_name,
+                                             "monday": week_start(today_in_timezone(settings.app_timezone))}
+                await show_history(peer_id)
+                return
+            if mode == "history_date":
+                try:
+                    history_sessions[peer_id]["monday"] = parse_history_date(text, today_in_timezone(settings.app_timezone))
+                except (KeyError, ValueError):
+                    await show_screen(peer_id, "Укажи дату за последние три месяца в формате ДД.ММ.ГГГГ.",
+                                      keyboard=make_keyboard([["Назад к истории"], ["Назад к расписанию"]]))
+                    return
+                await show_history(peer_id)
+                return
+            session = history_sessions.get(peer_id)
+            if session and text in {"← Предыдущая неделя", "Следующая неделя →"}:
+                delta = -7 if text.startswith("←") else 7
+                session["monday"] += timedelta(days=delta)
+                try:
+                    await show_history(peer_id)
+                except ValueError:
+                    session["monday"] -= timedelta(days=delta)
+                    await show_history(peer_id)
+                return
+            await show_history(peer_id)
             return
 
         if text in {"Дополнительно", "Настройки"}:
