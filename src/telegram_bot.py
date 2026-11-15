@@ -46,6 +46,7 @@ from src.course_stats import collect_course_stats, format_course_stats_report
 from src.db import Database
 from src.error_reporting import AdminErrorReporter
 from src.group_catalog import GroupCatalog
+from src.history_view import history_week, parse_history_date
 from src.lesson_counters import (
     LessonCounterService,
     format_counter_sync_report,
@@ -59,6 +60,7 @@ from src.lesson_counters import (
     teacher_matches,
 )
 from src.message_broker import OutboundMessage
+from src.miniapp_calendar import today_in_timezone, week_start
 from src.miniapp_stats import collect_miniapp_stats, format_miniapp_stats_report
 from src.notifier import CAMPAIGN_ADMIN_BROADCAST, Broadcaster, BroadcastProgress
 from src.ocr_import import (
@@ -78,6 +80,7 @@ from src.ocr_schedule import (
 )
 from src.outbox_context import delivery_context
 from src.parser import MANUAL_REFRESH_PAUSE_SECONDS, ScheduleParser, compute_snapshot_hash
+from src.schedule_archive import ScheduleDayArchive
 from src.schedule_search import ScheduleSearchCatalog, SearchTarget, search_choice_label
 from src.schedule_service import (
     ScheduleFormatter,
@@ -106,6 +109,7 @@ from src.system_status import (
 )
 from src.telegram_runtime import telegram_retry_attempts
 from src.university_subgroups import available_subgroups, is_university_group, personal_subgroup
+from src.vk_runtime import split_vk_text
 from web_configurator.lesson_editor import (
     apply_imported_lessons_config,
     format_import_preview,
@@ -298,6 +302,7 @@ SCHEDULE_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="Расписание на 2 дня", callback_data="schedule:day_after")],
         [InlineKeyboardButton(text="Расписание звонков", callback_data="schedule:bells")],
         [InlineKeyboardButton(text="Найти расписание", callback_data="schedule:find")],
+        [InlineKeyboardButton(text="История расписания", callback_data="schedule:history")],
         [InlineKeyboardButton(text="Назад", callback_data="menu:start")],
     ]
 )
@@ -1091,6 +1096,8 @@ def build_dispatcher(
     search_results: dict[int, dict[str, object]] = {}
     teacher_choices: dict[tuple[int, int], tuple[str, str, list[SearchTarget]]] = {}
     awaiting_schedule_search: set[int] = set()
+    awaiting_history_input: dict[int, str] = {}
+    history_sessions: dict[int, dict[str, Any]] = {}
     awaiting_group_subscription_input: set[int] = set()
     awaiting_audience_subscription_input: set[int] = set()
     awaiting_admin_broadcast_text: set[int] = set()
@@ -2134,6 +2141,8 @@ def build_dispatcher(
         """
         if user_id is None:
             return
+        awaiting_history_input.pop(user_id, None)
+        history_sessions.pop(user_id, None)
         for waiting in (
             awaiting_schedule_search,
             awaiting_audience_subscription_input,
@@ -2624,7 +2633,48 @@ def build_dispatcher(
 
         context_messages[chat_id]["schedule"] = message_ids
 
+    async def show_history(bot: Bot, chat_id: int, user_id: int) -> None:
+        session = history_sessions.get(user_id)
+        if not session:
+            awaiting_history_input[user_id] = "group"
+            await send_new_context_message(bot, chat_id, "schedule", "Введи название группы для поиска истории.",
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="history:back")]]))
+            return
+        today = today_in_timezone(settings.app_timezone)
+        text, previous, following = await history_week(
+            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today
+        )
+        navigation = []
+        if previous:
+            navigation.append(InlineKeyboardButton(text="← Предыдущая", callback_data="history:prev"))
+        if following:
+            navigation.append(InlineKeyboardButton(text="Следующая →", callback_data="history:next"))
+        rows = ([navigation] if navigation else []) + [
+            [InlineKeyboardButton(text="Выбрать дату", callback_data="history:date"),
+             InlineKeyboardButton(text="Другая группа", callback_data="history:group")],
+            [InlineKeyboardButton(text="Назад к расписанию", callback_data="history:back")],
+        ]
+        await clear_context_messages(bot, chat_id, "schedule")
+        chunks = split_vk_text(text, TELEGRAM_MESSAGE_LIMIT)
+        sent_ids = []
+        for index, chunk in enumerate(chunks):
+            sent = await safe_send_message(bot, chat_id, chunk, parse_mode=None,
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if index == len(chunks) - 1 else None)
+            if sent is not None:
+                sent_ids.append(sent.message_id)
+        context_messages[chat_id]["schedule"] = sent_ids
+
     async def send_schedule_response(bot: Bot, chat_id: int, user_id: int, action: str) -> None:
+        if action == "history":
+            reset_user_input_states(user_id)
+            user = await get_user_record(user_id)
+            if user and user.subscription_type == "group" and user.subscription_key:
+                history_sessions[user_id] = {"key": user.subscription_key, "title": user.subscription_title or user.group_name or "Группа",
+                                             "monday": week_start(today_in_timezone(settings.app_timezone))}
+            await show_history(bot, chat_id, user_id)
+            return
+        awaiting_history_input.pop(user_id, None)
+        history_sessions.pop(user_id, None)
         if action == "find":
             await prompt_schedule_search(bot, chat_id, user_id)
             return
@@ -3454,6 +3504,43 @@ def build_dispatcher(
             action,
         )
         await safe_callback_answer(callback)
+    @dispatcher.callback_query(F.data.startswith("history:"))
+    async def handle_history_callback(callback: CallbackQuery) -> None:
+        await wait_callback_rate_limit(callback)
+        await register_callback_user(callback)
+        if callback.message is None or callback.from_user is None:
+            await safe_callback_answer(callback)
+            return
+        user_id, chat_id = callback.from_user.id, callback.message.chat.id
+        action = callback.data.split(":", 1)[1]
+        if action == "back":
+            awaiting_history_input.pop(user_id, None)
+            history_sessions.pop(user_id, None)
+            await send_schedule_menu(callback.bot, chat_id)
+        elif action == "date" and user_id not in history_sessions:
+            await show_history(callback.bot, chat_id, user_id)
+        elif action in {"group", "date"}:
+            awaiting_schedule_search.discard(user_id)
+            awaiting_history_input[user_id] = action
+            prompt = "Введи название группы." if action == "group" else "Введи дату в формате ДД.ММ.ГГГГ."
+            await send_new_context_message(callback.bot, chat_id, "schedule", prompt,
+                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="history:cancel")]]))
+        elif action == "cancel":
+            awaiting_history_input.pop(user_id, None)
+            await show_history(callback.bot, chat_id, user_id)
+        else:
+            session = history_sessions.get(user_id)
+            if session and action in {"prev", "next"}:
+                session["monday"] += timedelta(days=-7 if action == "prev" else 7)
+                try:
+                    await show_history(callback.bot, chat_id, user_id)
+                except ValueError:
+                    session["monday"] -= timedelta(days=-7 if action == "prev" else 7)
+                    await show_history(callback.bot, chat_id, user_id)
+            else:
+                await show_history(callback.bot, chat_id, user_id)
+        await safe_callback_answer(callback)
+
     @dispatcher.callback_query(F.data.startswith("report:"))
     async def handle_report_callback(callback: CallbackQuery) -> None:
         await wait_callback_rate_limit(callback)
@@ -5587,6 +5674,34 @@ def build_dispatcher(
                 text,
                 reply_markup=reply_markup,
             )
+            return
+        history_mode = awaiting_history_input.get(message.from_user.id)
+        if history_mode:
+            await try_delete_message(message)
+            if history_mode == "group":
+                try:
+                    group = await group_catalog.find_group(message.text.strip()) if group_catalog else None
+                except Exception as exc:
+                    logger.warning("Не удалось найти группу для истории: %s", exc)
+                    await send_new_context_message(message.bot, message.chat.id, "schedule", "Не удалось проверить группу. Попробуй ещё раз позже.",
+                                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="history:cancel")]]))
+                    return
+                if group is None:
+                    await send_new_context_message(message.bot, message.chat.id, "schedule", "Группа не найдена. Попробуй ещё раз.",
+                                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="history:cancel")]]))
+                    return
+                subscription = make_group_subscription(group.group_name, group.schedule_id)
+                history_sessions[message.from_user.id] = {"key": subscription["subscription_key"], "title": group.group_name,
+                                                          "monday": week_start(today_in_timezone(settings.app_timezone))}
+            else:
+                try:
+                    history_sessions[message.from_user.id]["monday"] = parse_history_date(message.text, today_in_timezone(settings.app_timezone))
+                except (KeyError, ValueError):
+                    await send_new_context_message(message.bot, message.chat.id, "schedule", "Укажи дату за последние три месяца в формате ДД.ММ.ГГГГ.",
+                                                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="history:cancel")]]))
+                    return
+            awaiting_history_input.pop(message.from_user.id, None)
+            await show_history(message.bot, message.chat.id, message.from_user.id)
             return
         user = await get_user_record(message.from_user.id)
         if user is None or not user.subscription_key or not user.subscription_title:
