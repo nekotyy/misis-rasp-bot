@@ -25,7 +25,7 @@ class HistoryViewTests(unittest.IsolatedAsyncioTestCase):
         await self.archive.save_day("group:2", "group", DaySchedule("Вт", "2026-11-03", [Lesson(1, "Чужая пара", "Петров", "102")]),
                                     observed_at=datetime(2026, 11, 3, tzinfo=UTC), origin="site", completeness="unknown")
         text, previous, following = await history_week(self.archive, "group:1", "Группа", date(2026, 11, 2), date(2026, 11, 15))
-        self.assertIn("Физика", text)
+        self.assertIn("1. в 101 по Физика у Иванов", text)
         self.assertNotIn("Чужая пара", text)
         self.assertIn("Расписание за этот день не сохранено", text)
         self.assertIn("Понедельник, 02.11.2026", text)

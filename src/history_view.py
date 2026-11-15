@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from src.miniapp_calendar import history_bounds, week_start
 from src.models import DaySchedule
 from src.schedule_archive import ScheduleDayArchive
+from src.schedule_service import ScheduleFormatter
 
 
 def parse_history_date(text: str, today: date) -> date:
@@ -46,8 +48,8 @@ async def history_week(archive: ScheduleDayArchive, key: str, title: str, monday
             if entry["week_variant"]:
                 lines.append("Числитель:" if entry["week_variant"] == 1 else "Знаменатель:")
             if day.lessons:
-                for lesson in sorted(day.lessons, key=lambda item: item.number):
-                    lines.append(f"{lesson.number}. {lesson.subject} — {lesson.teacher}, ауд. {lesson.classroom}")
+                formatted = ScheduleFormatter.format_day_plain(replace(day, week_variant=None))
+                lines.append(formatted.partition("\n\n")[2])
             else:
                 lines.append("Пар нет." if entry["completeness"] == "complete" else "Пары не сохранены.")
     return "\n".join(lines), monday > week_start(first), monday < week_start(today)
