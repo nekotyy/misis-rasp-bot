@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -33,6 +34,7 @@ from src.notifier import Broadcaster
 from src.parser import ScheduleParser, compute_snapshot_hash
 from src.schedule_search import ScheduleSearchCatalog
 from src.schedule_service import ScheduleComparator, looks_like_stale_site_glitch
+from src.schedule_sources import university_kind
 from src.subscription_utils import make_teacher_subscription
 from src.system_status import (
     SystemAlertManager,
@@ -50,6 +52,8 @@ SourceWorker = Callable[..., Awaitable[None]]
 # пересчитать и разослать его — чтобы несколько его групп, обновившихся почти подряд,
 # схлопнулись в один финальный пересчёт вместо серии растущих уведомлений.
 TEACHER_NOTIFY_DEBOUNCE_SECONDS = 30.0
+SYNC_RETRY_INTERVAL_SECONDS = 15
+SYNC_RETRY_TIMEOUT_SECONDS = 10
 
 
 def format_bytes(bytes_count: int) -> str:
@@ -168,6 +172,8 @@ class ScheduleJobs:
         self.search_catalog = search_catalog
         self._sync_lock = asyncio.Lock()
         self._baseline_lock = asyncio.Lock()
+        self._pending_sync_retries: dict[str, SourceRow] = {}
+        self._source_locks: dict[str, asyncio.Lock] = {}
         # Проверки живости приёма сообщений (VK long poll, Telegram polling):
         # имя компонента -> функция, возвращающая (живо ли, пояснение).
         self.liveness_probes: dict[str, Callable[[], tuple[bool, str]]] = {}
@@ -181,6 +187,12 @@ class ScheduleJobs:
             coalesce=True,
         )
         self.scheduler.add_job(self.sync_current_snapshot, CronTrigger(minute=10), max_instances=1, coalesce=True)
+        self.scheduler.add_job(
+            self.retry_failed_sync,
+            IntervalTrigger(seconds=SYNC_RETRY_INTERVAL_SECONDS),
+            max_instances=1,
+            coalesce=True,
+        )
         self.scheduler.add_job(
             self.sync_current_snapshot,
             CronTrigger(hour="9-13", minute=40),
@@ -566,6 +578,10 @@ class ScheduleJobs:
             return await self.parser.parse_from_url(source["source_url"])
         return await self.parser.parse(source["schedule_id"])
 
+    async def _parse_source_for_sync(self, source: SourceRow):
+        timeout = SYNC_RETRY_TIMEOUT_SECONDS * (3 if university_kind(str(source.get("source_url") or "")) else 1)
+        return await asyncio.wait_for(self._parse_source(source), timeout=timeout)
+
     async def _save_baseline_for_source(self, source: SourceRow, **_: Any) -> None:
         snapshot, snapshot_hash = await self._parse_source(source)
         await self.db.save_snapshot(
@@ -596,8 +612,49 @@ class ScheduleJobs:
         await self._save_baseline_for_source(source)
 
     async def _sync_source(self, source: SourceRow, **_: Any) -> None:
-        snapshot, snapshot_hash = await self._parse_source(source)
-        await self.apply_snapshot(source, snapshot, snapshot_hash)
+        key = str(source["source_key"])
+        locks = self.__dict__.setdefault("_source_locks", {})
+        async with locks.setdefault(key, asyncio.Lock()):
+            try:
+                snapshot, snapshot_hash = await self._parse_source_for_sync(source)
+            except (httpx.RequestError, TimeoutError):
+                self.__dict__.setdefault("_pending_sync_retries", {})[key] = source
+                raise
+            await self.apply_snapshot(source, snapshot, snapshot_hash)
+            self.__dict__.setdefault("_pending_sync_retries", {}).pop(key, None)
+
+    async def retry_failed_sync(self) -> None:
+        pending = self.__dict__.setdefault("_pending_sync_retries", {})
+        if not pending:
+            return
+        key = next(iter(pending))
+        active = await self.db.get_active_sources()
+        source = next((item for item in active if str(item["source_key"]) == key), None)
+        if source is None:
+            pending.pop(key, None)
+            return
+        locks = self.__dict__.setdefault("_source_locks", {})
+        async with locks.setdefault(key, asyncio.Lock()):
+            if key not in pending:
+                return
+            try:
+                snapshot, snapshot_hash = await self._parse_source_for_sync(source)
+            except (httpx.RequestError, TimeoutError) as exc:
+                pending.pop(key, None)
+                pending[key] = source
+                logger.info("Повтор обновления %s не удался: %s", source["source_title"], exc)
+                return
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 and exc.response.status_code < 500:
+                    pending.pop(key, None)
+                else:
+                    pending.pop(key, None)
+                    pending[key] = source
+                logger.warning("Повтор обновления %s: %s", source["source_title"], exc)
+                return
+            await self.apply_snapshot(source, snapshot, snapshot_hash)
+            pending.pop(key, None)
+            logger.info("Повтор обновления %s выполнен", source["source_title"])
 
     async def apply_manual_snapshot(
         self,
