@@ -32,7 +32,16 @@ class ParserRetryTests(unittest.IsolatedAsyncioTestCase):
         client.get = AsyncMock(return_value=response)
         with self.assertRaises(httpx.HTTPStatusError):
             await parser._get_with_retry(client, "http://site/rasp/1")
-        self.assertEqual(client.get.await_count, 3)
+        self.assertEqual(client.get.await_count, 5)
+
+    async def test_timeout_is_retried_until_success(self) -> None:
+        parser = ScheduleParser("http://site/rasp/1", retry_backoff_seconds=0)
+        response = MagicMock()
+        client = MagicMock()
+        client.get = AsyncMock(side_effect=[httpx.ReadTimeout("timeout"), response])
+
+        self.assertIs(await parser._get_with_retry(client, "http://site/rasp/1"), response)
+        self.assertEqual(client.get.await_count, 2)
 
 
 if __name__ == "__main__":

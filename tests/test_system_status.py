@@ -87,6 +87,22 @@ class TestSystemStatus(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(status["ok"])
             self.assertIn("ConnectError", status["error"])
 
+    async def test_check_schedule_site_retries_timeout(self) -> None:
+        response = httpx.Response(200, request=httpx.Request("GET", "http://test.local"))
+        get = AsyncMock(side_effect=[httpx.ReadTimeout("timeout"), response])
+        with patch("httpx.AsyncClient.get", get):
+            status = await check_schedule_site("http://test.local")
+        self.assertTrue(status["ok"])
+        self.assertEqual(get.await_count, 2)
+
+    async def test_check_schedule_site_reports_persistent_timeout(self) -> None:
+        get = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+        with patch("httpx.AsyncClient.get", get):
+            status = await check_schedule_site("http://test.local")
+        self.assertFalse(status["ok"])
+        self.assertIn("Timeout", status["error"])
+        self.assertEqual(get.await_count, 5)
+
     async def test_check_rabbitmq_status(self) -> None:
         status_empty = await check_rabbitmq_status("")
         self.assertFalse(status_empty["ok"])

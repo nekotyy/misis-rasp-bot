@@ -73,8 +73,8 @@ class ScheduleParser:
     def __init__(
         self,
         schedule_url: str,
-        timeout: float = 20.0,
-        request_retries: int = 3,
+        timeout: float = 10.0,
+        request_retries: int = 5,
         retry_backoff_seconds: float = 1.0,
         university_url: str = UNIVERSITY_SCHEDULE_URL,
     ) -> None:

@@ -174,7 +174,13 @@ async def check_schedule_site(schedule_url: str, timeout: float = 6.0) -> dict[s
     t0 = monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(url)
+            for attempt in range(5):
+                try:
+                    response = await client.get(url)
+                    break
+                except (httpx.TimeoutException, httpx.ConnectError):
+                    if attempt == 4:
+                        raise
             latency_ms = int((monotonic() - t0) * 1000)
             status_code = response.status_code
             is_ok = 200 <= status_code < 400

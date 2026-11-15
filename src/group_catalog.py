@@ -31,8 +31,8 @@ class GroupCatalog:
     def __init__(
         self,
         schedule_url: str,
-        timeout: float = 30.0,
-        request_retries: int = 3,
+        timeout: float = 10.0,
+        request_retries: int = 5,
         retry_backoff_seconds: float = 1.0,
         db: Database | None = None,
         university_url: str = "",
