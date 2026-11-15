@@ -1160,9 +1160,9 @@ def build_vk_bot(
         )
         navigation = []
         if previous:
-            navigation.append("← Предыдущая неделя")
+            navigation.append("Предыдущая неделя")
         if following:
-            navigation.append("Следующая неделя →")
+            navigation.append("Следующая неделя")
         rows = ([navigation] if navigation else []) + [["Выбрать дату", "Другая группа"], ["Назад к расписанию"]]
         peer_modes[peer_id] = "history_view"
         await show_screen(peer_id, text, keyboard=make_keyboard(rows))
@@ -3094,7 +3094,7 @@ def build_vk_bot(
             return
 
         if not mode.startswith("history_") and text in {
-            "← Предыдущая неделя", "Следующая неделя →", "Выбрать дату", "Другая группа", "Назад к истории", "Назад к расписанию",
+            "← Предыдущая неделя", "Следующая неделя →", "Предыдущая неделя", "Следующая неделя", "Выбрать дату", "Другая группа", "Назад к истории", "Назад к расписанию",
         }:
             peer_modes[peer_id] = "schedule_menu"
             await show_screen(peer_id, "Открой историю расписания заново.", keyboard=schedule_keyboard())
@@ -3148,8 +3148,8 @@ def build_vk_bot(
                 await show_history(peer_id)
                 return
             session = history_sessions.get(peer_id)
-            if session and text in {"← Предыдущая неделя", "Следующая неделя →"}:
-                delta = -7 if text.startswith("←") else 7
+            if session and text in {"← Предыдущая неделя", "Следующая неделя →", "Предыдущая неделя", "Следующая неделя"}:
+                delta = -7 if "Предыдущая" in text else 7
                 session["monday"] += timedelta(days=delta)
                 try:
                     await show_history(peer_id)

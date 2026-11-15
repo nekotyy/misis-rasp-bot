@@ -2642,13 +2642,13 @@ def build_dispatcher(
             return
         today = today_in_timezone(settings.app_timezone)
         text, previous, following = await history_week(
-            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today
+            ScheduleDayArchive(db.path), session["key"], session["title"], session["monday"], today, html=True
         )
         navigation = []
         if previous:
-            navigation.append(InlineKeyboardButton(text="← Предыдущая", callback_data="history:prev"))
+            navigation.append(InlineKeyboardButton(text="Предыдущая неделя", callback_data="history:prev"))
         if following:
-            navigation.append(InlineKeyboardButton(text="Следующая →", callback_data="history:next"))
+            navigation.append(InlineKeyboardButton(text="Следующая неделя", callback_data="history:next"))
         rows = ([navigation] if navigation else []) + [
             [InlineKeyboardButton(text="Выбрать дату", callback_data="history:date"),
              InlineKeyboardButton(text="Другая группа", callback_data="history:group")],
@@ -2658,8 +2658,13 @@ def build_dispatcher(
         chunks = split_vk_text(text, TELEGRAM_MESSAGE_LIMIT)
         sent_ids = []
         for index, chunk in enumerate(chunks):
-            sent = await safe_send_message(bot, chat_id, chunk, parse_mode=None,
-                                           reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if index == len(chunks) - 1 else None)
+            sent = await safe_send_message(
+                bot,
+                chat_id,
+                chunk,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if index == len(chunks) - 1 else None,
+            )
             if sent is not None:
                 sent_ids.append(sent.message_id)
         context_messages[chat_id]["schedule"] = sent_ids

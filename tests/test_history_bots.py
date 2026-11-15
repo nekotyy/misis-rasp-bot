@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aiogram.enums import ParseMode
+
 from src.config import Settings
 from src.db import Database
 from src.models import DaySchedule, Lesson
@@ -63,7 +65,10 @@ class HistoryBotsTests(unittest.IsolatedAsyncioTestCase):
         await click(history, "history:date")
         message.text = "02.11.2026"
         await text_handler(message)
-        self.assertIn("Физика", bot.send_message.call_args.args[1])
+        self.assertIn("<b>1.</b> в <b>101</b> по <b>Физика</b> у <b>Иванов</b>", bot.send_message.call_args.args[1])
+        self.assertEqual(bot.send_message.call_args.kwargs.get("parse_mode"), ParseMode.HTML)
+        buttons = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard
+        self.assertTrue(any(button.text == "Следующая неделя" for row in buttons for button in row))
         await click(history, "history:group")
         message.text = "Группа 2"
         await text_handler(message)
@@ -99,14 +104,14 @@ class HistoryBotsTests(unittest.IsolatedAsyncioTestCase):
         await send("Выбрать дату")
         await send("02.11.2026")
         sent = [c.args[1]["message"] for c in bot.api.request.call_args_list if c.args[0] == "messages.send"]
-        self.assertIn("Физика", sent[-1])
+        self.assertIn("1. в 101 по Физика у Иванов", sent[-1])
         await send("Другая группа")
         await send("Группа 2")
         await send("Выбрать дату")
         await send("02.11.2026")
         sent = [c.args[1]["message"] for c in bot.api.request.call_args_list if c.args[0] == "messages.send"]
         self.assertIn("Химия", sent[-1])
-        await send("Следующая неделя →")
+        await send("Следующая неделя")
         sent = [c.args[1]["message"] for c in bot.api.request.call_args_list if c.args[0] == "messages.send"]
         self.assertNotIn("Химия", sent[-1])
         self.catalog.find_group.side_effect = RuntimeError("offline")
