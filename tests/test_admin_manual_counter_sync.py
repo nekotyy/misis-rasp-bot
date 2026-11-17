@@ -33,7 +33,7 @@ class TelegramAdminCallbacksTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _dispatcher(self, *, counters_enabled: bool = True):
+    def _dispatcher(self, *, counters_enabled: bool = True, schedule_jobs=None):
         settings = MagicMock(spec=Settings)
         settings.telegram_bot_token = "123456:FAKE-TOKEN"
         settings.vk_bot_token = "vk_fake_token"
@@ -49,7 +49,7 @@ class TelegramAdminCallbacksTests(unittest.IsolatedAsyncioTestCase):
             settings=settings, db=self.db,
             parser=MagicMock(), broadcaster=MagicMock(),
             group_catalog=MagicMock(), search_catalog=MagicMock(),
-            schedule_jobs=MagicMock(),
+            schedule_jobs=schedule_jobs or MagicMock(),
         )
 
     @staticmethod
@@ -87,6 +87,13 @@ class TelegramAdminCallbacksTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Счётчики пар", text)
         self.assertIn("admin:counter_sync", callbacks)
         self.assertIn("admin:back", callbacks)
+
+    async def test_refresh_button_runs_notification_sync(self) -> None:
+        source = {"source_type": "group", "source_title": "ИСП-25-1", "source_key": "group:600", "schedule_id": 600}
+        jobs = MagicMock(_sync_source=AsyncMock())
+        with patch.object(self.db, "get_active_sources", AsyncMock(return_value=[source])):
+            await self._admin_handler(self._dispatcher(schedule_jobs=jobs))(self._callback("admin:refresh"))
+        jobs._sync_source.assert_awaited_once_with(source)
 
     async def test_limited_admin_cannot_open_full_only_section(self) -> None:
         handler = self._admin_handler(self._dispatcher())
@@ -211,7 +218,7 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _bot(self, *, counters_enabled: bool = True):
+    def _bot(self, *, counters_enabled: bool = True, schedule_jobs=None):
         settings = MagicMock(spec=Settings)
         settings.telegram_bot_token = "123456:FAKE-TOKEN"
         settings.vk_bot_token = "vk_fake_token"
@@ -226,7 +233,7 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
         bot = build_vk_bot(
             settings=settings, db=self.db,
             parser=MagicMock(), broadcaster=None,
-            group_catalog=None, search_catalog=None, schedule_jobs=None,
+            group_catalog=None, search_catalog=None, schedule_jobs=schedule_jobs,
         )
 
         async def fake_request(method: str, params: dict, version: str | None = None):
@@ -282,6 +289,17 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
         text, labels = self._last_screen(bot)
         self.assertIn("Админ-панель", text)
         self.assertIn("Счётчики пар", labels)
+
+    async def test_refresh_button_runs_notification_sync(self) -> None:
+        source = {"source_type": "group", "source_title": "ИСП-25-1", "source_key": "group:600", "schedule_id": 600}
+        jobs = MagicMock(_sync_source=AsyncMock())
+        bot = self._bot(schedule_jobs=jobs)
+        handler = self._handler(bot)
+        with patch.object(self.db, "get_active_sources", AsyncMock(return_value=[source])):
+            await handler(self._message(VK_ADMIN_ID, "Админка"))
+            await handler(self._message(VK_ADMIN_ID, "Перепарсить"))
+            await bot.wait_admin_jobs()
+        jobs._sync_source.assert_awaited_once_with(source)
 
     async def test_manual_count_offers_today_and_yesterday(self) -> None:
         bot = self._bot()

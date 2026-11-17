@@ -620,6 +620,10 @@ class ScheduleJobs:
             except (httpx.RequestError, TimeoutError):
                 self.__dict__.setdefault("_pending_sync_retries", {})[key] = source
                 raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429 or exc.response.status_code >= 500:
+                    self.__dict__.setdefault("_pending_sync_retries", {})[key] = source
+                raise
             await self.apply_snapshot(source, snapshot, snapshot_hash)
             self.__dict__.setdefault("_pending_sync_retries", {}).pop(key, None)
 

@@ -1838,6 +1838,10 @@ def build_vk_bot(
             if index and source["source_type"] != "teacher":
                 await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
+                if schedule_jobs is not None:
+                    await schedule_jobs._sync_source(source)
+                    rows.append((source["source_title"], datetime.now().strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+                    continue
                 if source["source_type"] == "teacher":
                     snapshot = await resolve_teacher_snapshot(db, parser, str(source.get("source_title") or ""), str(source.get("source_url") or ""))
                     snapshot_hash = compute_snapshot_hash(snapshot)
