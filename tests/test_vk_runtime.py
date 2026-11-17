@@ -121,6 +121,14 @@ class JsonValidatorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PollingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expired_history_triggers_recovery(self) -> None:
+        polling = ResilientBotPolling(MagicMock())
+        polling.on_history_gap = AsyncMock()
+        server = {"server": "s", "key": "k", "ts": "100"}
+        result = await polling._handle_failed(server, {"failed": 1, "ts": "101"})
+        self.assertEqual(result["ts"], "101")
+        polling.on_history_gap.assert_awaited_once()
+
     async def _receive_one(self, polling: ResilientBotPolling) -> dict:
         async for event in polling.listen():
             polling.stop()

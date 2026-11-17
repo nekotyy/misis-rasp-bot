@@ -352,6 +352,7 @@ class ResilientBotPolling(BotPolling):
         self.checkpoint_path = checkpoint_path
         self._checkpoint_loaded = False
         self._checkpoint_ts: str | None = None
+        self.on_history_gap: Callable[[], Awaitable[None]] | None = None
 
     def _load_checkpoint(self) -> None:
         self._checkpoint_loaded = True
@@ -425,6 +426,8 @@ class ResilientBotPolling(BotPolling):
             logger.warning("VK long poll: история для сохранённого ts недоступна, продолжаю с ts сервера.")
             server["ts"] = event.get("ts", server.get("ts"))
             self._ts = server["ts"]
+            if self.on_history_gap is not None:
+                await self.on_history_gap()
             return server
         if failed == 2:
             return await self._fresh_server(keep_ts=True)
@@ -434,6 +437,8 @@ class ResilientBotPolling(BotPolling):
         logger.warning("VK long poll вернул failed=%s — беру новый сервер и ts.", failed)
         fresh = await self._fresh_server(keep_ts=False)
         self._ts = fresh.get("ts")
+        if self.on_history_gap is not None:
+            await self.on_history_gap()
         return fresh
 
     async def _mark_ok(self) -> None:
@@ -559,11 +564,18 @@ class VkUpdateDispatcher:
 
     def is_duplicate(self, update: dict[str, Any]) -> bool:
         key = update_dedup_key(update)
-        if key is None:
+        obj = update.get("object")
+        message = obj.get("message") if isinstance(obj, dict) else None
+        message_key = None
+        if isinstance(message, dict) and message.get("peer_id") is not None and message.get("conversation_message_id") is not None:
+            message_key = f"m:{message['peer_id']}:{message['conversation_message_id']}"
+        keys = {item for item in (key, message_key) if item is not None}
+        if not keys:
             return False
-        if key in self._seen:
+        if any(item in self._seen for item in keys):
             return True
-        self._seen[key] = None
+        for item in keys:
+            self._seen[item] = None
         while len(self._seen) > self._dedup_size:
             self._seen.popitem(last=False)
         return False
