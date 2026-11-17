@@ -472,6 +472,12 @@ class ScheduleJobs:
         async with self._sync_lock:
             await self._run_for_active_sources("sync", self._sync_source)
 
+    async def refresh_active_sources(self) -> list[tuple[str, str, str]]:
+        if self._sync_lock.locked():
+            return [("Синхронизация уже выполняется", "-", "дождитесь завершения")]
+        async with self._sync_lock:
+            return await self._run_for_active_sources("sync", self._sync_source, delay_override=1.5)
+
     async def send_admin_backup(self) -> None:
         if self.admin_telegram_id is None:
             logger.info("Admin backup skipped: ADMIN_TELEGRAM_ID is not set.")
@@ -525,33 +531,60 @@ class ScheduleJobs:
         except Exception:
             logger.exception("Admin backup failed to deliver.")
 
-    async def _run_for_active_sources(self, job_name: str, worker: SourceWorker, **kwargs: Any) -> None:
+    async def _run_for_active_sources(
+        self, job_name: str, worker: SourceWorker, *, delay_override: float | None = None, **kwargs: Any,
+    ) -> list[tuple[str, str, str]]:
         sources = await self.db.get_active_sources()
         if not sources:
             logger.info("Task %s skipped because there are no active sources.", job_name)
-            return
+            return []
 
+        if job_name == "sync":
+            sources = sorted(sources, key=lambda source: source.get("source_type") == "teacher")
+            self._batch_sync_active = True
         failed: list[tuple[str, Exception]] = []
+        group_failed = False
+        completed = False
+        rows: list[tuple[str, str, str]] = []
         attempted = 0
-        for source in sources:
-            if source.get("source_type") == "group" and source.get("schedule_id") is None:
-                logger.info(
-                    "Task %s skips offline OCR source %s until the site assigns schedule_id.",
-                    job_name,
-                    source["source_title"],
-                )
-                continue
-            if attempted:
-                await self._sleep_between_sources(job_name, str(source["source_title"]))
-            attempted += 1
-            try:
-                await worker(source, **kwargs)
-            except Exception as exc:
-                failed.append((str(source["source_title"]), exc))
-                logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
+        try:
+            for source in sources:
+                if source.get("source_type") == "group" and source.get("schedule_id") is None:
+                    logger.info(
+                        "Task %s skips offline OCR source %s until the site assigns schedule_id.",
+                        job_name,
+                        source["source_title"],
+                    )
+                    continue
+                if job_name == "sync" and group_failed and source.get("source_type") == "teacher":
+                    rows.append((str(source["source_title"]), "-", "отложено: не все группы обновлены"))
+                    continue
+                if attempted:
+                    if delay_override is None:
+                        await self._sleep_between_sources(job_name, str(source["source_title"]))
+                    else:
+                        await asyncio.sleep(delay_override)
+                attempted += 1
+                try:
+                    await worker(source, **kwargs)
+                    rows.append((str(source["source_title"]), datetime.now().strftime("%Y-%m-%d %H:%M"), "перепарсено"))
+                except Exception as exc:
+                    if source.get("source_type") == "group":
+                        group_failed = True
+                    failed.append((str(source["source_title"]), exc))
+                    rows.append((str(source["source_title"]), "-", f"ошибка: {exc}"))
+                    logger.warning("Task %s failed for %s: %s", job_name, source["source_title"], exc)
+            completed = True
+        finally:
+            if job_name == "sync":
+                self._batch_sync_active = False
+                self._batch_groups_failed = group_failed or not completed
+                if completed and not group_failed:
+                    for teacher in self.__dict__.pop("_batch_teachers", {}).values():
+                        self._schedule_teacher_sync(teacher)
 
         if not attempted or self.alert_manager is None:
-            return
+            return rows
         # Одно сообщение за весь проход, и отдельным компонентом: живость сайта раз в 5 минут
         # ("schedule_site") иначе тут же "восстанавливала" сбой синхронизации, а каждая
         # упавшая группа в проходе давала свой алерт. Разовый сбой (моргнул DNS) админу
@@ -562,6 +595,7 @@ class ScheduleJobs:
             await self.alert_manager.report_component_status("schedule_sync", False, str(first_error), details=details)
         else:
             await self.alert_manager.report_component_status("schedule_sync", True)
+        return rows
 
     async def _sleep_between_sources(self, job_name: str, source_title: str) -> None:
         delay = self.request_delay_seconds + random.uniform(0, self.request_jitter_seconds)  # noqa: S311
@@ -811,15 +845,8 @@ class ScheduleJobs:
         тот же момент пересчитать и разослать препода(ов), которые в ней ведут, а не
         ждать их собственного слота в плановой синхронизации.
 
-        Пересчёт откладывается на `TEACHER_NOTIFY_DEBOUNCE_SECONDS` (см. `_schedule_teacher_sync`)
-        и переоткладывается заново при каждом новом попадании того же препода — так несколько его
-        групп, обновившихся почти подряд (сводное фото на много групп, либо просто соседние по
-        порядку источники в плановой синхронизации), схлопываются в один финальный пересчёт вместо
-        серии уведомлений с растущим набором пар. Раньше это делалось батчем на весь проход
-        `_run_for_active_sources` целиком — но у него между первым и последним затронутым
-        источником может пройти много минут (десятки не связанных между собой источников
-        синхронизируются один за другим), и препод в среднем случае ждал уведомления до конца
-        всего цикла синхронизации, а не почти сразу после своих собственных групп.
+        В общем проходе пересчёт ждёт обновления групп; вне прохода действует
+        `TEACHER_NOTIFY_DEBOUNCE_SECONDS` для близких по времени изменений.
         """
         teacher_names = {
             lesson.teacher.strip()
@@ -859,6 +886,9 @@ class ScheduleJobs:
         заново: таймер сбрасывается на каждое новое попадание, а не просто игнорируется,
         так что пересчёт происходит один раз, после того как события по нему улеглись.
         """
+        if getattr(self, "_batch_sync_active", False):
+            self.__dict__.setdefault("_batch_teachers", {})[teacher_source["source_key"]] = teacher_source
+            return
         tasks = self._teacher_notify_tasks()
         key = teacher_source["source_key"]
         existing = tasks.get(key)
@@ -877,6 +907,10 @@ class ScheduleJobs:
         except asyncio.CancelledError:
             return
         key = teacher_source["source_key"]
+        if getattr(self, "_batch_sync_active", False):
+            self._teacher_notify_tasks().pop(key, None)
+            self.__dict__.setdefault("_batch_teachers", {})[key] = teacher_source
+            return
         self._teacher_notify_running.add(key)
         try:
             await self._sync_teacher_source_safely(teacher_source)

@@ -50,6 +50,16 @@ class ScheduleSyncRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("group:1", self.jobs._pending_sync_retries)
         self.jobs.apply_snapshot.assert_not_awaited()
 
+    async def test_teacher_is_deferred_when_group_refresh_fails(self) -> None:
+        teacher = {"source_type": "teacher", "source_key": "teacher:1", "source_title": "Преподаватель"}
+        self.jobs.db.get_active_sources.return_value = [teacher, self.source]
+        self.jobs._sleep_between_sources = AsyncMock()
+        worker = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+        rows = await self.jobs._run_for_active_sources("sync", worker)
+        worker.assert_awaited_once_with(self.source)
+        self.assertIn("отложено", rows[-1][2])
+        self.assertFalse(self.jobs._batch_sync_active)
+
     async def test_retry_interrupts_unresponsive_fetch_and_keeps_queue(self) -> None:
         self.jobs._pending_sync_retries = {"group:1": self.source}
 

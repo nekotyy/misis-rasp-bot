@@ -1955,6 +1955,8 @@ def build_dispatcher(
         return "\n".join(lines)
 
     async def refresh_all_active_sources() -> list[tuple[str, str, str]]:
+        if schedule_jobs is not None:
+            return await schedule_jobs.refresh_active_sources()
         sources = await db.get_active_sources()
         if not sources:
             return []
@@ -1964,10 +1966,6 @@ def build_dispatcher(
             if index and source["source_type"] != "teacher":
                 await asyncio.sleep(MANUAL_REFRESH_PAUSE_SECONDS)
             try:
-                if schedule_jobs is not None:
-                    await schedule_jobs._sync_source(source)
-                    rows.append((source["source_title"], datetime.now().strftime("%Y-%m-%d %H:%M"), "перепарсено"))
-                    continue
                 if source["source_type"] == "audience":
                     snapshot, snapshot_hash = await parser.parse_from_url(source["source_url"])
                 elif source["source_type"] == "teacher":

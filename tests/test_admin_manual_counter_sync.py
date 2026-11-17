@@ -90,10 +90,10 @@ class TelegramAdminCallbacksTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_button_runs_notification_sync(self) -> None:
         source = {"source_type": "group", "source_title": "ИСП-25-1", "source_key": "group:600", "schedule_id": 600}
-        jobs = MagicMock(_sync_source=AsyncMock())
+        jobs = MagicMock(refresh_active_sources=AsyncMock(return_value=[("ИСП-25-1", "-", "перепарсено")]))
         with patch.object(self.db, "get_active_sources", AsyncMock(return_value=[source])):
             await self._admin_handler(self._dispatcher(schedule_jobs=jobs))(self._callback("admin:refresh"))
-        jobs._sync_source.assert_awaited_once_with(source)
+        jobs.refresh_active_sources.assert_awaited_once()
 
     async def test_limited_admin_cannot_open_full_only_section(self) -> None:
         handler = self._admin_handler(self._dispatcher())
@@ -292,14 +292,14 @@ class VkAdminMenuAndManualCountTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_button_runs_notification_sync(self) -> None:
         source = {"source_type": "group", "source_title": "ИСП-25-1", "source_key": "group:600", "schedule_id": 600}
-        jobs = MagicMock(_sync_source=AsyncMock())
+        jobs = MagicMock(refresh_active_sources=AsyncMock(return_value=[("ИСП-25-1", "-", "перепарсено")]))
         bot = self._bot(schedule_jobs=jobs)
         handler = self._handler(bot)
         with patch.object(self.db, "get_active_sources", AsyncMock(return_value=[source])):
             await handler(self._message(VK_ADMIN_ID, "Админка"))
             await handler(self._message(VK_ADMIN_ID, "Перепарсить"))
             await bot.wait_admin_jobs()
-        jobs._sync_source.assert_awaited_once_with(source)
+        jobs.refresh_active_sources.assert_awaited_once()
 
     async def test_manual_count_offers_today_and_yesterday(self) -> None:
         bot = self._bot()
