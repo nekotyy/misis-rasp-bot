@@ -234,8 +234,8 @@ def start_vk_polling(
         async with recovery_lock:
             try:
                 async with asyncio.timeout(30):
-                    if polling.group_id is None:
-                        await polling.get_server()
+                    while polling.group_id is None:
+                        await asyncio.sleep(1)
                     await recover_unanswered(vk_bot.api, settings.vk_bot_token, db, dispatcher, polling.group_id)
             except Exception as exc:
                 logging.warning("VK: не удалось проверить пропущенные запросы (%s); сообщения оставлены непрочитанными.", type(exc).__name__)
