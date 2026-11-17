@@ -875,13 +875,8 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         lessons = teacher_current["content"]["days"][0]["lessons"]
         self.assertEqual(len(lessons), 2, "Итоговое расписание должно содержать пары из ОБЕИХ групп")
 
-    async def test_teacher_sync_does_not_wait_for_the_whole_cycle_to_finish(self) -> None:
-        """Регресс: раньше пересчёт откладывался до конца ВСЕГО прохода по активным
-
-        источникам — на полсотни несвязанных источников это могло занимать много
-        минут. Debounce привязан к таймеру конкретного препода, а не к длине всего
-        цикла — уведомление должно уйти задолго до того, как цикл в целом закончится.
-        """
+    async def test_teacher_sync_waits_for_group_updates_to_finish(self) -> None:
+        """Преподаватель не получает промежуточный результат общего прохода."""
         await self.db.upsert_user(
             "telegram", 3, "student_c", "Студент В",
             subscription_type="group", subscription_key="group:999",
@@ -936,11 +931,10 @@ class TestTeacherNotifyBatchCoalescing(unittest.IsolatedAsyncioTestCase):
         with patch("src.scheduler.TEACHER_NOTIFY_DEBOUNCE_SECONDS", 0.1):
             run_task = asyncio.create_task(jobs._run_for_active_sources("sync", sync_groups_only))
             try:
-                # Пока "Я-99" не отпущен, цикл завершиться не может: уведомление препода обязано
-                # прийти раньше этого — иначе оно ждёт конца цикла, и ожидание выйдет по таймауту.
-                notified = await wait_until(lambda: len(teacher_broadcasts()) >= 1)
-                self.assertTrue(notified, "Уведомление не должно ждать конца всего цикла")
-                self.assertFalse(run_task.done(), "На этот момент цикл синхронизации ещё не должен был закончиться")
+                # Пока группа не обновлена, промежуточное расписание не отправляется.
+                await asyncio.sleep(0.3)
+                self.assertEqual(teacher_broadcasts(), [])
+                self.assertFalse(run_task.done())
             finally:
                 release_slow_source.set()
                 await run_task
