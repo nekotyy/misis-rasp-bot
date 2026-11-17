@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import tempfile
 from collections import OrderedDict, deque
@@ -133,6 +134,7 @@ class ResilientAiohttpClient(AiohttpClient):
             self.session = ClientSession(
                 connector=connector,
                 timeout=VK_HTTP_TIMEOUT,
+                trust_env=os.getenv("VK_TRUST_ENV_PROXY") == "1",
                 json_serialize=self.json_processing_module.dumps,
             )
         return self.session

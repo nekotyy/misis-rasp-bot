@@ -41,6 +41,15 @@ class ScheduleSyncRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("group:1", self.jobs._pending_sync_retries)
         self.jobs.apply_snapshot.assert_not_awaited()
 
+    async def test_initial_http_server_error_is_retried(self) -> None:
+        request = httpx.Request("GET", "http://example.test/")
+        response = httpx.Response(503, request=request)
+        self.jobs._parse_source.side_effect = httpx.HTTPStatusError("unavailable", request=request, response=response)
+        with self.assertRaises(httpx.HTTPStatusError):
+            await self.jobs._sync_source(self.source)
+        self.assertIn("group:1", self.jobs._pending_sync_retries)
+        self.jobs.apply_snapshot.assert_not_awaited()
+
     async def test_retry_interrupts_unresponsive_fetch_and_keeps_queue(self) -> None:
         self.jobs._pending_sync_retries = {"group:1": self.source}
 

@@ -25,6 +25,15 @@ class OutboxStoreTests(unittest.IsolatedAsyncioTestCase):
     async def put(self, key, peer="1", **kwargs):
         return await self.store.enqueue(key, "telegram", peer, "sendMessage", {"chat_id": int(peer), "text": key}, now=self.now, **kwargs)
 
+    async def test_expiration_uses_index_for_active_rows(self):
+        async with self.db._connect() as connection:
+            rows = await (await connection.execute(
+                "EXPLAIN QUERY PLAN UPDATE delivery_outbox SET status = 'expired' "
+                "WHERE status IN ('pending', 'processing') AND expires_at <= ? AND lease_until <= ?",
+                (self.now, self.now),
+            )).fetchall()
+        self.assertTrue(any("idx_outbox_expiry" in row[3] for row in rows), rows)
+
     async def test_saved_request_and_idempotency_survive_new_store_instance(self):
         await self.put("one", metadata={"campaign_type": "notification"})
         restarted = OutboxStore(Database(self.db.path))

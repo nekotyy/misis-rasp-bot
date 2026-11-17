@@ -11,6 +11,7 @@ from aiohttp import ClientConnectionError
 from vkbottle.exception_factory.base_exceptions import VKAPIError
 
 from src.vk_runtime import (
+    ResilientAiohttpClient,
     ResilientBotPolling,
     StrictJSONResponseValidator,
     VkTransportError,
@@ -26,6 +27,18 @@ def _api_with(side_effect) -> MagicMock:
     api = MagicMock()
     api.request = AsyncMock(side_effect=side_effect)
     return api
+
+
+class ProxyEnvironmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vk_proxy_environment_is_opt_in(self):
+        for value, expected in (("0", False), ("1", True)):
+            with self.subTest(value=value), patch.dict("os.environ", {"VK_TRUST_ENV_PROXY": value}):
+                client = ResilientAiohttpClient()
+                session = client._ensure_session()
+                try:
+                    self.assertEqual(session.trust_env, expected)
+                finally:
+                    await session.close()
 
 
 class SplitTextTests(unittest.TestCase):

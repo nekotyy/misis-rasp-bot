@@ -41,6 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_outbox_due
 CREATE INDEX IF NOT EXISTS idx_outbox_peer
     ON delivery_outbox(platform, peer_key, status, id);
 CREATE INDEX IF NOT EXISTS idx_outbox_retention ON delivery_outbox(created_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_expiry ON delivery_outbox(status, expires_at, lease_until);
 """
 
 TERMINAL_STATUSES = frozenset({"sent", "failed", "expired"})

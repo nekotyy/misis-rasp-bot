@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from uuid import uuid4
@@ -250,8 +251,19 @@ class OutboxBroker:
                 await message.reject(requeue=False)
                 return
             # При ошибке SQLite не подтверждаем доставку: process() вернёт её в очередь.
-            async with message.process(requeue=True):
-                await callback(payload["delivery_id"])
+            try:
+                async with message.process(requeue=True):
+                    try:
+                        await callback(payload["delivery_id"])
+                    except sqlite3.OperationalError as exc:
+                        if "locked" not in str(exc).lower():
+                            raise
+                        await asyncio.sleep(1)
+                        raise
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    raise
+                logger.warning("SQLite занята; сообщение outbox возвращено в очередь.")
 
         for platform, queue in self._queues.items():
             if platform not in self._tags:
