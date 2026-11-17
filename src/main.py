@@ -37,6 +37,7 @@ from src.system_status import DEFAULT_FAILURE_CONFIRMATIONS, SystemAlertManager
 from src.telegram_bot import build_dispatcher
 from src.telegram_runtime import TrackingAiohttpSession
 from src.vk_bot import build_vk_bot, vk_handler_timeout
+from src.vk_recovery import recover_unanswered
 from src.vk_runtime import VkUpdateDispatcher
 
 # Если long poll VK / getUpdates Telegram не отвечали дольше этого, мониторинг считает приём сообщений упавшим.
@@ -224,6 +225,26 @@ def start_vk_polling(
         handler_timeout=max(vk_handler_timeout(settings), DEFAULT_DELIVERY_TTL + 120) if broadcaster.outbox is not None else vk_handler_timeout(settings),
         on_failure=vk_bot.report_update_failure,
     )
+
+    recovery_lock = asyncio.Lock()
+
+    async def recover() -> None:
+        if recovery_lock.locked():
+            return
+        async with recovery_lock:
+            try:
+                async with asyncio.timeout(30):
+                    if polling.group_id is None:
+                        await polling.get_server()
+                    await recover_unanswered(vk_bot.api, settings.vk_bot_token, db, dispatcher, polling.group_id)
+            except Exception as exc:
+                logging.warning("VK: не удалось проверить пропущенные запросы (%s); сообщения оставлены непрочитанными.", type(exc).__name__)
+
+    async def schedule_recovery() -> None:
+        start_background_task("vk-recover-unanswered", recover())
+
+    polling.on_history_gap = schedule_recovery
+    start_background_task("vk-recover-startup", recover())
 
     async def _run_once() -> None:
         await dispatcher.run(polling)
