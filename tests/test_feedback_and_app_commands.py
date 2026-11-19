@@ -76,6 +76,25 @@ class FeedbackAndAppCommandsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
 
+    async def test_telegram_forwards_unhandled_text_and_photo_only_to_main_admin(self):
+        await self.db.upsert_user("telegram", self.user_id, "student", "Student")
+        await self.db.set_user_subscription("telegram", self.user_id, "group", "ИСП-25-1", "ИСП-25-1", 101)
+        bot = AsyncMock(spec=Bot)
+        bot.send_message = AsyncMock(return_value=create_mock_message(self.user_id, self.user_id, "ok", bot=bot))
+        for update_id, message in enumerate((
+            create_mock_message(self.user_id, self.user_id, "Привет", bot=bot),
+            Message.model_validate({
+                "message_id": 102, "date": int(datetime.now(UTC).timestamp()),
+                "chat": {"id": self.user_id, "type": "private"},
+                "from": {"id": self.user_id, "is_bot": False, "first_name": "Student"},
+                "photo": [{"file_id": "photo", "file_unique_id": "unique", "width": 1, "height": 1}],
+            }).as_(bot),
+        ), 1):
+            await self.dispatcher.feed_update(bot=bot, update=Update(update_id=update_id, message=message))
+        self.assertEqual(bot.forward_message.await_count, 2)
+        self.assertEqual(bot.forward_message.await_args_list[0].args, (self.admin_id, self.user_id, 101))
+        self.assertEqual(bot.forward_message.await_args_list[1].args, (self.admin_id, self.user_id, 102))
+
     async def test_database_feedback_lifecycle(self):
         fb_id = await self.db.create_feedback_message(
             platform="telegram",
