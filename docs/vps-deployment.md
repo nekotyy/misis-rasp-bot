@@ -30,6 +30,13 @@ COMPOSE_FILE=docker-compose.yml:/etc/misis-rasp-bot/compose.override.yml:/etc/mi
 файл должен существовать до запуска Compose. Выполняй команды Compose из
 `/opt/misis-rasp-bot`.
 
+Если прокси обрывает длинные запросы VK, а прямое соединение работает,
+добавь `lp.vk.com,lp.vk.ru` к существующим спискам `NO_PROXY` и `no_proxy`
+в `services.bot.environment` серверного override. При `VK_TRUST_ENV_PROXY=1`
+запросы к `api.vk.com` продолжат идти через прокси. Проверь конфигурацию командой
+`docker compose config --quiet` и пересоздай только контейнер бота командой
+`docker compose up -d --no-deps --no-build --pull never bot`.
+
 Файл `release.override.yml` управляется командой деплоя и выбирает образы `bot`
 и `web` для текущего релиза. Его содержимое и данные приложения не хранятся в Git.
 

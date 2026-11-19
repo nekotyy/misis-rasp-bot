@@ -90,7 +90,7 @@ class VkBotUxTests(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def send(self, text: str, *, user_id: int = USER_ID, peer_id: int | None = None) -> None:
-        await self.handler(SimpleNamespace(peer_id=peer_id or user_id, from_id=user_id, text=text, action=None, attachments=[]))
+        await self.handler(SimpleNamespace(id=123, peer_id=peer_id or user_id, from_id=user_id, text=text, action=None, attachments=[]))
 
     def sent(self) -> list[dict]:
         return [call.args[1] for call in self.bot.api.request.await_args_list if call.args[0] == "messages.send"]
@@ -103,6 +103,15 @@ class VkBotUxTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_chatter_is_ignored(self) -> None:
         await self.send("привет всем, кто идёт на пары?", peer_id=CHAT_PEER)
         self.assertEqual(self.sent(), [])
+
+    async def test_unhandled_message_and_attachment_are_forwarded_to_main_admin(self) -> None:
+        await self.send("Привет")
+        await self.handler(SimpleNamespace(
+            id=124, peer_id=USER_ID, from_id=USER_ID, text="", action=None, attachments=[object()],
+        ))
+        forwards = [params for params in self.sent() if params.get("forward_messages")]
+        self.assertEqual(len(forwards), 2)
+        self.assertTrue(all(params["peer_id"] == ADMIN_ID for params in forwards))
 
     async def test_chat_setup_saves_subscription_for_the_chat(self) -> None:
         await self.send("[club1|@bot] /startgroup", peer_id=CHAT_PEER)

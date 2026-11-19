@@ -1061,6 +1061,15 @@ def build_dispatcher(
 ) -> Dispatcher:
     dispatcher = Dispatcher()
 
+    async def forward_unhandled_message(message: Message) -> None:
+        if (message.chat.type != "private" or message.from_user is None
+                or user_is_admin(message.from_user.id) or not settings.admin_telegram_id):
+            return
+        try:
+            await message.bot.forward_message(settings.admin_telegram_id, message.chat.id, message.message_id)
+        except Exception:
+            logger.warning("Не удалось переслать сообщение Telegram администратору", exc_info=True)
+
     async def outgoing_context_middleware(handler, event, data):
         bot = data.get("bot")
         with delivery_context(f"telegram:{getattr(bot, 'id', '')}:{event.update_id}"):
@@ -2801,6 +2810,8 @@ def build_dispatcher(
                 await format_personalization_settings_text(message.from_user.id, db),
                 reply_markup=await build_personalization_keyboard(message.from_user.id, db),
             )
+        else:
+            await forward_unhandled_message(message)
 
     @dispatcher.message(Command("donate"))
     async def handle_donate_command(message: Message) -> None:
@@ -4760,6 +4771,7 @@ def build_dispatcher(
         # Импорт с фото доступен только полному админу (подтверждение ограниченному и так запрещено),
         # иначе его фото впустую тратили бы запросы к Gemini.
         if not is_ocr_photo_candidate(message.chat.type, user_is_full_admin(message.from_user.id)):
+            await forward_unhandled_message(message)
             return
 
         if message.from_user.id in awaiting_admin_ocr_json:
@@ -5193,6 +5205,10 @@ def build_dispatcher(
                     subscription_data.get("subscription_title"),
                 ),
             )
+            return
+
+        if getattr(message, "forward_origin", None) and not user_is_admin(message.from_user.id):
+            await forward_unhandled_message(message)
             return
 
         reply_to = getattr(message, "reply_to_message", None)
@@ -5715,13 +5731,17 @@ def build_dispatcher(
             if message.text.startswith("/"):
                 await prompt_group_selection(message.bot, message.chat.id)
                 return
-            await try_delete_message(message)
-            await handle_subscription_input(message.bot, message.chat.id, message.from_user.id, message.text)
+            if await handle_subscription_input(message.bot, message.chat.id, message.from_user.id, message.text):
+                await try_delete_message(message)
+            elif (message.chat.id, message.from_user.id) not in teacher_choices:
+                await forward_unhandled_message(message)
             return
         if message.from_user.id in awaiting_schedule_search:
             await try_delete_message(message)
             await perform_schedule_search(message.bot, message.chat.id, message.from_user.id, message.text)
             return
+        if not message.text.startswith("/"):
+            await forward_unhandled_message(message)
         await send_new_context_message(
             message.bot,
             message.chat.id,
@@ -5729,6 +5749,10 @@ def build_dispatcher(
             await build_welcome_text(user, is_editor=await user_is_editor(message.from_user.id)),
             reply_markup=await build_start_keyboard(message.from_user.id),
         )
+
+    @dispatcher.message()
+    async def handle_other_message(message: Message) -> None:
+        await forward_unhandled_message(message)
 
     @dispatcher.errors()
     async def handle_telegram_errors(event: ErrorEvent, bot: Bot) -> bool:

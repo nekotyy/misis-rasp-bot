@@ -2082,7 +2082,24 @@ def build_vk_bot(
         normalized = text.casefold()
         mode = peer_modes.get(peer_id, "main_menu")
 
+        async def forward_unhandled_message() -> None:
+            if peer_id >= VK_CHAT_PEER_ID_THRESHOLD or user_is_admin(user_id) or not settings.admin_vk_id:
+                return
+            try:
+                await bot.api.messages.send(
+                    peer_id=settings.admin_vk_id,
+                    random_id=randbelow(2**31 - 1) + 1,
+                    forward_messages=[message.id],
+                )
+            except Exception:
+                logger.warning("Не удалось переслать сообщение VK администратору", exc_info=True)
+
         has_attachments = bool(getattr(message, "attachments", None))
+        if ((has_attachments or getattr(message, "fwd_messages", None))
+                and peer_id < VK_CHAT_PEER_ID_THRESHOLD and not user_is_admin(user_id)
+                and mode in {"main_menu", "group_select"}):
+            await forward_unhandled_message()
+            return
         if text and not has_attachments:
             await wait_rate_limit_queue(user_id, 0.8)
 
@@ -3068,7 +3085,8 @@ def build_vk_bot(
                 await prompt_group_selection(peer_id)
                 return
             else:
-                await handle_subscription_input(peer_id, user_id, text)
+                if not await handle_subscription_input(peer_id, user_id, text) and mode == "main_menu":
+                    await forward_unhandled_message()
                 return
 
         if text in {"Назад в меню", "Закрыть админку"}:
@@ -3942,6 +3960,8 @@ def build_vk_bot(
                     await show_screen(peer_id, "Управление редакторами\n\nРоль обновлена. Выбери пользователя, чтобы продолжить.", keyboard=build_editor_keyboard(peer_id, users, peer_pages[peer_id].get("editors", 0)))
                     return
 
+        if not text.startswith("/") and mode == "main_menu":
+            await forward_unhandled_message()
         await show_main_menu(peer_id, user_id)
 
     return bot
