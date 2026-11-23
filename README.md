@@ -1432,6 +1432,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 ## Roadmap
 
 - расширить настройки расписания бэкапов из `.env`.
+- переписать проект на Rust.
 
 ## Contributing
 
